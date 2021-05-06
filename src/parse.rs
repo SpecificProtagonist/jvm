@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use crate::{
-    Classfile, Code, ConstPool, ConstPoolItem, Field, InternedString, Method, StringInterner,
+    Arena, Class, Code, ConstPool, ConstPoolItem, Field, FieldRef, Id, Interner, Method,
+    MethodDescriptor, MethodRef, Typ,
 };
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -42,7 +43,7 @@ fn read_magic(input: &mut &[u8]) -> Result<()> {
 
 fn read_const_pool_item(
     input: &mut &[u8],
-    str_interner: &mut StringInterner,
+    str_interner: &mut Interner<String>,
 ) -> Result<ConstPoolItem> {
     use ConstPoolItem::*;
     match read_u8(input)? {
@@ -52,6 +53,7 @@ fn read_const_pool_item(
             for _ in 0..length {
                 bytes.push(read_u8(input)?);
             }
+            // TODO: actually read Modified-UTF8
             let string = std::string::String::from_utf8(bytes)?;
             Ok(Utf8(str_interner.intern(string)))
         }
@@ -60,12 +62,12 @@ fn read_const_pool_item(
         5 => Ok(Long(read_u64(input)? as i64)),
         6 => Ok(Double(f64::from_bits(read_u64(input)?))),
         7 => Ok(Class(read_u16(input)?)),
-        8 => Ok(String(read_u16(input)?)),
-        9 => Ok(FieldRef {
+        8 => Ok(RawString(read_u16(input)?)),
+        9 => Ok(RawFieldRef {
             class: read_u16(input)?,
             nat: read_u16(input)?,
         }),
-        10 => Ok(MethodRef {
+        10 => Ok(RawMethodRef {
             class: read_u16(input)?,
             nat: read_u16(input)?,
         }),
@@ -73,7 +75,7 @@ fn read_const_pool_item(
             class: read_u16(input)?,
             nat: read_u16(input)?,
         }),
-        12 => Ok(NameAndType {
+        12 => Ok(RawNameAndType {
             name: read_u16(input)?,
             descriptor: read_u16(input)?,
         }),
@@ -81,27 +83,50 @@ fn read_const_pool_item(
     }
 }
 
-fn read_const_pool(input: &mut &[u8], str_interner: &mut StringInterner) -> Result<ConstPool> {
-    let length = read_u16(input)?;
-    let mut vec = Vec::with_capacity(length as usize);
-    vec.push(ConstPoolItem::DumbPlaceholderAfterLongOrDoubleEntryOrForEntryZero);
-    while (vec.len() as u16) < length {
-        vec.push(read_const_pool_item(input, str_interner)?);
+fn read_const_pool(
+    input: &mut &[u8],
+    types: &mut Interner<Typ>,
+    strings: &mut Interner<String>,
+) -> Result<ConstPool> {
+    let length = read_u16(input)? as usize;
+    let mut vec = Vec::with_capacity(length);
+    vec.push(ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero);
+    while vec.len() < length {
+        vec.push(read_const_pool_item(input, strings)?);
         if matches!(
             vec.last().unwrap(),
             ConstPoolItem::Long(_) | ConstPoolItem::Double(_)
         ) {
-            vec.push(ConstPoolItem::DumbPlaceholderAfterLongOrDoubleEntryOrForEntryZero)
+            vec.push(ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero)
         }
     }
-    Ok(ConstPool(vec))
+    let mut pool = ConstPool(vec);
+
+    // Post-process to get desireable format for run-time pool
+    // (can't do this in the first pass because items may refer to later items)
+    for i in 0..pool.0.len() {
+        if let ConstPoolItem::RawFieldRef { class, nat } = &pool.0[i] {
+            let class = pool.get_class(*class)?;
+            let (name, descriptor) = pool.get_raw_nat(*nat)?;
+            let (typ, _) = parse_field_descriptor(types, strings, descriptor, 0)?;
+            pool.0[i] = ConstPoolItem::FieldRef(FieldRef { class, name, typ })
+        }
+        if let ConstPoolItem::RawMethodRef { class, nat } = &pool.0[i] {
+            let class = pool.get_class(*class)?;
+            let (name, descriptor) = pool.get_raw_nat(*nat)?;
+            let typ = parse_method_descriptor(types, strings, descriptor)?;
+            pool.0[i] = ConstPoolItem::MethodRef(MethodRef { class, name, typ })
+        }
+    }
+
+    Ok(pool)
 }
 
-fn read_interfaces(input: &mut &[u8]) -> Result<Vec<u16>> {
+fn read_interfaces(input: &mut &[u8], const_pool: &ConstPool) -> Result<Vec<Id<String>>> {
     let length = read_u16(input)?;
     let mut vec = Vec::with_capacity(length as usize);
     for _ in 0..length {
-        vec.push(read_u16(input)?);
+        vec.push(const_pool.get_class(read_u16(input)?)?);
     }
     Ok(vec)
 }
@@ -109,7 +134,7 @@ fn read_interfaces(input: &mut &[u8]) -> Result<Vec<u16>> {
 fn read_attribute<'input, 'cp>(
     input: &mut &'input [u8],
     const_pool: &'cp ConstPool,
-) -> Result<(InternedString, &'input [u8])> {
+) -> Result<(Id<String>, &'input [u8])> {
     let name = const_pool.get_utf8(read_u16(input)?)?;
     let attr_length = read_u32(input)?;
     let attr_bytes = &input[0..attr_length as usize];
@@ -117,17 +142,60 @@ fn read_attribute<'input, 'cp>(
     Ok((name, attr_bytes))
 }
 
+fn parse_field_descriptor(
+    types: &mut Interner<Typ>,
+    strings: &mut Interner<String>,
+    descriptor: Id<String>,
+    start: usize,
+) -> Result<(Id<Typ>, usize)> {
+    let str = &strings.get(descriptor)[start..];
+    if let Some(typ) = match str.chars().next() {
+        Some('B') => Some(Typ::Bool),
+        Some('C') => Some(Typ::Char),
+        Some('D') => Some(Typ::Double),
+        Some('F') => Some(Typ::Float),
+        Some('I') => Some(Typ::Int),
+        Some('J') => Some(Typ::Long),
+        _ => None,
+    } {
+        return Ok((types.intern(typ), start + 1));
+    }
+
+    if str.starts_with('L') {
+        if let Some((class_name, _)) = str[1..].split_once(';') {
+            let start = start + 1 + class_name.len() + 1;
+            let class_name = String::from(class_name);
+            let typ = Typ::Class(strings.intern(class_name));
+            return Ok((types.intern(typ), start));
+        } else {
+            bail!("Invalid type descriptor")
+        }
+    }
+
+    if str.starts_with('[') {
+        // TODO: array descriptor only valid for up to 255 dimensions
+        let (base_type, start) = parse_field_descriptor(types, strings, descriptor, start + 1)?;
+        return Ok((types.intern(Typ::Array(base_type)), start));
+    }
+
+    bail!("Invalid type descriptor: {}", str)
+}
+
 fn read_field(
     input: &mut &[u8],
-    class: InternedString,
     constant_pool: &ConstPool,
+    types: &mut Interner<Typ>,
+    strings: &mut Interner<String>,
 ) -> Result<Field> {
     let access_flags = read_u16(input)?;
 
-    let name_index = read_u16(input)?;
-    let name = constant_pool.get_utf8(name_index)?;
+    let name = constant_pool.get_utf8(read_u16(input)?)?;
 
-    let descriptor = read_u16(input)?;
+    let descriptor_str = constant_pool.get_utf8(read_u16(input)?)?;
+    let (descriptor, remaining) = parse_field_descriptor(types, strings, descriptor_str, 0)?;
+    if remaining < strings.get(descriptor_str).len() {
+        bail!("Invalid type descriptor")
+    }
 
     let attributes_count = read_u16(input)?;
     for _ in 0..attributes_count {
@@ -136,7 +204,6 @@ fn read_field(
     }
 
     Ok(Field {
-        class,
         name,
         access_flags,
         descriptor,
@@ -145,14 +212,15 @@ fn read_field(
 
 fn read_fields(
     input: &mut &[u8],
-    class: InternedString,
     constant_pool: &ConstPool,
-) -> Result<HashMap<InternedString, Field>> {
+    types: &mut Interner<Typ>,
+    strings: &mut Interner<String>,
+) -> Result<Arena<Field>> {
     let length = read_u16(input)?;
-    let mut fields = HashMap::with_capacity(length as usize);
+    let mut fields = Arena::default();
     for _ in 0..length {
-        let field = read_field(input, class, constant_pool)?;
-        fields.insert(field.name, field);
+        let field = read_field(input, constant_pool, types, strings)?;
+        fields.insert(field);
     }
     Ok(fields)
 }
@@ -187,23 +255,53 @@ fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
     })
 }
 
+fn parse_method_descriptor(
+    types: &mut Interner<Typ>,
+    strings: &mut Interner<String>,
+    descriptor: Id<String>,
+) -> Result<MethodDescriptor> {
+    if !strings.get(descriptor).starts_with('(') {
+        bail!("Invalid method descriptor")
+    }
+    let mut start = 1;
+    let mut args = Vec::new();
+    while !strings.get(descriptor)[start..].starts_with(')') {
+        let (arg, next_start) = parse_field_descriptor(types, strings, descriptor, start)
+            .context("Parsing method descriptor")?;
+        args.push(arg);
+        start = next_start;
+    }
+    start += 1;
+    if &strings.get(descriptor)[start..] == "V" {
+        Ok(MethodDescriptor(args, None))
+    } else {
+        let (return_type, start) = parse_field_descriptor(types, strings, descriptor, start)
+            .context("Parsing method descriptor")?;
+        if start < strings.get(descriptor).len() {
+            bail!("Invalid method descriptor")
+        }
+        Ok(MethodDescriptor(args, Some(return_type)))
+    }
+}
+
 fn read_method(
     input: &mut &[u8],
-    class: InternedString,
     constant_pool: &ConstPool,
-    str_interner: &StringInterner,
+    types: &mut Interner<Typ>,
+    strings: &mut Interner<String>,
 ) -> Result<Method> {
     let access_flags = read_u16(input)?;
 
     let name = constant_pool.get_utf8(read_u16(input)?)?;
 
-    let descriptor = read_u16(input)?;
+    let descriptor = constant_pool.get_utf8(read_u16(input)?)?;
+    let descriptor = parse_method_descriptor(types, strings, descriptor)?;
 
     let mut code = None;
     let attributes_count = read_u16(input)?;
     for _ in 0..attributes_count {
         let (attr_name, bytes) = read_attribute(input, constant_pool)?;
-        if Some(attr_name) == str_interner.get("Code") {
+        if attr_name == strings.intern_str("Code") {
             if code.is_none() {
                 code = Some(read_code(bytes, constant_pool).context("Reading bytecode")?);
             } else {
@@ -213,7 +311,6 @@ fn read_method(
     }
 
     Ok(Method {
-        class,
         name,
         access_flags,
         descriptor,
@@ -223,39 +320,43 @@ fn read_method(
 
 fn read_methods(
     input: &mut &[u8],
-    class: InternedString,
     constant_pool: &ConstPool,
-    str_interner: &StringInterner,
-) -> Result<HashMap<InternedString, Method>> {
+    types: &mut Interner<Typ>,
+    strings: &mut Interner<String>,
+) -> Result<Vec<Rc<Method>>> {
     let length = read_u16(input)?;
-    let mut methods = HashMap::with_capacity(length as usize);
+    let mut methods = Vec::with_capacity(length as usize);
     for _ in 0..length {
-        let method = read_method(input, class, constant_pool, str_interner)?;
-        methods.insert(method.name, method);
+        let method = read_method(input, constant_pool, types, strings)?;
+        methods.push(Rc::new(method));
     }
     Ok(methods)
 }
 
-pub fn read_class_file(mut input: &[u8], str_interner: &mut StringInterner) -> Result<Classfile> {
+pub fn read_class_file(
+    mut input: &[u8],
+    types: &mut Interner<Typ>,
+    strings: &mut Interner<String>,
+) -> Result<Class> {
     let input = &mut input;
 
     read_magic(input)?;
     let minor_version = read_u16(input)?;
     let major_version = read_u16(input)?;
 
-    let const_pool = read_const_pool(input, str_interner)?;
+    let const_pool = read_const_pool(input, types, strings)?;
 
     let access_flags = read_u16(input)?;
 
     let this_class = const_pool.get_class(read_u16(input)?)?;
     let super_class = const_pool.get_class(read_u16(input)?)?;
 
-    let interfaces = read_interfaces(input)?;
-    let fields = read_fields(input, this_class, &const_pool).context("Reading fields")?;
-    let methods =
-        read_methods(input, this_class, &const_pool, str_interner).context("Reading methods")?;
+    let interfaces =
+        read_interfaces(input, &const_pool).context("Reading implemented interfaces")?;
+    let fields = read_fields(input, &const_pool, types, strings).context("Reading fields")?;
+    let methods = read_methods(input, &const_pool, types, strings).context("Reading methods")?;
 
-    Ok(Classfile {
+    Ok(Class {
         version: (major_version, minor_version),
         const_pool,
         access_flags,
