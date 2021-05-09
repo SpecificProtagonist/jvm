@@ -137,6 +137,9 @@ fn read_attribute<'input, 'cp>(
 ) -> Result<(Id<String>, &'input [u8])> {
     let name = const_pool.get_utf8(read_u16(input)?)?;
     let attr_length = read_u32(input)?;
+    if attr_length as usize > input.len() {
+        bail!("EOF")
+    }
     let attr_bytes = &input[0..attr_length as usize];
     *input = &input[attr_length as usize..];
     Ok((name, attr_bytes))
@@ -150,7 +153,8 @@ fn parse_field_descriptor(
 ) -> Result<(Id<Typ>, usize)> {
     let str = &strings.get(descriptor)[start..];
     if let Some(typ) = match str.chars().next() {
-        Some('B') => Some(Typ::Bool),
+        Some('Z') => Some(Typ::Bool),
+        Some('B') => Some(Typ::Byte),
         Some('C') => Some(Typ::Char),
         Some('D') => Some(Typ::Double),
         Some('F') => Some(Typ::Float),
@@ -236,7 +240,7 @@ fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
         bytes.push(read_u8(input)?);
     }
 
-    let exception_table_length = read_u32(input)?;
+    let exception_table_length = read_u16(input)?;
     for _ in 0..exception_table_length {
         // TODO: unsupport exceptions
         read_u64(input)?;
@@ -245,7 +249,11 @@ fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
     let attributes_count = read_u16(input)?;
     for _ in 0..attributes_count {
         // Ignore attributes for now
-        let _ = read_attribute(input, constant_pool)?;
+        let _ = read_attribute(input, constant_pool).context("Reading attributes")?;
+    }
+
+    if input.len() > 0 {
+        bail!("End of code attribute not reached")
     }
 
     Ok(Code {
