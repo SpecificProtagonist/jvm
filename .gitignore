@@ -1,2 +1,3 @@
 /target
 path
+test_classes/*.class
