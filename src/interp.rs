@@ -1,6 +1,6 @@
-use std::{ops::Rem, rc::Rc, usize};
+use std::{any::Any, ops::Rem, rc::Rc, usize};
 
-use crate::{instructions, Class, Code, ConstPoolItem, Field, Id, Method, MethodRef, JVM};
+use crate::{Class, Code, ConstPoolItem, Field, Id, Method, MethodRef, Typ, JVM};
 use anyhow::{anyhow, bail, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -241,7 +241,6 @@ pub fn run(jvm: &mut JVM, method: MethodRef, args: &[LocalValue]) -> Result<Retu
     // Todo: bytecode verification, esp. about pc
     loop {
         use instructions::*;
-        println!("pc: {}", frame.pc);
         match frame.read_code_u8()? {
             NOP => {}
             ICONST_M1 => frame.push(LocalValue::Int(-1))?,
@@ -740,6 +739,65 @@ pub fn run(jvm: &mut JVM, method: MethodRef, args: &[LocalValue]) -> Result<Retu
             FRETURN => return Ok(ReturnValue::Float(frame.pop_float()?)),
             DRETURN => return Ok(ReturnValue::Double(frame.pop_double()?)),
             RETURN => return Ok(ReturnValue::Void),
+            GETSTATIC => {
+                let index = frame.read_code_u16()?;
+                let field = *jvm.classes.get(class_id).const_pool.get_field(index)?;
+                let (class, field) = jvm.resolve_field(field)?;
+                let class = jvm.classes.get(class);
+                let field = class.fields.get(field);
+                unsafe {
+                    match *jvm.types.get(field.descriptor) {
+                        Typ::Bool | Typ::Byte => frame.push(LocalValue::Int(
+                            class.static_storage.read_u8(field.byte_offset) as i8 as i32,
+                        ))?,
+                        Typ::Short | Typ::Char => frame.push(LocalValue::Int(
+                            class.static_storage.read_u16(field.byte_offset) as i16 as i32,
+                        ))?,
+                        Typ::Int => frame.push(LocalValue::Int(
+                            class.static_storage.read_u32(field.byte_offset) as i32,
+                        ))?,
+                        Typ::Float => frame.push(LocalValue::Float(f32::from_bits(
+                            class.static_storage.read_u32(field.byte_offset),
+                        )))?,
+                        Typ::Long => frame
+                            .push_long(class.static_storage.read_u64(field.byte_offset) as i64)?,
+                        Typ::Double => frame.push_double(f64::from_bits(
+                            class.static_storage.read_u64(field.byte_offset),
+                        ))?,
+                        Typ::Class(_) | Typ::Array(_) => todo!(),
+                    }
+                }
+            }
+            PUTSTATIC => {
+                let index = frame.read_code_u16()?;
+                let field = *jvm.classes.get(class_id).const_pool.get_field(index)?;
+                let (class, field) = jvm.resolve_field(field)?;
+                let class = jvm.classes.get(class);
+                let field = class.fields.get(field);
+                unsafe {
+                    match *jvm.types.get(field.descriptor) {
+                        Typ::Bool | Typ::Byte => class
+                            .static_storage
+                            .write_u8(field.byte_offset, frame.pop_int()? as i8 as u8),
+                        Typ::Short | Typ::Char => class
+                            .static_storage
+                            .write_u16(field.byte_offset, frame.pop_int()? as i16 as u16),
+                        Typ::Int => class
+                            .static_storage
+                            .write_u32(field.byte_offset, frame.pop_int()? as u32),
+                        Typ::Float => class
+                            .static_storage
+                            .write_u32(field.byte_offset, frame.pop_float()?.to_bits()),
+                        Typ::Long => class
+                            .static_storage
+                            .write_u64(field.byte_offset, frame.pop_long()? as u64),
+                        Typ::Double => class
+                            .static_storage
+                            .write_u64(field.byte_offset, frame.pop_double()?.to_bits()),
+                        Typ::Class(_) | Typ::Array(_) => todo!(),
+                    }
+                }
+            }
             INVOKESTATIC => {
                 let index = frame.read_code_u16()?;
                 let method = jvm.classes.get(class_id).const_pool.get_method(index)?;
@@ -774,4 +832,159 @@ pub fn run(jvm: &mut JVM, method: MethodRef, args: &[LocalValue]) -> Result<Retu
             other => todo!("Bytecode: {}", other),
         }
     }
+}
+
+pub mod instructions {
+    pub const NOP: u8 = 0;
+    pub const ICONST_M1: u8 = 2;
+    pub const ICONST_0: u8 = 3;
+    pub const ICONST_1: u8 = 4;
+    pub const ICONST_2: u8 = 5;
+    pub const ICONST_3: u8 = 6;
+    pub const ICONST_4: u8 = 7;
+    pub const ICONST_5: u8 = 8;
+    pub const LCONST_0: u8 = 9;
+    pub const LCONST_1: u8 = 10;
+    pub const FCONST_0: u8 = 11;
+    pub const FCONST_1: u8 = 12;
+    pub const FCONST_2: u8 = 13;
+    pub const DCONST_0: u8 = 14;
+    pub const DCONST_1: u8 = 15;
+    pub const BIPUSH: u8 = 16;
+    pub const SIPUSH: u8 = 17;
+    pub const ILOAD: u8 = 21;
+    pub const LLOAD: u8 = 22;
+    pub const FLOAD: u8 = 23;
+    pub const DLOAD: u8 = 24;
+    pub const ILOAD_0: u8 = 26;
+    pub const ILOAD_1: u8 = 27;
+    pub const ILOAD_2: u8 = 28;
+    pub const ILOAD_3: u8 = 29;
+    pub const LLOAD_0: u8 = 30;
+    pub const LLOAD_1: u8 = 31;
+    pub const LLOAD_2: u8 = 32;
+    pub const LLOAD_3: u8 = 33;
+    pub const FLOAD_0: u8 = 34;
+    pub const FLOAD_1: u8 = 35;
+    pub const FLOAD_2: u8 = 36;
+    pub const FLOAD_3: u8 = 37;
+    pub const DLOAD_0: u8 = 38;
+    pub const DLOAD_1: u8 = 39;
+    pub const DLOAD_2: u8 = 40;
+    pub const DLOAD_3: u8 = 41;
+    pub const ISTORE: u8 = 54;
+    pub const LSTORE: u8 = 55;
+    pub const FSTORE: u8 = 56;
+    pub const DSTORE: u8 = 57;
+    pub const ISTORE_0: u8 = 59;
+    pub const ISTORE_1: u8 = 60;
+    pub const ISTORE_2: u8 = 61;
+    pub const ISTORE_3: u8 = 62;
+    pub const LSTORE_0: u8 = 63;
+    pub const LSTORE_1: u8 = 64;
+    pub const LSTORE_2: u8 = 65;
+    pub const LSTORE_3: u8 = 66;
+    pub const FSTORE_0: u8 = 67;
+    pub const FSTORE_1: u8 = 68;
+    pub const FSTORE_2: u8 = 69;
+    pub const FSTORE_3: u8 = 70;
+    pub const DSTORE_0: u8 = 71;
+    pub const DSTORE_1: u8 = 72;
+    pub const DSTORE_2: u8 = 73;
+    pub const DSTORE_3: u8 = 74;
+    pub const POP: u8 = 87;
+    pub const POP2: u8 = 88;
+    pub const DUP: u8 = 89;
+    pub const DUP_X1: u8 = 90;
+    pub const DUP_X2: u8 = 91;
+    pub const DUP2: u8 = 92;
+    pub const DUP2_X1: u8 = 93;
+    pub const DUP2_X2: u8 = 94;
+    pub const SWAP: u8 = 95;
+    pub const IADD: u8 = 96;
+    pub const LADD: u8 = 97;
+    pub const FADD: u8 = 98;
+    pub const DADD: u8 = 99;
+    pub const ISUB: u8 = 100;
+    pub const LSUB: u8 = 101;
+    pub const FSUB: u8 = 102;
+    pub const DSUB: u8 = 103;
+    pub const IMUL: u8 = 104;
+    pub const LMUL: u8 = 105;
+    pub const FMUL: u8 = 106;
+    pub const DMUL: u8 = 107;
+    pub const IDIV: u8 = 108;
+    pub const LDIV: u8 = 109;
+    pub const FDIV: u8 = 110;
+    pub const DDIV: u8 = 111;
+    pub const IREM: u8 = 112;
+    pub const LREM: u8 = 113;
+    pub const FREM: u8 = 114;
+    pub const DREM: u8 = 115;
+    pub const INEG: u8 = 116;
+    pub const LNEG: u8 = 117;
+    pub const FNEG: u8 = 118;
+    pub const DNEG: u8 = 119;
+    pub const ISHL: u8 = 120;
+    pub const LSHL: u8 = 121;
+    pub const ISHR: u8 = 122;
+    pub const LSHR: u8 = 123;
+    pub const IUSHR: u8 = 124;
+    pub const LUSHR: u8 = 125;
+    pub const IAND: u8 = 126;
+    pub const LAND: u8 = 127;
+    pub const IOR: u8 = 128;
+    pub const LOR: u8 = 129;
+    pub const IXOR: u8 = 130;
+    pub const LXOR: u8 = 131;
+    pub const IINC: u8 = 132;
+    pub const I2L: u8 = 133;
+    pub const I2F: u8 = 134;
+    pub const I2D: u8 = 135;
+    pub const L2I: u8 = 136;
+    pub const L2F: u8 = 137;
+    pub const L2D: u8 = 138;
+    pub const F2I: u8 = 139;
+    pub const F2L: u8 = 140;
+    pub const F2D: u8 = 141;
+    pub const D2I: u8 = 142;
+    pub const D2L: u8 = 143;
+    pub const D2F: u8 = 144;
+    pub const I2B: u8 = 145;
+    pub const I2C: u8 = 146;
+    pub const I2S: u8 = 147;
+    pub const LCMP: u8 = 148;
+    pub const FCMPL: u8 = 149;
+    pub const FCMPG: u8 = 150;
+    pub const DCMPL: u8 = 151;
+    pub const DCMPG: u8 = 152;
+    pub const IFEQ: u8 = 153;
+    pub const IFNE: u8 = 154;
+    pub const IFLT: u8 = 155;
+    pub const IFGE: u8 = 156;
+    pub const IFGT: u8 = 157;
+    pub const IFLE: u8 = 158;
+    pub const IF_ICMPEQ: u8 = 159;
+    pub const IF_ICMPNE: u8 = 160;
+    pub const IF_ICMPLT: u8 = 161;
+    pub const IF_ICMPGE: u8 = 162;
+    pub const IF_ICMPGT: u8 = 163;
+    pub const IF_ICMPLE: u8 = 164;
+    pub const GOTO: u8 = 167;
+    pub const JSR: u8 = 168;
+    pub const RET: u8 = 169;
+    pub const TABLESWITCH: u8 = 170;
+    pub const LOOKUPSWITCH: u8 = 171;
+    pub const IRETURN: u8 = 172;
+    pub const LRETURN: u8 = 173;
+    pub const FRETURN: u8 = 174;
+    pub const DRETURN: u8 = 175;
+    pub const RETURN: u8 = 177;
+    pub const GETSTATIC: u8 = 178;
+    pub const PUTSTATIC: u8 = 179;
+    pub const GETFIELD: u8 = 180;
+    pub const PUTFIELD: u8 = 181;
+    pub const INVOKESTATIC: u8 = 184;
+    pub const GOTO_W: u8 = 200;
+    pub const JSR_W: u8 = 201;
 }

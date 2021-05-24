@@ -1,8 +1,8 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{alloc::Layout, collections::HashMap, rc::Rc, sync::RwLock};
 
 use crate::{
-    Arena, Class, Code, ConstPool, ConstPoolItem, Field, FieldRef, Id, Interner, Method,
-    MethodDescriptor, MethodRef, Typ,
+    AccessFlags, Arena, Class, Code, ConstPool, ConstPoolItem, Field, FieldRef, FieldStorage, Id,
+    Interner, Method, MethodDescriptor, MethodRef, Typ,
 };
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -191,7 +191,7 @@ fn read_field(
     types: &mut Interner<Typ>,
     strings: &mut Interner<String>,
 ) -> Result<Field> {
-    let access_flags = read_u16(input)?;
+    let access_flags = AccessFlags(read_u16(input)?);
 
     let name = constant_pool.get_utf8(read_u16(input)?)?;
 
@@ -211,6 +211,8 @@ fn read_field(
         name,
         access_flags,
         descriptor,
+        // The correct layout is set in read_fields after field disordering
+        byte_offset: 0,
     })
 }
 
@@ -219,14 +221,33 @@ fn read_fields(
     constant_pool: &ConstPool,
     types: &mut Interner<Typ>,
     strings: &mut Interner<String>,
-) -> Result<Arena<Field>> {
+) -> Result<(Arena<Field>, Layout, Layout)> {
+    // Read fields
     let length = read_u16(input)?;
     let mut fields = Arena::default();
     for _ in 0..length {
         let field = read_field(input, constant_pool, types, strings)?;
         fields.insert(field);
     }
-    Ok(fields)
+    // Decide layout
+    fields
+        .0
+        .sort_by_key(|field| types.get(field.descriptor).layout().align());
+    let mut static_layout = Layout::new::<()>();
+    let mut object_layout = Layout::new::<()>();
+    for field in &mut fields.0 {
+        let layout = types.get(field.descriptor).layout();
+        let fields_layout = if field.access_flags.r#static() {
+            &mut static_layout
+        } else {
+            &mut object_layout
+        };
+        let result = fields_layout.extend(layout).unwrap();
+        *fields_layout = result.0;
+        field.byte_offset = result.1 as u32;
+    }
+
+    Ok((fields, static_layout, object_layout))
 }
 
 fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
@@ -298,7 +319,7 @@ fn read_method(
     types: &mut Interner<Typ>,
     strings: &mut Interner<String>,
 ) -> Result<Method> {
-    let access_flags = read_u16(input)?;
+    let access_flags = AccessFlags(read_u16(input)?);
 
     let name = constant_pool.get_utf8(read_u16(input)?)?;
 
@@ -354,15 +375,25 @@ pub fn read_class_file(
 
     let const_pool = read_const_pool(input, types, strings)?;
 
-    let access_flags = read_u16(input)?;
+    let access_flags = AccessFlags(read_u16(input)?);
 
     let this_class = const_pool.get_class(read_u16(input)?)?;
-    let super_class = const_pool.get_class(read_u16(input)?)?;
+    let super_class = {
+        let index = read_u16(input)?;
+        if index > 0 {
+            Some(const_pool.get_class(index)?)
+        } else {
+            None
+        }
+    };
 
     let interfaces =
         read_interfaces(input, &const_pool).context("Reading implemented interfaces")?;
-    let fields = read_fields(input, &const_pool, types, strings).context("Reading fields")?;
+    let (fields, static_layout, object_layout) =
+        read_fields(input, &const_pool, types, strings).context("Reading fields")?;
     let methods = read_methods(input, &const_pool, types, strings).context("Reading methods")?;
+
+    let static_storage = FieldStorage::new(static_layout);
 
     Ok(Class {
         version: (major_version, minor_version),
@@ -373,5 +404,7 @@ pub fn read_class_file(
         interfaces,
         fields,
         methods,
+        static_storage,
+        object_layout,
     })
 }
