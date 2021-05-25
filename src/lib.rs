@@ -1,8 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use bimap::BiMap;
 use std::{
-    alloc::Layout, collections::HashMap, fs::File, hash::Hash, io::Read, marker::PhantomData,
-    path::PathBuf, rc::Rc,
+    alloc::Layout, collections::HashMap, fmt::Binary, fs::File, hash::Hash, io::Read,
+    marker::PhantomData, path::PathBuf, rc::Rc,
 };
 
 mod const_pool;
@@ -24,6 +24,8 @@ pub struct JVM {
     fields: HashMap<FieldRef, (Id<Class>, Id<Field>)>,
     /// Methods are stored in classes, the id is an index there
     methods: HashMap<MethodRef, Rc<Method>>,
+    /// TODO: Garbage collection instead
+    objects: Arena<Object>,
 }
 
 pub struct Class {
@@ -37,6 +39,21 @@ pub struct Class {
     fields: Arena<Field>,
     static_storage: FieldStorage,
     object_layout: Layout,
+}
+
+impl Class {
+    pub fn min_object_layout() -> Layout {
+        Layout::new::<Id<Typ>>()
+    }
+}
+
+pub struct Object(FieldStorage);
+
+impl Object {
+    pub fn class(&self) -> Id<Class> {
+        assert_eq!(std::mem::size_of::<Id<Class>>(), 4);
+        unsafe { std::mem::transmute(self.0.read_u32(0)) }
+    }
 }
 
 pub struct AccessFlags(u16);
@@ -66,6 +83,17 @@ pub struct MethodRef {
     class: Id<String>,
     name: Id<String>,
     typ: MethodDescriptor,
+}
+
+impl MethodRef {
+    pub fn display(&self, jvm: &JVM) -> String {
+        format!(
+            "[{} {} {:?}]",
+            jvm.strings.get(self.class),
+            jvm.strings.get(self.name),
+            &self.typ
+        )
+    }
 }
 
 pub struct Field {
@@ -120,7 +148,7 @@ pub struct Code {
     bytes: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Eq, Hash)]
 pub struct Id<T>(u32, PhantomData<T>);
 
 impl<T> Copy for Id<T> {}
@@ -130,7 +158,20 @@ impl<T> Clone for Id<T> {
     }
 }
 
-// TODO: compine with _by_name
+impl<T> PartialEq for Id<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<T> std::fmt::Debug for Id<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
+
+// Probably should have just used Arc instead
+// TODO: combine with _by_name
 struct Arena<T>(Vec<T>);
 
 impl<T> Arena<T> {
@@ -203,6 +244,7 @@ impl JVM {
             classes_by_name: Default::default(),
             fields: Default::default(),
             methods: Default::default(),
+            objects: Default::default(),
         };
 
         // Temporary while there is no library yet
@@ -302,6 +344,13 @@ impl JVM {
             })
         }
     }
+
+    pub fn create_object(&mut self, class: Id<Class>) -> Id<Object> {
+        let layout = self.classes.get(class).object_layout;
+        let data = FieldStorage::new(layout);
+        unsafe { data.write_u32(0, class.0) }
+        self.objects.insert(Object(data))
+    }
 }
 
 #[cfg(test)]
@@ -316,7 +365,7 @@ fn test() -> Result<()> {
     };
     use interp::{LocalValue, ReturnValue};
     let args = [LocalValue::Int(1)];
-    assert_eq!(interp::run(&mut jvm, method, &args)?, ReturnValue::Int(43));
+    assert_eq!(interp::run(&mut jvm, &method, &args)?, ReturnValue::Int(43));
     Ok(())
 }
 
@@ -326,22 +375,22 @@ fn test2() -> Result<()> {
     let mut jvm = JVM::new("test_classes".into());
     let int = jvm.types.intern(Typ::Int);
     let set_method = MethodRef {
-        class: jvm.strings.intern("GetStatic".into()),
+        class: jvm.strings.intern("FieldAccess".into()),
         name: jvm.strings.intern("set".into()),
         typ: MethodDescriptor(vec![int], None),
     };
     let get_method = MethodRef {
-        class: jvm.strings.intern("GetStatic".into()),
+        class: jvm.strings.intern("FieldAccess".into()),
         name: jvm.strings.intern("get".into()),
         typ: MethodDescriptor(vec![], Some(int)),
     };
     use interp::{LocalValue, ReturnValue};
     assert_eq!(
-        interp::run(&mut jvm, set_method.clone(), &[LocalValue::Int(42)])?,
+        interp::run(&mut jvm, &set_method, &[LocalValue::Int(42)])?,
         ReturnValue::Void
     );
     assert_eq!(
-        interp::run(&mut jvm, get_method.clone(), &[])?,
+        interp::run(&mut jvm, &get_method, &[])?,
         ReturnValue::Int(42)
     );
     Ok(())
