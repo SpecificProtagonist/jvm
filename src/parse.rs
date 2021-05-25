@@ -234,7 +234,7 @@ fn read_fields(
         .0
         .sort_by_key(|field| types.get(field.descriptor).layout().align());
     let mut static_layout = Layout::new::<()>();
-    let mut object_layout = Layout::new::<()>();
+    let mut object_layout = Class::min_object_layout();
     for field in &mut fields.0 {
         let layout = types.get(field.descriptor).layout();
         let fields_layout = if field.access_flags.r#static() {

@@ -1,12 +1,15 @@
-use std::{any::Any, ops::Rem, rc::Rc, usize};
+use std::{rc::Rc, usize};
 
-use crate::{Class, Code, ConstPoolItem, Field, Id, Method, MethodRef, Typ, JVM};
-use anyhow::{anyhow, bail, Result};
+use crate::{
+    field_storage::FieldStorage, Class, Code, ConstPoolItem, Field, Id, Method, MethodRef, Object,
+    Typ, JVM,
+};
+use anyhow::{anyhow, bail, Context, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReturnValue {
     Void,
-    Ref(/*TODO*/),
+    Ref(Id<Object>),
     Int(i32),
     Long(i64),
     Float(f32),
@@ -17,7 +20,7 @@ pub enum ReturnValue {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LocalValue {
     Uninitialized,
-    Ref(/*TODO*/),
+    Ref(Id<Object>),
     ReturnAddress(u16),
     Int(i32),
     /// Both on stack & locals, the low half is stored first
@@ -131,38 +134,41 @@ impl Frame {
     }
 
     fn pop_int(&mut self) -> Result<i32> {
-        if let LocalValue::Int(value) = self.pop()? {
-            Ok(value)
-        } else {
-            bail!("Stack value mismatch: not an int")
+        match self.pop()? {
+            LocalValue::Int(value) => Ok(value),
+            other => bail!("Stack value mismatch: not an int ({:?})", other),
         }
     }
 
     fn pop_float(&mut self) -> Result<f32> {
-        if let LocalValue::Float(value) = self.pop()? {
-            Ok(value)
-        } else {
-            bail!("Stack value mismatch: not an float")
+        match self.pop()? {
+            LocalValue::Float(value) => Ok(value),
+            other => bail!("Stack value mismatch: not an float ({:?})", other),
         }
     }
 
     fn pop_long(&mut self) -> Result<i64> {
-        if let (LocalValue::HighHalfOfLong(high), LocalValue::LowHalfOfLong(low)) =
-            (self.pop()?, self.pop()?)
-        {
-            Ok((((high as u64) << 32) + low as u64) as i64)
-        } else {
-            bail!("Failed to pop long")
+        match (self.pop()?, self.pop()?) {
+            (LocalValue::HighHalfOfLong(high), LocalValue::LowHalfOfLong(low)) => {
+                Ok((((high as u64) << 32) + low as u64) as i64)
+            }
+            other => bail!("Failed to pop long {:?}", other),
         }
     }
 
     fn pop_double(&mut self) -> Result<f64> {
-        if let (LocalValue::HighHalfOfDouble(high), LocalValue::LowHalfOfDouble(low)) =
-            (self.pop()?, self.pop()?)
-        {
-            Ok(f64::from_bits(((high as u64) << 32) + low as u64))
-        } else {
-            bail!("Failed to pop long")
+        match (self.pop()?, self.pop()?) {
+            (LocalValue::HighHalfOfDouble(high), LocalValue::LowHalfOfDouble(low)) => {
+                Ok(f64::from_bits(((high as u64) << 32) + low as u64))
+            }
+            other => bail!("Failed to pop double {:?}", other),
+        }
+    }
+
+    fn pop_ref(&mut self) -> Result<Id<Object>> {
+        match self.pop()? {
+            LocalValue::Ref(value) => Ok(value),
+            other => bail!("Stack value mismatch: not an object ({:?})", other),
         }
     }
 
@@ -171,7 +177,11 @@ impl Frame {
             self.stack.push(value);
             Ok(())
         } else {
-            bail!("Max stack exceeded")
+            bail!(
+                "Max stack exceeded ({}): \n{:?}",
+                self.stack.len(),
+                &self.stack
+            )
         }
     }
 
@@ -212,7 +222,7 @@ impl Frame {
     }
 }
 
-pub fn run(jvm: &mut JVM, method: MethodRef, args: &[LocalValue]) -> Result<ReturnValue> {
+pub fn run(jvm: &mut JVM, method: &MethodRef, args: &[LocalValue]) -> Result<ReturnValue> {
     let class_id = jvm.resolve_class(method.class)?;
     let method = jvm
         .methods
@@ -745,28 +755,7 @@ pub fn run(jvm: &mut JVM, method: MethodRef, args: &[LocalValue]) -> Result<Retu
                 let (class, field) = jvm.resolve_field(field)?;
                 let class = jvm.classes.get(class);
                 let field = class.fields.get(field);
-                unsafe {
-                    match *jvm.types.get(field.descriptor) {
-                        Typ::Bool | Typ::Byte => frame.push(LocalValue::Int(
-                            class.static_storage.read_u8(field.byte_offset) as i8 as i32,
-                        ))?,
-                        Typ::Short | Typ::Char => frame.push(LocalValue::Int(
-                            class.static_storage.read_u16(field.byte_offset) as i16 as i32,
-                        ))?,
-                        Typ::Int => frame.push(LocalValue::Int(
-                            class.static_storage.read_u32(field.byte_offset) as i32,
-                        ))?,
-                        Typ::Float => frame.push(LocalValue::Float(f32::from_bits(
-                            class.static_storage.read_u32(field.byte_offset),
-                        )))?,
-                        Typ::Long => frame
-                            .push_long(class.static_storage.read_u64(field.byte_offset) as i64)?,
-                        Typ::Double => frame.push_double(f64::from_bits(
-                            class.static_storage.read_u64(field.byte_offset),
-                        ))?,
-                        Typ::Class(_) | Typ::Array(_) => todo!(),
-                    }
-                }
+                get_field(&mut frame, &jvm, field, &class.static_storage)?;
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16()?;
@@ -774,29 +763,46 @@ pub fn run(jvm: &mut JVM, method: MethodRef, args: &[LocalValue]) -> Result<Retu
                 let (class, field) = jvm.resolve_field(field)?;
                 let class = jvm.classes.get(class);
                 let field = class.fields.get(field);
-                unsafe {
-                    match *jvm.types.get(field.descriptor) {
-                        Typ::Bool | Typ::Byte => class
-                            .static_storage
-                            .write_u8(field.byte_offset, frame.pop_int()? as i8 as u8),
-                        Typ::Short | Typ::Char => class
-                            .static_storage
-                            .write_u16(field.byte_offset, frame.pop_int()? as i16 as u16),
-                        Typ::Int => class
-                            .static_storage
-                            .write_u32(field.byte_offset, frame.pop_int()? as u32),
-                        Typ::Float => class
-                            .static_storage
-                            .write_u32(field.byte_offset, frame.pop_float()?.to_bits()),
-                        Typ::Long => class
-                            .static_storage
-                            .write_u64(field.byte_offset, frame.pop_long()? as u64),
-                        Typ::Double => class
-                            .static_storage
-                            .write_u64(field.byte_offset, frame.pop_double()?.to_bits()),
-                        Typ::Class(_) | Typ::Array(_) => todo!(),
-                    }
-                }
+                put_field(&mut frame, &jvm, field, &class.static_storage)?;
+            }
+            GETFIELD => {
+                let index = frame.read_code_u16()?;
+                let field = *jvm.classes.get(class_id).const_pool.get_field(index)?;
+                let (class, field) = jvm.resolve_field(field)?;
+                let class = jvm.classes.get(class);
+                let field = class.fields.get(field);
+                let object = jvm.objects.get(frame.pop_ref()?);
+                get_field(&mut frame, &jvm, field, &object.0)?;
+            }
+            PUTFIELD => {
+                let index = frame.read_code_u16()?;
+                let field = *jvm.classes.get(class_id).const_pool.get_field(index)?;
+                let (class, field) = jvm.resolve_field(field)?;
+                let class = jvm.classes.get(class);
+                let field = class.fields.get(field);
+                // Stack has object ref first, then value on top
+                // This is ugly
+                let object_ref =
+                    if matches!(jvm.types.get(field.descriptor), Typ::Long | Typ::Double) {
+                        let high = frame.pop()?;
+                        let low = frame.pop()?;
+                        let obj = frame.pop_ref()?;
+                        frame.push(low)?;
+                        frame.push(high)?;
+                        obj
+                    } else {
+                        let value = frame.pop()?;
+                        let obj = frame.pop_ref()?;
+                        frame.push(value)?;
+                        obj
+                    };
+                let object = jvm.objects.get(object_ref);
+                put_field(&mut frame, &jvm, field, &object.0)?;
+            }
+            INVOKESPECIAL => {
+                // TODO
+                frame.read_code_u16()?;
+                frame.pop()?;
             }
             INVOKESTATIC => {
                 let index = frame.read_code_u16()?;
@@ -809,14 +815,22 @@ pub fn run(jvm: &mut JVM, method: MethodRef, args: &[LocalValue]) -> Result<Retu
                     bail!("Invokestatic: not enough elements on stack")
                 }
                 let args = &frame.stack[frame.stack.len() - arg_count..];
-                match run(jvm, method, args)? {
+                match run(jvm, &method, args)
+                    .with_context(|| format!("Trying to call {:?}", &method))?
+                {
                     ReturnValue::Void => {}
-                    ReturnValue::Ref() => todo!(),
+                    ReturnValue::Ref(object) => frame.push(LocalValue::Ref(object))?,
                     ReturnValue::Int(value) => frame.push(LocalValue::Int(value))?,
                     ReturnValue::Float(value) => frame.push(LocalValue::Float(value))?,
                     ReturnValue::Long(value) => frame.push_long(value)?,
                     ReturnValue::Double(value) => frame.push_double(value)?,
                 }
+            }
+            NEW => {
+                let index = frame.read_code_u16()?;
+                let class = jvm.classes.get(class_id).const_pool.get_class(index)?;
+                let class = jvm.resolve_class(class)?;
+                frame.push(LocalValue::Ref(jvm.create_object(class)))?;
             }
             GOTO_W => {
                 let base = frame.pc - 1;
@@ -832,6 +846,53 @@ pub fn run(jvm: &mut JVM, method: MethodRef, args: &[LocalValue]) -> Result<Retu
             other => todo!("Bytecode: {}", other),
         }
     }
+}
+
+fn get_field(frame: &mut Frame, jvm: &JVM, field: &Field, storage: &FieldStorage) -> Result<()> {
+    unsafe {
+        match *jvm.types.get(field.descriptor) {
+            Typ::Bool | Typ::Byte => frame.push(LocalValue::Int(
+                storage.read_u8(field.byte_offset) as i8 as i32,
+            ))?,
+            Typ::Short | Typ::Char => frame.push(LocalValue::Int(
+                storage.read_u16(field.byte_offset) as i16 as i32,
+            ))?,
+            Typ::Int => frame.push(LocalValue::Int(storage.read_u32(field.byte_offset) as i32))?,
+            Typ::Float => frame.push(LocalValue::Float(f32::from_bits(
+                storage.read_u32(field.byte_offset),
+            )))?,
+            Typ::Long => frame.push_long(storage.read_u64(field.byte_offset) as i64)?,
+            Typ::Double => {
+                frame.push_double(f64::from_bits(storage.read_u64(field.byte_offset)))?
+            }
+            Typ::Class(_) | Typ::Array(_) => frame.push(LocalValue::Ref(Id(
+                storage.read_u32(field.byte_offset),
+                Default::default(),
+            )))?,
+        }
+    }
+    Ok(())
+}
+
+fn put_field(frame: &mut Frame, jvm: &JVM, field: &Field, storage: &FieldStorage) -> Result<()> {
+    unsafe {
+        match *jvm.types.get(field.descriptor) {
+            Typ::Bool | Typ::Byte => {
+                storage.write_u8(field.byte_offset, frame.pop_int()? as i8 as u8)
+            }
+            Typ::Short | Typ::Char => {
+                storage.write_u16(field.byte_offset, frame.pop_int()? as i16 as u16)
+            }
+            Typ::Int => storage.write_u32(field.byte_offset, frame.pop_int()? as u32),
+            Typ::Float => storage.write_u32(field.byte_offset, frame.pop_float()?.to_bits()),
+            Typ::Long => storage.write_u64(field.byte_offset, frame.pop_long()? as u64),
+            Typ::Double => storage.write_u64(field.byte_offset, frame.pop_double()?.to_bits()),
+            Typ::Class(_) | Typ::Array(_) => {
+                storage.write_u32(field.byte_offset, frame.pop_ref()?.0 as u32)
+            }
+        }
+    }
+    Ok(())
 }
 
 pub mod instructions {
@@ -984,7 +1045,9 @@ pub mod instructions {
     pub const PUTSTATIC: u8 = 179;
     pub const GETFIELD: u8 = 180;
     pub const PUTFIELD: u8 = 181;
+    pub const INVOKESPECIAL: u8 = 183;
     pub const INVOKESTATIC: u8 = 184;
+    pub const NEW: u8 = 187;
     pub const GOTO_W: u8 = 200;
     pub const JSR_W: u8 = 201;
 }
