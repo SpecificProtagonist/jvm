@@ -1,9 +1,6 @@
 use std::{rc::Rc, usize};
 
-use crate::{
-    field_storage::FieldStorage, Class, Code, ConstPoolItem, Field, Id, Method, MethodRef, Object,
-    Typ, JVM,
-};
+use crate::{field_storage::FieldStorage, Field, Id, Method, MethodRef, Object, Typ, JVM};
 use anyhow::{anyhow, bail, Context, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -684,6 +681,7 @@ pub fn run(jvm: &mut JVM, method: &MethodRef, args: &[LocalValue]) -> Result<Ret
                 frame.jump_relative(base, target_offset as i32)
             }
             JSR => {
+                // This instruction is soft-depretiated since v50?
                 let base = frame.pc - 1;
                 let target = frame.read_code_u16()? as i16 as i32;
                 frame.push(LocalValue::ReturnAddress(frame.pc))?;
@@ -838,6 +836,7 @@ pub fn run(jvm: &mut JVM, method: &MethodRef, args: &[LocalValue]) -> Result<Ret
                 frame.jump_relative(base, target_offset)
             }
             JSR_W => {
+                // This instruction is soft-depretiated since v50?
                 let base = frame.pc - 1;
                 let target = frame.read_code_u32()? as i32;
                 frame.push(LocalValue::ReturnAddress(frame.pc))?;
@@ -865,7 +864,7 @@ fn get_field(frame: &mut Frame, jvm: &JVM, field: &Field, storage: &FieldStorage
             Typ::Double => {
                 frame.push_double(f64::from_bits(storage.read_u64(field.byte_offset)))?
             }
-            Typ::Class(_) | Typ::Array(_) => frame.push(LocalValue::Ref(Id(
+            Typ::Class(..) | Typ::Array { .. } => frame.push(LocalValue::Ref(Id(
                 storage.read_u32(field.byte_offset),
                 Default::default(),
             )))?,
@@ -887,7 +886,7 @@ fn put_field(frame: &mut Frame, jvm: &JVM, field: &Field, storage: &FieldStorage
             Typ::Float => storage.write_u32(field.byte_offset, frame.pop_float()?.to_bits()),
             Typ::Long => storage.write_u64(field.byte_offset, frame.pop_long()? as u64),
             Typ::Double => storage.write_u64(field.byte_offset, frame.pop_double()?.to_bits()),
-            Typ::Class(_) | Typ::Array(_) => {
+            Typ::Class(..) | Typ::Array { .. } => {
                 storage.write_u32(field.byte_offset, frame.pop_ref()?.0 as u32)
             }
         }

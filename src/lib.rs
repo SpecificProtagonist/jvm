@@ -1,8 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use bimap::BiMap;
 use std::{
-    alloc::Layout, collections::HashMap, fmt::Binary, fs::File, hash::Hash, io::Read,
-    marker::PhantomData, path::PathBuf, rc::Rc,
+    alloc::Layout, collections::HashMap, fs::File, hash::Hash, io::Read, marker::PhantomData,
+    path::PathBuf, rc::Rc,
 };
 
 mod const_pool;
@@ -31,6 +31,7 @@ pub struct JVM {
 pub struct Class {
     name: Id<String>,
     super_class: Option<Id<String>>,
+    #[allow(unused)]
     version: (u16, u16),
     const_pool: ConstPool,
     access_flags: AccessFlags,
@@ -50,7 +51,7 @@ impl Class {
 pub struct Object(FieldStorage);
 
 impl Object {
-    pub fn class(&self) -> Id<Class> {
+    pub fn typ(&self) -> Id<Typ> {
         assert_eq!(std::mem::size_of::<Id<Class>>(), 4);
         unsafe { std::mem::transmute(self.0.read_u32(0)) }
     }
@@ -126,7 +127,7 @@ pub enum Typ {
     Float,
     Double,
     Class(Id<String>),
-    Array(Id<Typ>),
+    Array { base: Id<Typ>, dimensions: u8 },
 }
 
 impl Typ {
@@ -137,7 +138,7 @@ impl Typ {
             Short | Char => Layout::new::<u16>(),
             Int | Float => Layout::new::<u32>(),
             Long | Double => Layout::new::<u64>(),
-            Class(_) | Array(_) => Layout::new::<usize>(),
+            Class(..) | Array { .. } => Layout::new::<usize>(),
         }
     }
 }
@@ -289,6 +290,10 @@ impl JVM {
             bail!("Class name did not math file name")
         }
 
+        if class.version.0 > 45 {
+            bail!("Class version > 45.3 not supported yet")
+        }
+
         let class_ref = self.classes.insert(class);
         self.classes_by_name.insert(name, class_ref);
 
@@ -316,12 +321,14 @@ impl JVM {
             );
         }
 
-        // Superclasses
+        // Superclasses loading & verification
         if let Some(super_class) = class.super_class {
             let super_class = self.resolve_class(super_class)?;
             if self.classes.get(super_class).access_flags.r#final() {
                 bail!("Tried to subclass final class")
             }
+        } else {
+            bail!("Class has no superclass")
         }
 
         Ok(class_ref)
