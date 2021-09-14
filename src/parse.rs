@@ -1,10 +1,10 @@
-use std::{alloc::Layout, collections::HashMap, rc::Rc, sync::RwLock};
+use std::{alloc::Layout, rc::Rc};
 
 use crate::{
     AccessFlags, Arena, Class, Code, ConstPool, ConstPoolItem, Field, FieldRef, FieldStorage, Id,
     Interner, Method, MethodDescriptor, MethodRef, Typ,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 
 fn read_u8(input: &mut &[u8]) -> Result<u8> {
     if let Some(u8) = input.get(0) {
@@ -178,8 +178,23 @@ fn parse_field_descriptor(
 
     if str.starts_with('[') {
         // TODO: array descriptor only valid for up to 255 dimensions
-        let (base_type, start) = parse_field_descriptor(types, strings, descriptor, start + 1)?;
-        return Ok((types.intern(Typ::Array(base_type)), start));
+        let (base_type_id, start) = parse_field_descriptor(types, strings, descriptor, start + 1)?;
+        let typ = match *types.get(base_type_id) {
+            Typ::Array { base, dimensions } => {
+                if dimensions == u8::MAX {
+                    bail!("Array has too many dimensions")
+                }
+                Typ::Array {
+                    base,
+                    dimensions: dimensions + 1,
+                }
+            }
+            _ => Typ::Array {
+                base: base_type_id,
+                dimensions: 1,
+            },
+        };
+        return Ok((types.intern(typ), start));
     }
 
     bail!("Invalid type descriptor: {}", str)
@@ -354,9 +369,16 @@ fn read_methods(
     strings: &mut Interner<String>,
 ) -> Result<Vec<Rc<Method>>> {
     let length = read_u16(input)?;
-    let mut methods = Vec::with_capacity(length as usize);
+    let mut methods: Vec<Rc<Method>> = Vec::with_capacity(length as usize);
     for _ in 0..length {
         let method = read_method(input, constant_pool, types, strings)?;
+        for existing_method in &methods {
+            if (existing_method.name == method.name)
+                && (existing_method.descriptor == method.descriptor)
+            {
+                bail!("Duplicate method in same class")
+            }
+        }
         methods.push(Rc::new(method));
     }
     Ok(methods)
