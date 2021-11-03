@@ -1,5 +1,5 @@
 use crate::{FieldRef, Id, MethodRef};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Result};
 
 // Differentiating runtime- and on-disk const pool shouldn't be neccessary
 // although it would allow a speedup
@@ -16,10 +16,11 @@ pub enum ConstPoolItem {
     FieldRef(FieldRef),
     MethodRef(MethodRef),
     InterfaceMethodRef { class: u16, nat: u16 },
+    // Accoring to the spec, long and doubles taking two entries was a design mistake
     PlaceholderAfterLongOrDoubleEntryOrForEntryZero,
     // These don't end up in the run-time constant pool,
     // but are needed for parsing because there's no
-    // guarantee that the referenced items come first
+    // guarantee that the referenced items come before the references
     RawNameAndType { name: u16, descriptor: u16 },
     RawFieldRef { class: u16, nat: u16 },
     RawMethodRef { class: u16, nat: u16 },

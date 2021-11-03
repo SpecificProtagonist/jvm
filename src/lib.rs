@@ -1,76 +1,46 @@
 use anyhow::{anyhow, bail, Context, Result};
-use bimap::BiMap;
+use object::{Object, ObjectData};
 use std::{
-    alloc::Layout, collections::HashMap, fs::File, hash::Hash, io::Read, marker::PhantomData,
-    path::PathBuf, rc::Rc,
+    alloc::Layout, collections::HashMap, fmt::Debug, fs::File, hash::Hash, io::Read, path::PathBuf,
 };
 
+mod class;
 mod const_pool;
+mod datastructures;
 mod field_storage;
 pub mod interp;
+mod object;
 mod parse;
 
+use class::*;
 pub use const_pool::*;
+use datastructures::*;
 use field_storage::FieldStorage;
 
+/// This leakes memory (perfectly fine for a binary, usually not for a lib)
+// TODO: use typed-arena (together with Pin, ...) instead of Box::leak
+// TODO: Garbage collection for objects
 pub struct JVM {
-    class_path: PathBuf,
+    class_path: Vec<PathBuf>,
+    // TODO: intern string objects instead
     strings: Interner<String>,
     types: Interner<Typ>,
-    classes: Arena<Class>,
-    classes_by_name: HashMap<Id<String>, Id<Class>>,
-    /// Fields are stored in classes, the id is an index there
+    classes: Vec<Class>,
+    classes_by_name: HashMap<Id<String>, Class>,
     /// As far as I can tell, JVM supports field overloading
-    fields: HashMap<FieldRef, (Id<Class>, Id<Field>)>,
-    /// Methods are stored in classes, the id is an index there
-    methods: HashMap<MethodRef, Rc<Method>>,
-    /// TODO: Garbage collection instead
-    objects: Arena<Object>,
+    fields: HashMap<FieldRef, Field>,
+    methods: HashMap<MethodRef, Method>,
 }
 
-pub struct Class {
-    name: Id<String>,
-    super_class: Option<Id<String>>,
-    #[allow(unused)]
-    version: (u16, u16),
-    const_pool: ConstPool,
-    access_flags: AccessFlags,
-    interfaces: Vec<Id<String>>,
-    methods: Vec<Rc<Method>>,
-    fields: Arena<Field>,
-    static_storage: FieldStorage,
-    object_layout: Layout,
-}
-
-impl Class {
-    pub fn min_object_layout() -> Layout {
-        Layout::new::<Id<Typ>>()
-    }
-}
-
-pub struct Object(FieldStorage);
-
-impl Object {
-    pub fn typ(&self) -> Id<Typ> {
-        assert_eq!(std::mem::size_of::<Id<Class>>(), 4);
-        unsafe { std::mem::transmute(self.0.read_u32(0)) }
-    }
-}
-
-pub struct AccessFlags(u16);
-
-impl AccessFlags {
-    fn r#static(&self) -> bool {
-        (self.0 & 0x0008) != 0
-    }
-
-    fn r#final(&self) -> bool {
-        (self.0 & 0x0010) != 0
+bitflags::bitflags! {
+    pub struct AccessFlags: u16 {
+        const STATIC = 0x0008;
+        const FINAL = 0x0010;
     }
 }
 
 // Remove Id<Field> & Id<Method>?
-/// This field doesn't necessariy and will need to be resolved
+/// This field doesn't necessariy exist and will need to be resolved
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FieldRef {
     class: Id<String>,
@@ -78,7 +48,7 @@ pub struct FieldRef {
     typ: Id<Typ>,
 }
 
-/// This Method doesn't necessarily and will need to be resolved
+/// This Method doesn't necessarily exist and will need to be resolved
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct MethodRef {
     class: Id<String>,
@@ -97,23 +67,18 @@ impl MethodRef {
     }
 }
 
-pub struct Field {
-    name: Id<String>,
-    access_flags: AccessFlags,
-    descriptor: Id<Typ>,
-    // Java has no multiple inheritance for fields, therefore each field can be at a set position
-    byte_offset: u32,
-}
-
-pub struct Method {
-    name: Id<String>,
-    access_flags: AccessFlags,
-    descriptor: MethodDescriptor,
-    code: Option<Code>,
-}
-
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct MethodDescriptor(Vec<Id<Typ>>, Option<Id<Typ>>);
+
+// Type ids of primitives, interned upon JVM construction
+const BOOL: Id<Typ> = Id::with_index(0);
+const BYTE: Id<Typ> = Id::with_index(1);
+const SHORT: Id<Typ> = Id::with_index(2);
+const CHAR: Id<Typ> = Id::with_index(3);
+const INT: Id<Typ> = Id::with_index(4);
+const LONG: Id<Typ> = Id::with_index(5);
+const FLOAT: Id<Typ> = Id::with_index(6);
+const DOUBLE: Id<Typ> = Id::with_index(7);
 
 // TODO: impl Copy?
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -149,94 +114,8 @@ pub struct Code {
     bytes: Vec<u8>,
 }
 
-#[derive(Eq, Hash)]
-pub struct Id<T>(u32, PhantomData<T>);
-
-impl<T> Copy for Id<T> {}
-impl<T> Clone for Id<T> {
-    fn clone(&self) -> Self {
-        Self(self.0, self.1)
-    }
-}
-
-impl<T> PartialEq for Id<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl<T> std::fmt::Debug for Id<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "#{}", self.0)
-    }
-}
-
-// Probably should have just used Arc instead
-// TODO: combine with _by_name
-struct Arena<T>(Vec<T>);
-
-impl<T> Arena<T> {
-    pub fn get(&self, index: Id<T>) -> &T {
-        &self.0[index.0 as usize]
-    }
-    pub fn get_mut(&mut self, index: Id<T>) -> &mut T {
-        &mut self.0[index.0 as usize]
-    }
-    pub fn insert(&mut self, item: T) -> Id<T> {
-        let index = Id(self.0.len() as u32, PhantomData::default());
-        self.0.push(item);
-        index
-    }
-
-    pub fn iter_ids(&self) -> impl Iterator<Item = Id<T>> {
-        (0..self.0.len()).map(|i| Id(i as u32, PhantomData::default()))
-    }
-}
-
-impl<T> Default for Arena<T> {
-    fn default() -> Self {
-        Self(Default::default())
-    }
-}
-
-pub struct Interner<T: Eq + Hash>(BiMap<T, Id<T>>);
-
-impl<T: Eq + Hash> Interner<T> {
-    pub fn intern(&mut self, item: T) -> Id<T> {
-        if let Some(interned) = self.0.get_by_left(&item) {
-            *interned
-        } else {
-            let interned = Id(self.0.len() as u32, PhantomData::default());
-            self.0.insert(item, interned);
-            interned
-        }
-    }
-
-    pub fn get(&self, interned: Id<T>) -> &T {
-        self.0
-            .get_by_right(&interned)
-            .expect("Tried to retrieve item from different from interner")
-    }
-}
-
-impl Interner<String> {
-    pub fn intern_str(&mut self, string: &str) -> Id<String> {
-        if let Some(id) = self.0.get_by_left(string) {
-            *id
-        } else {
-            self.intern(string.into())
-        }
-    }
-}
-
-impl<T: Eq + Hash> Default for Interner<T> {
-    fn default() -> Self {
-        Self(Default::default())
-    }
-}
-
 impl JVM {
-    pub fn new(class_path: PathBuf) -> Self {
+    pub fn new(class_path: Vec<PathBuf>) -> Self {
         let mut jvm = Self {
             class_path,
             strings: Default::default(),
@@ -245,44 +124,45 @@ impl JVM {
             classes_by_name: Default::default(),
             fields: Default::default(),
             methods: Default::default(),
-            objects: Default::default(),
         };
 
-        // Temporary while there is no library yet
-        {
-            let name = jvm.strings.intern_str("java/lang/Object");
-            let class = Class {
-                name,
-                super_class: None,
-                version: (45, 3),
-                access_flags: AccessFlags(0),
-                const_pool: ConstPool(Default::default()),
-                methods: Default::default(),
-                fields: Default::default(),
-                interfaces: Default::default(),
-                static_storage: FieldStorage::new(Layout::new::<()>()),
-                object_layout: Layout::new::<()>(),
-            };
-            let class_ref = jvm.classes.insert(class);
-            jvm.classes_by_name.insert(name, class_ref);
-        }
+        // Intern primitives so we have const ids for convenience
+        assert_eq!(jvm.types.intern(Typ::Bool), BOOL);
+        assert_eq!(jvm.types.intern(Typ::Byte), BYTE);
+        assert_eq!(jvm.types.intern(Typ::Short), SHORT);
+        assert_eq!(jvm.types.intern(Typ::Char), CHAR);
+        assert_eq!(jvm.types.intern(Typ::Int), INT);
+        assert_eq!(jvm.types.intern(Typ::Long), LONG);
+        assert_eq!(jvm.types.intern(Typ::Float), FLOAT);
+        assert_eq!(jvm.types.intern(Typ::Double), DOUBLE);
 
         jvm
     }
 
-    pub fn resolve_class(&mut self, name: Id<String>) -> Result<Id<Class>> {
+    pub fn resolve_class(&mut self, name: Id<String>) -> Result<Class> {
         if let Some(class_ref) = self.classes_by_name.get(&name) {
             return Ok(*class_ref);
         }
 
-        let mut path = self.class_path.clone();
-        path.push(self.strings.get(name));
-        path.set_extension("class");
+        let mut bytes = None;
+        for path in &self.class_path {
+            // TODO: package folder structure
 
-        let mut bytes = Vec::new();
-        File::open(path)
-            .with_context(|| format!("Trying to load class {}", self.strings.get(name)))?
-            .read_to_end(&mut bytes)?;
+            let mut path = path.clone();
+            path.push(self.strings.get(name).rsplit('/').next().unwrap());
+            path.set_extension("class");
+
+            if path.exists() {
+                let mut file = Vec::new();
+                File::open(path)
+                    .with_context(|| format!("Trying to load class {}", self.strings.get(name)))?
+                    .read_to_end(&mut file)?;
+                bytes = Some(file);
+                break;
+            }
+        }
+        let bytes =
+            bytes.ok_or_else(|| anyhow!("No class def found for {}", self.strings.get(name)))?;
 
         let class = parse::read_class_file(&bytes, &mut self.types, &mut self.strings)?;
 
@@ -290,24 +170,26 @@ impl JVM {
             bail!("Class name did not math file name")
         }
 
-        if class.version.0 > 45 {
-            bail!("Class version > 45.3 not supported yet")
+        if class.version.0 > 52 {
+            bail!(
+                "Class version {}.{} > 45.3 not supported yet",
+                class.version.0,
+                class.version.1
+            )
         }
 
-        let class_ref = self.classes.insert(class);
-        self.classes_by_name.insert(name, class_ref);
+        self.classes.push(class);
+        self.classes_by_name.insert(name, class);
 
         // Register fields & methods
-        let class = self.classes.get(class_ref);
-        for field_ref in class.fields.iter_ids() {
-            let field = class.fields.get(field_ref);
+        for field in &class.fields {
             self.fields.insert(
                 FieldRef {
                     class: name,
                     name: field.name,
                     typ: field.descriptor,
                 },
-                (class_ref, field_ref),
+                Field { class, meta: field },
             );
         }
         for method in &class.methods {
@@ -317,29 +199,35 @@ impl JVM {
                     name: method.name,
                     typ: method.descriptor.clone(),
                 },
-                method.clone(),
+                Method {
+                    class,
+                    meta: method,
+                },
             );
         }
 
         // Superclasses loading & verification
-        if let Some(super_class) = class.super_class {
-            let super_class = self.resolve_class(super_class)?;
-            if self.classes.get(super_class).access_flags.r#final() {
-                bail!("Tried to subclass final class")
+        if let Some(super_class_name) = class.super_class {
+            let super_class = self.resolve_class(super_class_name)?;
+            if super_class.access_flags.contains(AccessFlags::FINAL) {
+                bail!(
+                    "Tried to subclass final class {}",
+                    self.strings.get(super_class_name)
+                )
             }
-        } else {
+        } else if class.name != self.strings.intern_str("java/lang/Object") {
             bail!("Class has no superclass")
         }
 
-        Ok(class_ref)
+        Ok(class)
     }
 
-    pub fn resolve_field(&mut self, field_ref: FieldRef) -> Result<(Id<Class>, Id<Field>)> {
+    pub fn resolve_field(&mut self, field_ref: FieldRef) -> Result<Field> {
         let class = self.resolve_class(field_ref.class)?;
-        if let Some((class, field)) = self.fields.get(&field_ref) {
-            return Ok((*class, *field));
+        if let Some(field) = self.fields.get(&field_ref) {
+            return Ok(*field);
         } else {
-            let super_class = self.classes.get(class).super_class.ok_or_else(|| {
+            let super_class = class.super_class.ok_or_else(|| {
                 anyhow!(
                     "Failed to resolve field {}",
                     self.strings.get(field_ref.name)
@@ -352,53 +240,53 @@ impl JVM {
         }
     }
 
-    pub fn create_object(&mut self, class: Id<Class>) -> Id<Object> {
-        let layout = self.classes.get(class).object_layout;
+    pub fn create_object(&mut self, class: Class) -> Object {
+        let layout = class.object_layout;
         let data = FieldStorage::new(layout);
-        unsafe { data.write_u32(0, class.0) }
-        self.objects.insert(Object(data))
+        unsafe { data.write_usize(0, class as *const ClassMeta as usize) }
+        Box::leak(ObjectData { data }.into())
     }
 }
 
 #[cfg(test)]
-#[test]
-fn test() -> Result<()> {
-    let mut jvm = JVM::new("test_classes".into());
-    let int = jvm.types.intern(Typ::Int);
-    let method = MethodRef {
-        class: jvm.strings.intern("InvokeStatic".into()),
-        name: jvm.strings.intern("add".into()),
-        typ: MethodDescriptor(vec![int], Some(int)),
-    };
+mod test {
+    use super::*;
     use interp::{LocalValue, ReturnValue};
-    let args = [LocalValue::Int(1)];
-    assert_eq!(interp::run(&mut jvm, &method, &args)?, ReturnValue::Int(43));
-    Ok(())
-}
 
-#[cfg(test)]
-#[test]
-fn test2() -> Result<()> {
-    let mut jvm = JVM::new("test_classes".into());
-    let int = jvm.types.intern(Typ::Int);
-    let set_method = MethodRef {
-        class: jvm.strings.intern("FieldAccess".into()),
-        name: jvm.strings.intern("set".into()),
-        typ: MethodDescriptor(vec![int], None),
-    };
-    let get_method = MethodRef {
-        class: jvm.strings.intern("FieldAccess".into()),
-        name: jvm.strings.intern("get".into()),
-        typ: MethodDescriptor(vec![], Some(int)),
-    };
-    use interp::{LocalValue, ReturnValue};
-    assert_eq!(
-        interp::run(&mut jvm, &set_method, &[LocalValue::Int(42)])?,
-        ReturnValue::Void
-    );
-    assert_eq!(
-        interp::run(&mut jvm, &get_method, &[])?,
-        ReturnValue::Int(42)
-    );
-    Ok(())
+    #[test]
+    fn invoke_static() -> Result<()> {
+        let mut jvm = JVM::new(vec!["classes".into(), "test_classes/pass".into()]);
+        let method = MethodRef {
+            class: jvm.strings.intern("InvokeStatic".into()),
+            name: jvm.strings.intern("add".into()),
+            typ: MethodDescriptor(vec![INT], Some(INT)),
+        };
+        let args = [LocalValue::Int(1)];
+        assert_eq!(interp::run(&mut jvm, &method, &args)?, ReturnValue::Int(43));
+        Ok(())
+    }
+
+    #[test]
+    fn field_access() -> Result<()> {
+        let mut jvm = JVM::new(vec!["classes".into(), "test_classes/pass".into()]);
+        let set_method = MethodRef {
+            class: jvm.strings.intern("FieldAccess".into()),
+            name: jvm.strings.intern("set".into()),
+            typ: MethodDescriptor(vec![INT], None),
+        };
+        let get_method = MethodRef {
+            class: jvm.strings.intern("FieldAccess".into()),
+            name: jvm.strings.intern("get".into()),
+            typ: MethodDescriptor(vec![], Some(INT)),
+        };
+        assert_eq!(
+            interp::run(&mut jvm, &set_method, &[LocalValue::Int(42)])?,
+            ReturnValue::Void
+        );
+        assert_eq!(
+            interp::run(&mut jvm, &get_method, &[])?,
+            ReturnValue::Int(42)
+        );
+        Ok(())
+    }
 }
