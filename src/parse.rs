@@ -1,8 +1,10 @@
-use std::{alloc::Layout, rc::Rc};
+use std::alloc::Layout;
 
 use crate::{
-    AccessFlags, Arena, Class, Code, ConstPool, ConstPoolItem, Field, FieldRef, FieldStorage, Id,
-    Interner, Method, MethodDescriptor, MethodRef, Typ,
+    class::{ClassMeta, FieldMeta, MethodMeta},
+    object::min_object_layout,
+    AccessFlags, Class, Code, ConstPool, ConstPoolItem, FieldRef, FieldStorage, Id, Interner,
+    MethodDescriptor, MethodRef, Typ,
 };
 use anyhow::{bail, Context, Result};
 
@@ -205,8 +207,8 @@ fn read_field(
     constant_pool: &ConstPool,
     types: &mut Interner<Typ>,
     strings: &mut Interner<String>,
-) -> Result<Field> {
-    let access_flags = AccessFlags(read_u16(input)?);
+) -> Result<FieldMeta> {
+    let access_flags = AccessFlags::from_bits_truncate(read_u16(input)?);
 
     let name = constant_pool.get_utf8(read_u16(input)?)?;
 
@@ -222,7 +224,7 @@ fn read_field(
         let _ = read_attribute(input, constant_pool);
     }
 
-    Ok(Field {
+    Ok(FieldMeta {
         name,
         access_flags,
         descriptor,
@@ -236,23 +238,25 @@ fn read_fields(
     constant_pool: &ConstPool,
     types: &mut Interner<Typ>,
     strings: &mut Interner<String>,
-) -> Result<(Arena<Field>, Layout, Layout)> {
+) -> Result<(
+    Vec<FieldMeta>,
+    /*static*/ Layout,
+    /*object*/ Layout,
+)> {
     // Read fields
     let length = read_u16(input)?;
-    let mut fields = Arena::default();
+    let mut fields = Vec::new();
     for _ in 0..length {
         let field = read_field(input, constant_pool, types, strings)?;
-        fields.insert(field);
+        fields.push(field);
     }
     // Decide layout
-    fields
-        .0
-        .sort_by_key(|field| types.get(field.descriptor).layout().align());
+    fields.sort_by_key(|field| types.get(field.descriptor).layout().align());
     let mut static_layout = Layout::new::<()>();
-    let mut object_layout = Class::min_object_layout();
-    for field in &mut fields.0 {
+    let mut object_layout = min_object_layout();
+    for field in &mut fields {
         let layout = types.get(field.descriptor).layout();
-        let fields_layout = if field.access_flags.r#static() {
+        let fields_layout = if field.access_flags.contains(AccessFlags::STATIC) {
             &mut static_layout
         } else {
             &mut object_layout
@@ -333,8 +337,8 @@ fn read_method(
     constant_pool: &ConstPool,
     types: &mut Interner<Typ>,
     strings: &mut Interner<String>,
-) -> Result<Method> {
-    let access_flags = AccessFlags(read_u16(input)?);
+) -> Result<MethodMeta> {
+    let access_flags = AccessFlags::from_bits_truncate(read_u16(input)?);
 
     let name = constant_pool.get_utf8(read_u16(input)?)?;
 
@@ -354,7 +358,7 @@ fn read_method(
         }
     }
 
-    Ok(Method {
+    Ok(MethodMeta {
         name,
         access_flags,
         descriptor,
@@ -367,9 +371,9 @@ fn read_methods(
     constant_pool: &ConstPool,
     types: &mut Interner<Typ>,
     strings: &mut Interner<String>,
-) -> Result<Vec<Rc<Method>>> {
+) -> Result<Vec<MethodMeta>> {
     let length = read_u16(input)?;
-    let mut methods: Vec<Rc<Method>> = Vec::with_capacity(length as usize);
+    let mut methods: Vec<MethodMeta> = Vec::with_capacity(length as usize);
     for _ in 0..length {
         let method = read_method(input, constant_pool, types, strings)?;
         for existing_method in &methods {
@@ -379,7 +383,7 @@ fn read_methods(
                 bail!("Duplicate method in same class")
             }
         }
-        methods.push(Rc::new(method));
+        methods.push(method);
     }
     Ok(methods)
 }
@@ -397,7 +401,7 @@ pub fn read_class_file(
 
     let const_pool = read_const_pool(input, types, strings)?;
 
-    let access_flags = AccessFlags(read_u16(input)?);
+    let access_flags = AccessFlags::from_bits_truncate(read_u16(input)?);
 
     let this_class = const_pool.get_class(read_u16(input)?)?;
     let super_class = {
@@ -417,16 +421,19 @@ pub fn read_class_file(
 
     let static_storage = FieldStorage::new(static_layout);
 
-    Ok(Class {
-        version: (major_version, minor_version),
-        const_pool,
-        access_flags,
-        name: this_class,
-        super_class,
-        interfaces,
-        fields,
-        methods,
-        static_storage,
-        object_layout,
-    })
+    Ok(Box::leak(
+        ClassMeta {
+            version: (major_version, minor_version),
+            const_pool,
+            access_flags,
+            name: this_class,
+            super_class,
+            interfaces,
+            fields,
+            methods,
+            static_storage,
+            object_layout,
+        }
+        .into(),
+    ))
 }
