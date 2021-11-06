@@ -1,20 +1,20 @@
-use crate::{FieldRef, Id, MethodRef};
+use crate::{FieldRef, IntStr, MethodRef};
 use anyhow::{bail, Result};
 
 // Differentiating runtime- and on-disk const pool shouldn't be neccessary
 // although it would allow a speedup
-pub struct ConstPool(pub Vec<ConstPoolItem>);
+pub(crate) struct ConstPool<'a>(pub Vec<ConstPoolItem<'a>>);
 
 #[derive(Debug)]
-pub enum ConstPoolItem {
-    Utf8(Id<String>),
+pub(crate) enum ConstPoolItem<'a> {
+    Utf8(IntStr<'a>),
     Integer(i32),
     Float(f32),
     Long(i64),
     Double(f64),
     Class(u16),
-    FieldRef(FieldRef),
-    MethodRef(MethodRef),
+    FieldRef(FieldRef<'a>),
+    MethodRef(MethodRef<'a>),
     InterfaceMethodRef { class: u16, nat: u16 },
     // Accoring to the spec, long and doubles taking two entries was a design mistake
     PlaceholderAfterLongOrDoubleEntryOrForEntryZero,
@@ -27,8 +27,8 @@ pub enum ConstPoolItem {
     RawString(u16),
 }
 
-impl ConstPool {
-    pub fn get_utf8(&self, index: u16) -> Result<Id<String>> {
+impl<'a> ConstPool<'a> {
+    pub fn get_utf8(&self, index: u16) -> Result<IntStr<'a>> {
         let item = self.0.get(index as usize);
         if let Some(ConstPoolItem::Utf8(string)) = item {
             Ok(*string)
@@ -41,7 +41,7 @@ impl ConstPool {
         }
     }
 
-    pub fn get_class(&self, index: u16) -> Result<Id<String>> {
+    pub fn get_class(&self, index: u16) -> Result<IntStr<'a>> {
         let item = self.0.get(index as usize);
         if let Some(ConstPoolItem::Class(index)) = item {
             self.get_utf8(*index)
@@ -80,7 +80,7 @@ impl ConstPool {
         }
     }
 
-    pub fn get_raw_nat(&self, index: u16) -> Result<(Id<String>, Id<String>)> {
+    pub fn get_raw_nat(&self, index: u16) -> Result<(IntStr<'a>, IntStr<'a>)> {
         if let Some(ConstPoolItem::RawNameAndType { name, descriptor }) = self.0.get(index as usize)
         {
             Ok((self.get_utf8(*name)?, self.get_utf8(*descriptor)?))

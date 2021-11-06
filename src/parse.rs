@@ -1,10 +1,11 @@
 use std::alloc::Layout;
 
 use crate::{
-    class::{ClassMeta, FieldMeta, MethodMeta},
+    class::{Class, FieldMeta, MethodMeta},
+    const_pool::{ConstPool, ConstPoolItem},
     object::min_object_layout,
-    AccessFlags, Class, Code, ConstPool, ConstPoolItem, FieldRef, FieldStorage, Id, Interner,
-    MethodDescriptor, MethodRef, Typ,
+    AccessFlags, Code, FieldRef, FieldStorage, IntStr, MethodDescriptor, MethodRef, Typ, TypId,
+    JVM,
 };
 use anyhow::{bail, Context, Result};
 
@@ -43,10 +44,10 @@ fn read_magic(input: &mut &[u8]) -> Result<()> {
     }
 }
 
-fn read_const_pool_item(
-    input: &mut &[u8],
-    str_interner: &mut Interner<String>,
-) -> Result<ConstPoolItem> {
+fn read_const_pool_item<'a, 'b, 'c>(
+    input: &'b mut &'c [u8],
+    jvm: &'b JVM<'a>,
+) -> Result<ConstPoolItem<'a>> {
     use ConstPoolItem::*;
     match read_u8(input)? {
         1 => {
@@ -57,7 +58,7 @@ fn read_const_pool_item(
             }
             // TODO: actually read Modified-UTF8
             let string = std::string::String::from_utf8(bytes)?;
-            Ok(Utf8(str_interner.intern(string)))
+            Ok(Utf8(jvm.intern_str(&string)))
         }
         3 => Ok(Integer(read_u32(input)? as i32)),
         4 => Ok(Float(f32::from_bits(read_u32(input)?))),
@@ -85,16 +86,12 @@ fn read_const_pool_item(
     }
 }
 
-fn read_const_pool(
-    input: &mut &[u8],
-    types: &mut Interner<Typ>,
-    strings: &mut Interner<String>,
-) -> Result<ConstPool> {
+fn read_const_pool<'a, 'b, 'c>(input: &'b mut &'c [u8], jvm: &'b JVM<'a>) -> Result<ConstPool<'a>> {
     let length = read_u16(input)? as usize;
     let mut vec = Vec::with_capacity(length);
     vec.push(ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero);
     while vec.len() < length {
-        vec.push(read_const_pool_item(input, strings)?);
+        vec.push(read_const_pool_item(input, jvm)?);
         if matches!(
             vec.last().unwrap(),
             ConstPoolItem::Long(_) | ConstPoolItem::Double(_)
@@ -110,13 +107,13 @@ fn read_const_pool(
         if let ConstPoolItem::RawFieldRef { class, nat } = &pool.0[i] {
             let class = pool.get_class(*class)?;
             let (name, descriptor) = pool.get_raw_nat(*nat)?;
-            let (typ, _) = parse_field_descriptor(types, strings, descriptor, 0)?;
+            let (typ, _) = parse_field_descriptor(jvm, descriptor, 0)?;
             pool.0[i] = ConstPoolItem::FieldRef(FieldRef { class, name, typ })
         }
         if let ConstPoolItem::RawMethodRef { class, nat } = &pool.0[i] {
             let class = pool.get_class(*class)?;
             let (name, descriptor) = pool.get_raw_nat(*nat)?;
-            let typ = parse_method_descriptor(types, strings, descriptor)?;
+            let typ = parse_method_descriptor(jvm, descriptor)?;
             pool.0[i] = ConstPoolItem::MethodRef(MethodRef { class, name, typ })
         }
     }
@@ -124,7 +121,10 @@ fn read_const_pool(
     Ok(pool)
 }
 
-fn read_interfaces(input: &mut &[u8], const_pool: &ConstPool) -> Result<Vec<Id<String>>> {
+fn read_interfaces<'a, 'b>(
+    input: &mut &[u8],
+    const_pool: &ConstPool<'a>,
+) -> Result<Vec<IntStr<'a>>> {
     let length = read_u16(input)?;
     let mut vec = Vec::with_capacity(length as usize);
     for _ in 0..length {
@@ -133,10 +133,10 @@ fn read_interfaces(input: &mut &[u8], const_pool: &ConstPool) -> Result<Vec<Id<S
     Ok(vec)
 }
 
-fn read_attribute<'input, 'cp>(
-    input: &mut &'input [u8],
-    const_pool: &'cp ConstPool,
-) -> Result<(Id<String>, &'input [u8])> {
+fn read_attribute<'a, 'b, 'c>(
+    input: &mut &'b [u8],
+    const_pool: &'c ConstPool<'a>,
+) -> Result<(IntStr<'a>, &'b [u8])> {
     let name = const_pool.get_utf8(read_u16(input)?)?;
     let attr_length = read_u32(input)?;
     if attr_length as usize > input.len() {
@@ -147,32 +147,32 @@ fn read_attribute<'input, 'cp>(
     Ok((name, attr_bytes))
 }
 
-fn parse_field_descriptor(
-    types: &mut Interner<Typ>,
-    strings: &mut Interner<String>,
-    descriptor: Id<String>,
+fn parse_field_descriptor<'a, 'b>(
+    jvm: &'b JVM<'a>,
+    descriptor: IntStr<'a>,
     start: usize,
-) -> Result<(Id<Typ>, usize)> {
-    let str = &strings.get(descriptor)[start..];
+) -> Result<(TypId, usize)> {
+    let str = &descriptor.0[start..];
     if let Some(typ) = match str.chars().next() {
         Some('Z') => Some(Typ::Bool),
         Some('B') => Some(Typ::Byte),
         Some('C') => Some(Typ::Char),
+        Some('S') => Some(Typ::Short),
         Some('D') => Some(Typ::Double),
         Some('F') => Some(Typ::Float),
         Some('I') => Some(Typ::Int),
         Some('J') => Some(Typ::Long),
         _ => None,
     } {
-        return Ok((types.intern(typ), start + 1));
+        return Ok((jvm.intern_type(typ), start + 1));
     }
 
     if str.starts_with('L') {
         if let Some((class_name, _)) = str[1..].split_once(';') {
             let start = start + 1 + class_name.len() + 1;
             let class_name = String::from(class_name);
-            let typ = Typ::Class(strings.intern(class_name));
-            return Ok((types.intern(typ), start));
+            let typ = Typ::Class(jvm.intern_str(&class_name));
+            return Ok((jvm.intern_type(typ), start));
         } else {
             bail!("Invalid type descriptor")
         }
@@ -180,8 +180,8 @@ fn parse_field_descriptor(
 
     if str.starts_with('[') {
         // TODO: array descriptor only valid for up to 255 dimensions
-        let (base_type_id, start) = parse_field_descriptor(types, strings, descriptor, start + 1)?;
-        let typ = match *types.get(base_type_id) {
+        let (base_type_id, start) = parse_field_descriptor(jvm, descriptor, start + 1)?;
+        let typ = match *jvm.types.read().unwrap().get(base_type_id) {
             Typ::Array { base, dimensions } => {
                 if dimensions == u8::MAX {
                     bail!("Array has too many dimensions")
@@ -196,25 +196,24 @@ fn parse_field_descriptor(
                 dimensions: 1,
             },
         };
-        return Ok((types.intern(typ), start));
+        return Ok((jvm.intern_type(typ), start));
     }
 
     bail!("Invalid type descriptor: {}", str)
 }
 
-fn read_field(
-    input: &mut &[u8],
-    constant_pool: &ConstPool,
-    types: &mut Interner<Typ>,
-    strings: &mut Interner<String>,
-) -> Result<FieldMeta> {
+fn read_field<'a, 'b, 'c>(
+    input: &'b mut &'c [u8],
+    constant_pool: &ConstPool<'a>,
+    jvm: &'b JVM<'a>,
+) -> Result<FieldMeta<'a>> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(input)?);
 
     let name = constant_pool.get_utf8(read_u16(input)?)?;
 
     let descriptor_str = constant_pool.get_utf8(read_u16(input)?)?;
-    let (descriptor, remaining) = parse_field_descriptor(types, strings, descriptor_str, 0)?;
-    if remaining < strings.get(descriptor_str).len() {
+    let (descriptor, remaining) = parse_field_descriptor(jvm, descriptor_str, 0)?;
+    if remaining < descriptor_str.0.len() {
         bail!("Invalid type descriptor")
     }
 
@@ -233,13 +232,12 @@ fn read_field(
     })
 }
 
-fn read_fields(
-    input: &mut &[u8],
-    constant_pool: &ConstPool,
-    types: &mut Interner<Typ>,
-    strings: &mut Interner<String>,
+fn read_fields<'a, 'b, 'c>(
+    input: &'b mut &'c [u8],
+    constant_pool: &ConstPool<'a>,
+    jvm: &'b JVM<'a>,
 ) -> Result<(
-    Vec<FieldMeta>,
+    Vec<FieldMeta<'a>>,
     /*static*/ Layout,
     /*object*/ Layout,
 )> {
@@ -247,10 +245,11 @@ fn read_fields(
     let length = read_u16(input)?;
     let mut fields = Vec::new();
     for _ in 0..length {
-        let field = read_field(input, constant_pool, types, strings)?;
+        let field = read_field(input, constant_pool, jvm)?;
         fields.push(field);
     }
     // Decide layout
+    let types = jvm.types.read().unwrap();
     fields.sort_by_key(|field| types.get(field.descriptor).layout().align());
     let mut static_layout = Layout::new::<()>();
     let mut object_layout = min_object_layout();
@@ -303,53 +302,51 @@ fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
     })
 }
 
-fn parse_method_descriptor(
-    types: &mut Interner<Typ>,
-    strings: &mut Interner<String>,
-    descriptor: Id<String>,
+fn parse_method_descriptor<'a, 'b>(
+    jvm: &'b JVM<'a>,
+    descriptor: IntStr<'a>,
 ) -> Result<MethodDescriptor> {
-    if !strings.get(descriptor).starts_with('(') {
+    if !descriptor.0.starts_with('(') {
         bail!("Invalid method descriptor")
     }
     let mut start = 1;
     let mut args = Vec::new();
-    while !strings.get(descriptor)[start..].starts_with(')') {
-        let (arg, next_start) = parse_field_descriptor(types, strings, descriptor, start)
-            .context("Parsing method descriptor")?;
+    while !descriptor.0[start..].starts_with(')') {
+        let (arg, next_start) =
+            parse_field_descriptor(jvm, descriptor, start).context("Parsing method descriptor")?;
         args.push(arg);
         start = next_start;
     }
     start += 1;
-    if &strings.get(descriptor)[start..] == "V" {
+    if &descriptor.0[start..] == "V" {
         Ok(MethodDescriptor(args, None))
     } else {
-        let (return_type, start) = parse_field_descriptor(types, strings, descriptor, start)
-            .context("Parsing method descriptor")?;
-        if start < strings.get(descriptor).len() {
+        let (return_type, start) =
+            parse_field_descriptor(jvm, descriptor, start).context("Parsing method descriptor")?;
+        if start < descriptor.0.len() {
             bail!("Invalid method descriptor")
         }
         Ok(MethodDescriptor(args, Some(return_type)))
     }
 }
 
-fn read_method(
-    input: &mut &[u8],
-    constant_pool: &ConstPool,
-    types: &mut Interner<Typ>,
-    strings: &mut Interner<String>,
-) -> Result<MethodMeta> {
+fn read_method<'a, 'b, 'c>(
+    input: &'b mut &'c [u8],
+    constant_pool: &ConstPool<'a>,
+    jvm: &'b JVM<'a>,
+) -> Result<MethodMeta<'a>> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(input)?);
 
     let name = constant_pool.get_utf8(read_u16(input)?)?;
 
     let descriptor = constant_pool.get_utf8(read_u16(input)?)?;
-    let descriptor = parse_method_descriptor(types, strings, descriptor)?;
+    let descriptor = parse_method_descriptor(jvm, descriptor)?;
 
     let mut code = None;
     let attributes_count = read_u16(input)?;
     for _ in 0..attributes_count {
         let (attr_name, bytes) = read_attribute(input, constant_pool)?;
-        if attr_name == strings.intern_str("Code") {
+        if attr_name == jvm.intern_str("Code") {
             if code.is_none() {
                 code = Some(read_code(bytes, constant_pool).context("Reading bytecode")?);
             } else {
@@ -366,16 +363,15 @@ fn read_method(
     })
 }
 
-fn read_methods(
-    input: &mut &[u8],
-    constant_pool: &ConstPool,
-    types: &mut Interner<Typ>,
-    strings: &mut Interner<String>,
-) -> Result<Vec<MethodMeta>> {
+fn read_methods<'a, 'b, 'c>(
+    input: &'b mut &'c [u8],
+    constant_pool: &ConstPool<'a>,
+    jvm: &'b JVM<'a>,
+) -> Result<Vec<MethodMeta<'a>>> {
     let length = read_u16(input)?;
     let mut methods: Vec<MethodMeta> = Vec::with_capacity(length as usize);
     for _ in 0..length {
-        let method = read_method(input, constant_pool, types, strings)?;
+        let method = read_method(input, constant_pool, jvm)?;
         for existing_method in &methods {
             if (existing_method.name == method.name)
                 && (existing_method.descriptor == method.descriptor)
@@ -388,18 +384,17 @@ fn read_methods(
     Ok(methods)
 }
 
-pub fn read_class_file(
-    mut input: &[u8],
-    types: &mut Interner<Typ>,
-    strings: &mut Interner<String>,
-) -> Result<Class> {
+pub(crate) fn read_class_file<'a, 'b, 'c>(
+    mut input: &'c [u8],
+    jvm: &'b JVM<'a>,
+) -> Result<Class<'a>> {
     let input = &mut input;
 
     read_magic(input)?;
     let minor_version = read_u16(input)?;
     let major_version = read_u16(input)?;
 
-    let const_pool = read_const_pool(input, types, strings)?;
+    let const_pool = read_const_pool(input, jvm)?;
 
     let access_flags = AccessFlags::from_bits_truncate(read_u16(input)?);
 
@@ -416,24 +411,22 @@ pub fn read_class_file(
     let interfaces =
         read_interfaces(input, &const_pool).context("Reading implemented interfaces")?;
     let (fields, static_layout, object_layout) =
-        read_fields(input, &const_pool, types, strings).context("Reading fields")?;
-    let methods = read_methods(input, &const_pool, types, strings).context("Reading methods")?;
+        read_fields(input, &const_pool, jvm).context("Reading fields")?;
+    let methods = read_methods(input, &const_pool, jvm).context("Reading methods")?;
 
     let static_storage = FieldStorage::new(static_layout);
 
-    Ok(Box::leak(
-        ClassMeta {
-            version: (major_version, minor_version),
-            const_pool,
-            access_flags,
-            name: this_class,
-            super_class,
-            interfaces,
-            fields,
-            methods,
-            static_storage,
-            object_layout,
-        }
-        .into(),
-    ))
+    Ok(Class {
+        version: (major_version, minor_version),
+        const_pool,
+        access_flags,
+        name: this_class,
+        super_class,
+        interfaces,
+        fields,
+        methods,
+        static_storage,
+        object_layout,
+    }
+    .into())
 }
