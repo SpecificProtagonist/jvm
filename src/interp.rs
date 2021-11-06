@@ -50,17 +50,17 @@ impl From<LocalValue> for Result<i32> {
     }
 }
 
-struct Frame {
+struct Frame<'jvm> {
     // Code has to be accessed via method and unwraped (guaranteed to be Some)
     // to prevent lifetime issues
     // Maybe put Code into a Rc instead of Method?
-    method: Method,
+    method: Method<'jvm>,
     locals: Vec<LocalValue>,
     stack: Vec<LocalValue>,
     pc: u16,
 }
 
-impl Frame {
+impl<'jvm> Frame<'jvm> {
     fn jump_relative(&mut self, base: u16, target_offset: i32) {
         // TODO: verify the target is an op boundary
         self.pc = (base as i32 + target_offset as i32) as u16;
@@ -224,10 +224,16 @@ impl Frame {
     }
 }
 
-pub fn run(jvm: &mut JVM, method: &MethodRef, args: &[LocalValue]) -> Result<ReturnValue> {
+pub fn run<'a, 'b>(
+    jvm: &'b JVM<'a>,
+    method: &'b MethodRef<'a>,
+    args: &'b [LocalValue],
+) -> Result<ReturnValue> {
     let class = jvm.resolve_class(method.class)?;
     let method = *jvm
         .methods
+        .read()
+        .unwrap()
         .get(&method)
         .ok_or(anyhow!("Method not found"))?;
 
@@ -778,7 +784,7 @@ pub fn run(jvm: &mut JVM, method: &MethodRef, args: &[LocalValue]) -> Result<Ret
                 // Stack has object ref first, then value on top
                 // This is ugly
                 let object = if matches!(
-                    jvm.types.get(field.meta.descriptor),
+                    jvm.types.read().unwrap().get(field.meta.descriptor),
                     Typ::Long | Typ::Double
                 ) {
                     let high = frame.pop()?;
@@ -795,10 +801,22 @@ pub fn run(jvm: &mut JVM, method: &MethodRef, args: &[LocalValue]) -> Result<Ret
                 };
                 put_field(&mut frame, &jvm, field, &object.data)?;
             }
-            INVOKESPECIAL => {
+            INVOKEVIRTUAL => {
+                let index = frame.read_code_u16()?;
+                let method = class.const_pool.get_method(index)?;
+                let obj = frame.pop_ref()?;
+                if (method.name == jvm.intern_str("<init>"))
+                    | (method.name == jvm.intern_str("<cinit>"))
+                {
+                    bail!("Must not invokevirtual class or instance initialization method")
+                }
                 // TODO
-                frame.read_code_u16()?;
-                frame.pop()?;
+            }
+            INVOKESPECIAL => {
+                let index = frame.read_code_u16()?;
+                let method = class.const_pool.get_method(index)?;
+                let obj = frame.pop_ref()?;
+                // TODO
             }
             INVOKESTATIC => {
                 let index = frame.read_code_u16()?;
@@ -847,7 +865,7 @@ pub fn run(jvm: &mut JVM, method: &MethodRef, args: &[LocalValue]) -> Result<Ret
 fn get_field(frame: &mut Frame, jvm: &JVM, field: Field, storage: &FieldStorage) -> Result<()> {
     // Correct allignment guaranteed because it is used to construct the FieldStorage layout and is stored immutably
     unsafe {
-        match *jvm.types.get(field.meta.descriptor) {
+        match *jvm.types.read().unwrap().get(field.meta.descriptor) {
             Typ::Bool | Typ::Byte => frame.push(LocalValue::Int(
                 storage.read_u8(field.meta.byte_offset) as i8 as i32,
             ))?,
@@ -874,7 +892,7 @@ fn get_field(frame: &mut Frame, jvm: &JVM, field: Field, storage: &FieldStorage)
 
 fn put_field(frame: &mut Frame, jvm: &JVM, field: Field, storage: &FieldStorage) -> Result<()> {
     unsafe {
-        match *jvm.types.get(field.meta.descriptor) {
+        match *jvm.types.read().unwrap().get(field.meta.descriptor) {
             Typ::Bool | Typ::Byte => {
                 storage.write_u8(field.meta.byte_offset, frame.pop_int()? as i8 as u8)
             }
@@ -1044,6 +1062,7 @@ pub mod instructions {
     pub const PUTSTATIC: u8 = 179;
     pub const GETFIELD: u8 = 180;
     pub const PUTFIELD: u8 = 181;
+    pub const INVOKEVIRTUAL: u8 = 182;
     pub const INVOKESPECIAL: u8 = 183;
     pub const INVOKESTATIC: u8 = 184;
     pub const NEW: u8 = 187;

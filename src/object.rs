@@ -1,6 +1,6 @@
 use std::alloc::Layout;
 
-use crate::{class::Class, datastructures::Id, field_storage::FieldStorage, Typ};
+use crate::{class::Class, field_storage::FieldStorage};
 
 pub type Object = &'static ObjectData;
 
@@ -15,18 +15,18 @@ pub struct ObjectData {
 }
 
 impl ObjectData {
-    pub fn typ(&self) -> Id<Typ> {
-        assert_eq!(std::mem::size_of::<Id<Class>>(), 4);
-        unsafe { std::mem::transmute(self.data.read_u32(0)) }
+    // TODO: arrays
+    pub(crate) fn class(&self) -> &Class {
+        unsafe { std::mem::transmute(self.data.read_usize(0)) }
     }
 }
 
 impl std::fmt::Debug for ObjectData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Object") // TODO: class name, data etc
+        write!(f, "{}", self.class().name) // TODO: data
     }
 }
 
 pub fn min_object_layout() -> Layout {
-    Layout::new::<Id<Typ>>()
+    Layout::new::<Class>()
 }
