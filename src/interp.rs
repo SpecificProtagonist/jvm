@@ -3,7 +3,7 @@ use std::usize;
 use crate::{
     field_storage::FieldStorage,
     object::{Object, ObjectData},
-    Field, Method, MethodRef, Typ, JVM,
+    Field, Method, Typ, JVM,
 };
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -201,7 +201,7 @@ impl<'jvm> Frame<'jvm> {
     fn read_code_u8(&mut self) -> Result<u8> {
         self.pc += 1;
         self.method
-            .meta
+            .data
             .code
             .as_ref()
             .unwrap()
@@ -220,31 +220,23 @@ impl<'jvm> Frame<'jvm> {
     }
 
     fn read_previous_byte(&mut self) -> u8 {
-        self.method.meta.code.as_ref().unwrap().bytes[self.pc as usize - 1]
+        self.method.data.code.as_ref().unwrap().bytes[self.pc as usize - 1]
     }
 }
 
-pub fn run<'a, 'b>(
+pub(crate) fn run<'a, 'b>(
     jvm: &'b JVM<'a>,
-    method: &'b MethodRef<'a>,
+    method: Method<'a>,
     args: &'b [LocalValue],
 ) -> Result<ReturnValue> {
-    let class = jvm.resolve_class(method.class)?;
-    let method = *jvm
-        .methods
-        .read()
-        .unwrap()
-        .get(&method)
-        .ok_or(anyhow!("Method not found"))?;
-
-    if method.meta.code.is_none() {
+    if method.data.code.is_none() {
         todo!("Methods without code attribute");
     }
 
     let mut frame = Frame {
         method,
         locals: {
-            let max_locals = method.meta.code.as_ref().unwrap().max_locals as usize;
+            let max_locals = method.data.code.as_ref().unwrap().max_locals as usize;
             let mut locals = Vec::with_capacity(max_locals);
             locals.extend_from_slice(args);
             while locals.len() < max_locals {
@@ -252,7 +244,7 @@ pub fn run<'a, 'b>(
             }
             locals
         },
-        stack: Vec::with_capacity(method.meta.code.as_ref().unwrap().max_stack as usize),
+        stack: Vec::with_capacity(method.data.code.as_ref().unwrap().max_stack as usize),
         pc: 0,
     };
 
@@ -760,27 +752,23 @@ pub fn run<'a, 'b>(
             RETURN => return Ok(ReturnValue::Void),
             GETSTATIC => {
                 let index = frame.read_code_u16()?;
-                let field = *class.const_pool.get_field(index)?;
-                let field = jvm.resolve_field(field)?;
+                let field = method.class.const_pool.get_field(jvm, index)?;
                 get_field(&mut frame, field, &field.class.static_storage)?;
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16()?;
-                let field = *class.const_pool.get_field(index)?;
-                let field = jvm.resolve_field(field)?;
+                let field = method.class.const_pool.get_field(jvm, index)?;
                 put_field(&mut frame, field, &field.class.static_storage)?;
             }
             GETFIELD => {
                 let index = frame.read_code_u16()?;
-                let field = *class.const_pool.get_field(index)?;
-                let field = jvm.resolve_field(field)?;
+                let field = method.class.const_pool.get_field(jvm, index)?;
                 let object = frame.pop_ref()?;
                 get_field(&mut frame, field, &object.data)?;
             }
             PUTFIELD => {
                 let index = frame.read_code_u16()?;
-                let field = *class.const_pool.get_field(index)?;
-                let field = jvm.resolve_field(field)?;
+                let field = method.class.const_pool.get_field(jvm, index)?;
                 // Stack has object ref first, then value on top
                 // This is ugly
                 let object = if matches!(field.meta.descriptor, Typ::Long | Typ::Double) {
@@ -800,7 +788,7 @@ pub fn run<'a, 'b>(
             }
             INVOKEVIRTUAL => {
                 let index = frame.read_code_u16()?;
-                let method = class.const_pool.get_method(index)?;
+                let (_, method) = method.class.const_pool.get_method(jvm, index)?;
                 let obj = frame.pop_ref()?;
                 if (method.name == jvm.intern_str("<init>"))
                     | (method.name == jvm.intern_str("<cinit>"))
@@ -811,22 +799,34 @@ pub fn run<'a, 'b>(
             }
             INVOKESPECIAL => {
                 let index = frame.read_code_u16()?;
-                let method = class.const_pool.get_method(index)?;
+                let (invoke_class, method) = method.class.const_pool.get_method(jvm, index)?;
                 let obj = frame.pop_ref()?;
                 // TODO
             }
             INVOKESTATIC => {
                 let index = frame.read_code_u16()?;
                 // TODO: intern MethodRef/use Id<Method> or something
-                let method = class.const_pool.get_method(index)?;
+                let (invoked_class, invoked_method) =
+                    method.class.const_pool.get_method(jvm, index)?;
 
-                let arg_count = method.typ.0.len();
+                let arg_count = invoked_method.typ.0.len();
                 if arg_count > frame.stack.len() {
                     bail!("Invokestatic: not enough elements on stack")
                 }
+                let resolved = if let Some(resolved) =
+                    invoked_class.method(invoked_method.name, invoked_method.typ)
+                {
+                    resolved
+                } else {
+                    bail!(
+                        "Method {} not found in class {}",
+                        invoked_method.name,
+                        invoked_class.name
+                    );
+                };
                 let args = &frame.stack[frame.stack.len() - arg_count..];
-                match run(jvm, method, args)
-                    .with_context(|| format!("Trying to call {:?}", &method))?
+                match run(jvm, resolved, args)
+                    .with_context(|| format!("Trying to call {:?}", invoked_method.name))?
                 {
                     ReturnValue::Void => {}
                     ReturnValue::Ref(object) => frame.push(LocalValue::Ref(object))?,
@@ -838,7 +838,7 @@ pub fn run<'a, 'b>(
             }
             NEW => {
                 let index = frame.read_code_u16()?;
-                let new_class = class.const_pool.get_class(index)?;
+                let new_class = method.class.const_pool.get_class(index)?;
                 let new_class = jvm.resolve_class(new_class)?;
                 frame.push(LocalValue::Ref(jvm.create_object(new_class)))?;
             }

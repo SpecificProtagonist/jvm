@@ -1,12 +1,13 @@
-use std::alloc::Layout;
+use std::{alloc::Layout, cell::Cell, collections::HashMap};
 
 use crate::{
-    class::{Class, FieldMeta, MethodMeta},
+    class::{Class, FieldMeta, FieldNaT, MethodMeta, MethodNaT},
     const_pool::{ConstPool, ConstPoolItem},
     object::min_object_layout,
-    AccessFlags, Code, FieldRef, FieldStorage, IntStr, MethodDescriptor, MethodRef, Typ, JVM,
+    AccessFlags, Code, FieldStorage, IntStr, MethodDescriptor, Typ, JVM,
 };
 use anyhow::{bail, Context, Result};
+use typed_arena::Arena;
 
 fn read_u8(input: &mut &[u8]) -> Result<u8> {
     if let Some(u8) = input.get(0) {
@@ -65,11 +66,11 @@ fn read_const_pool_item<'a, 'b, 'c>(
         6 => Ok(Double(f64::from_bits(read_u64(input)?))),
         7 => Ok(Class(read_u16(input)?)),
         8 => Ok(RawString(read_u16(input)?)),
-        9 => Ok(RawFieldRef {
+        9 => Ok(FieldRef {
             class: read_u16(input)?,
             nat: read_u16(input)?,
         }),
-        10 => Ok(RawMethodRef {
+        10 => Ok(MethodRef {
             class: read_u16(input)?,
             nat: read_u16(input)?,
         }),
@@ -77,7 +78,7 @@ fn read_const_pool_item<'a, 'b, 'c>(
             class: read_u16(input)?,
             nat: read_u16(input)?,
         }),
-        12 => Ok(RawNameAndType {
+        12 => Ok(NameAndType {
             name: read_u16(input)?,
             descriptor: read_u16(input)?,
         }),
@@ -87,37 +88,22 @@ fn read_const_pool_item<'a, 'b, 'c>(
 
 fn read_const_pool<'a, 'b, 'c>(input: &'b mut &'c [u8], jvm: &'b JVM<'a>) -> Result<ConstPool<'a>> {
     let length = read_u16(input)? as usize;
-    let mut vec = Vec::with_capacity(length);
-    vec.push(ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero);
-    while vec.len() < length {
-        vec.push(read_const_pool_item(input, jvm)?);
+    let mut items = Vec::with_capacity(length);
+    items.push(Cell::new(
+        ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero,
+    ));
+    while items.len() < length {
+        items.push(Cell::new(read_const_pool_item(input, jvm)?));
         if matches!(
-            vec.last().unwrap(),
+            items.last().unwrap().get(),
             ConstPoolItem::Long(_) | ConstPoolItem::Double(_)
         ) {
-            vec.push(ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero)
+            items.push(Cell::new(
+                ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero,
+            ))
         }
     }
-    let mut pool = ConstPool(vec);
-
-    // Post-process to get desireable format for run-time pool
-    // (can't do this in the first pass because items may refer to later items)
-    for i in 0..pool.0.len() {
-        if let ConstPoolItem::RawFieldRef { class, nat } = &pool.0[i] {
-            let class = pool.get_class(*class)?;
-            let (name, descriptor) = pool.get_raw_nat(*nat)?;
-            let (typ, _) = parse_field_descriptor(jvm, descriptor, 0)?;
-            pool.0[i] = ConstPoolItem::FieldRef(FieldRef { class, name, typ })
-        }
-        if let ConstPoolItem::RawMethodRef { class, nat } = &pool.0[i] {
-            let class = pool.get_class(*class)?;
-            let (name, descriptor) = pool.get_raw_nat(*nat)?;
-            let typ = parse_method_descriptor(jvm, descriptor)?;
-            pool.0[i] = ConstPoolItem::MethodRef(MethodRef { class, name, typ })
-        }
-    }
-
-    Ok(pool)
+    Ok(ConstPool { items })
 }
 
 fn read_interfaces<'a, 'b>(
@@ -146,7 +132,7 @@ fn read_attribute<'a, 'b, 'c>(
     Ok((name, attr_bytes))
 }
 
-fn parse_field_descriptor<'a, 'b>(
+pub(crate) fn parse_field_descriptor<'a, 'b>(
     jvm: &'b JVM<'a>,
     descriptor: IntStr<'a>,
     start: usize,
@@ -236,7 +222,7 @@ fn read_fields<'a, 'b, 'c>(
     constant_pool: &ConstPool<'a>,
     jvm: &'b JVM<'a>,
 ) -> Result<(
-    Vec<FieldMeta<'a>>,
+    HashMap<FieldNaT<'a>, FieldMeta<'a>>,
     /*static*/ Layout,
     /*object*/ Layout,
 )> {
@@ -248,21 +234,30 @@ fn read_fields<'a, 'b, 'c>(
         fields.push(field);
     }
     // Decide layout
-    let types = jvm.types.read().unwrap();
     fields.sort_by_key(|field| field.descriptor.layout().align());
     let mut static_layout = Layout::new::<()>();
     let mut object_layout = min_object_layout();
-    for field in &mut fields {
-        let layout = field.descriptor.layout();
-        let fields_layout = if field.access_flags.contains(AccessFlags::STATIC) {
-            &mut static_layout
-        } else {
-            &mut object_layout
-        };
-        let result = fields_layout.extend(layout).unwrap();
-        *fields_layout = result.0;
-        field.byte_offset = result.1 as u32;
-    }
+    let fields = fields
+        .into_iter()
+        .map(|mut field| {
+            let layout = field.descriptor.layout();
+            let fields_layout = if field.access_flags.contains(AccessFlags::STATIC) {
+                &mut static_layout
+            } else {
+                &mut object_layout
+            };
+            let result = fields_layout.extend(layout).unwrap();
+            *fields_layout = result.0;
+            field.byte_offset = result.1 as u32;
+            (
+                FieldNaT {
+                    name: field.name,
+                    typ: field.descriptor,
+                },
+                field,
+            )
+        })
+        .collect();
 
     Ok((fields, static_layout, object_layout))
 }
@@ -301,7 +296,7 @@ fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
     })
 }
 
-fn parse_method_descriptor<'a, 'b>(
+pub(crate) fn parse_method_descriptor<'a, 'b>(
     jvm: &'b JVM<'a>,
     descriptor: IntStr<'a>,
 ) -> Result<MethodDescriptor<'a>> {
@@ -354,10 +349,13 @@ fn read_method<'a, 'b, 'c>(
         }
     }
 
+    // SAFETY: elements of the arena are at the same pos as long as the arena exists
+    let typ =
+        unsafe { &*(jvm.method_descriptor_storage.alloc(descriptor) as *const MethodDescriptor) };
+
     Ok(MethodMeta {
-        name,
+        nat: MethodNaT { name, typ },
         access_flags,
-        descriptor,
         code,
     })
 }
@@ -366,27 +364,30 @@ fn read_methods<'a, 'b, 'c>(
     input: &'b mut &'c [u8],
     constant_pool: &ConstPool<'a>,
     jvm: &'b JVM<'a>,
-) -> Result<Vec<MethodMeta<'a>>> {
+) -> Result<HashMap<MethodNaT<'a, 'a>, &'a MethodMeta<'a>>> {
     let length = read_u16(input)?;
-    let mut methods: Vec<MethodMeta> = Vec::with_capacity(length as usize);
+    let mut methods = HashMap::with_capacity(length as usize);
     for _ in 0..length {
         let method = read_method(input, constant_pool, jvm)?;
-        for existing_method in &methods {
-            if (existing_method.name == method.name)
-                && (existing_method.descriptor == method.descriptor)
-            {
+        for existing_nat in methods.keys() {
+            if existing_nat == &method.nat {
                 bail!("Duplicate method in same class")
             }
         }
-        methods.push(method);
+        let storage = &jvm.method_storage as *const Arena<MethodMeta>;
+        // SAFETY: Strings inserted into the arena are valid as long as the arena exists,
+        // even if the reference to it is invalidated
+        let method = unsafe { &*storage }.alloc(method);
+        methods.insert(method.nat.clone(), &*method);
     }
     Ok(methods)
 }
 
+/// super_class is set to None, actual superclass name (which needs to be resolved) is returned alongside
 pub(crate) fn read_class_file<'a, 'b, 'c>(
     mut input: &'c [u8],
     jvm: &'b JVM<'a>,
-) -> Result<Class<'a>> {
+) -> Result<(Class<'a>, Option<IntStr<'a>>)> {
     let input = &mut input;
 
     read_magic(input)?;
@@ -415,17 +416,20 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
 
     let static_storage = FieldStorage::new(static_layout);
 
-    Ok(Class {
-        version: (major_version, minor_version),
-        const_pool,
-        access_flags,
-        name: this_class,
+    Ok((
+        Class {
+            version: (major_version, minor_version),
+            const_pool,
+            access_flags,
+            name: this_class,
+            super_class: None,
+            interfaces,
+            static_storage,
+            object_layout,
+            fields,
+            methods,
+        }
+        .into(),
         super_class,
-        interfaces,
-        fields,
-        methods,
-        static_storage,
-        object_layout,
-    }
-    .into())
+    ))
 }
