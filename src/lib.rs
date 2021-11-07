@@ -29,14 +29,14 @@ pub struct JVM<'a> {
     string_storage: Arena<String>,
     class_storage: Arena<Class<'a>>,
     typ_storage: Arena<Typ<'a>>,
+    method_storage: Arena<MethodMeta<'a>>,
+    // Implementation detail of const_pool, maybe remove in the future
+    method_descriptor_storage: Arena<MethodDescriptor<'a>>,
     class_path: Vec<PathBuf>,
     // TODO: intern string objects instead
     strings: RwLock<HashSet<&'a str>>,
     types: RwLock<HashSet<&'a Typ<'a>>>,
     classes: RwLock<HashMap<IntStr<'a>, &'a Class<'a>>>,
-    /// As far as I can tell, JVM supports field overloading
-    fields: RwLock<HashMap<FieldRef<'a>, Field<'a>>>,
-    methods: RwLock<HashMap<MethodRef<'a>, Method<'a>>>,
 }
 
 bitflags::bitflags! {
@@ -46,29 +46,9 @@ bitflags::bitflags! {
     }
 }
 
-// Remove Id<Field> & Id<Method>?
-/// This field doesn't necessariy exist and will need to be resolved
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FieldRef<'a> {
-    class: IntStr<'a>,
-    name: IntStr<'a>,
-    typ: &'a Typ<'a>,
-}
-
-/// This Method doesn't necessarily exist and will need to be resolved
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct MethodRef<'a> {
-    class: IntStr<'a>,
-    name: IntStr<'a>,
-    typ: MethodDescriptor<'a>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct MethodDescriptor<'a>(Vec<&'a Typ<'a>>, Option<&'a Typ<'a>>);
-
 // TODO: impl Copy?
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Typ<'a> {
+pub enum Typ<'a> {
     Bool,
     Byte,
     Short,
@@ -101,7 +81,7 @@ pub struct Code {
 }
 
 #[derive(Debug, Clone, Copy, Hash, Eq)]
-struct IntStr<'a>(&'a str);
+pub struct IntStr<'a>(&'a str);
 
 impl<'a> PartialEq for IntStr<'a> {
     fn eq(&self, other: &Self) -> bool {
@@ -115,18 +95,23 @@ impl<'a> std::fmt::Display for IntStr<'a> {
     }
 }
 
+pub(crate) enum MethodResolve {
+    VIRTUAL,
+    STATIC,
+}
+
 impl<'a> JVM<'a> {
     pub fn new(class_path: Vec<PathBuf>) -> Self {
         Self {
             string_storage: Default::default(),
             class_storage: Default::default(),
             typ_storage: Default::default(),
+            method_storage: Default::default(),
+            method_descriptor_storage: Default::default(),
             class_path,
             strings: Default::default(),
             types: Default::default(),
             classes: Default::default(),
-            fields: Default::default(),
-            methods: Default::default(),
         }
         .into()
     }
@@ -147,7 +132,7 @@ impl<'a> JVM<'a> {
         })
     }
 
-    fn intern_type(&self, typ: Typ<'a>) -> &'a Typ<'a> {
+    pub fn intern_type(&self, typ: Typ<'a>) -> &'a Typ<'a> {
         let guard = self.types.read().unwrap();
         if let Some(typ) = guard.get(&typ) {
             *typ
@@ -163,7 +148,18 @@ impl<'a> JVM<'a> {
         }
     }
 
-    fn resolve_class<'b>(&'b self, name: IntStr<'a>) -> Result<&'a Class<'a>> {
+    /// Load & initializes a class if it hasn't already been.
+    /// Since this is called as late as possible, both can be done together
+    /// (if we switch to Resolution as part of linking for performance reasons, this changes).
+    pub fn resolve_class<'b>(&'b self, name: IntStr<'a>) -> Result<&'a Class<'a>> {
+        self.resolve_class_impl(name, Vec::new())
+    }
+
+    fn resolve_class_impl<'b>(
+        &'b self,
+        name: IntStr<'a>,
+        mut check_circular: Vec<IntStr<'a>>,
+    ) -> Result<&'a Class<'a>> {
         if let Some(class_ref) = self.classes.read().unwrap().get(&name) {
             return Ok(*class_ref);
         }
@@ -185,7 +181,7 @@ impl<'a> JVM<'a> {
         }
         let bytes = bytes.ok_or_else(|| anyhow!("No class def found for {}", name))?;
 
-        let class = parse::read_class_file(&bytes, &self)?;
+        let (class, super_class) = parse::read_class_file(&bytes, &self)?;
 
         if name != class.name {
             bail!("Class name did not match file name")
@@ -199,93 +195,45 @@ impl<'a> JVM<'a> {
             )
         }
 
-        let mut guard = self.classes.write().unwrap();
-        // Check if loaded by another thread in the meantime
-        if let Some(class) = guard.get(&name) {
-            return Ok(*class);
-        }
         let class_storage = &self.class_storage as *const Arena<Class>;
         // SAFETY: Classes inserted into the arena are valid as long as the arena exists,
         // even if the reference to it is invalidated
         let class = unsafe { &*class_storage }.alloc(class);
-        guard.insert(name, class);
-        drop(guard);
-
-        // Register fields & methods
-        for field in &class.fields {
-            self.fields.write().unwrap().insert(
-                FieldRef {
-                    class: name,
-                    name: field.name,
-                    typ: field.descriptor,
-                },
-                Field { class, meta: field },
-            );
-        }
-        for method in &class.methods {
-            self.methods.write().unwrap().insert(
-                MethodRef {
-                    class: name,
-                    name: method.name,
-                    typ: method.descriptor.clone(),
-                },
-                Method {
-                    class,
-                    meta: method,
-                },
-            );
-        }
 
         // Superclasses loading & verification
-        if let Some(super_class_name) = class.super_class {
-            let super_class = self.resolve_class(super_class_name)?;
+        if let Some(super_class_name) = super_class {
+            if check_circular.contains(&super_class_name) {
+                bail!("Circular class inheritance for {}", class.name);
+            }
+            check_circular.push(super_class_name);
+            let super_class = self.resolve_class_impl(super_class_name, check_circular)?;
 
             if super_class.access_flags.contains(AccessFlags::FINAL) {
                 bail!("Tried to subclass final class {}", super_class_name)
             }
 
-            // Check for circularity
-            let mut current = &*class;
-            let mut check = super_class;
-            while let Some(current_super) = current.super_class {
-                if check == current {
-                    bail!("Class circularity")
-                }
-                if let Some(check_super) = check.super_class {
-                    check = self.resolve_class(check_super)?;
-                    if check == current {
-                        bail!("Class circularity")
-                    }
-                    if let Some(check_super) = check.super_class {
-                        check = self.resolve_class(check_super)?;
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-                current = self.resolve_class(current_super)?;
-            }
+            class.super_class = Some(super_class);
         } else if class.name != self.intern_str("java/lang/Object") {
             bail!("Class has no superclass")
         }
 
-        Ok(class)
-    }
-
-    fn resolve_field<'b>(&'b self, field_ref: FieldRef<'a>) -> Result<Field<'a>> {
-        let class = self.resolve_class(field_ref.class)?;
-        if let Some(field) = self.fields.read().unwrap().get(&field_ref) {
-            return Ok(*field);
-        } else {
-            let super_class = class
-                .super_class
-                .ok_or_else(|| anyhow!("Failed to resolve field {}", field_ref.name))?;
-            self.resolve_field(FieldRef {
-                class: super_class,
-                ..field_ref
-            })
+        let mut guard = self.classes.write().unwrap();
+        // Check if loaded by another thread in the meantime
+        if let Some(class) = guard.get(&name) {
+            return Ok(*class);
         }
+        guard.insert(name, class);
+        drop(guard);
+
+        // Initialization
+        // TODO: static final fields
+        if let Some(method) =
+            class.method(self.intern_str("<cinit>"), &MethodDescriptor(vec![], None))
+        {
+            interp::run(self, method, &[])?;
+        }
+
+        Ok(class)
     }
 
     fn create_object(&self, class: &Class) -> Object {
@@ -312,28 +260,15 @@ mod test {
     fn invoke_static() -> Result<()> {
         let jvm = JVM::new(vec!["classes".into(), "test_classes/pass".into()]);
         let int = jvm.intern_type(Typ::Int);
-        let method = MethodRef {
-            class: jvm.intern_str("InvokeStatic"),
-            name: jvm.intern_str("add"),
-            typ: MethodDescriptor(vec![int], Some(int)),
-        };
+        let class = jvm.resolve_class(jvm.intern_str("InvokeStatic"))?;
+        let method = class
+            .method(
+                jvm.intern_str("add"),
+                &MethodDescriptor(vec![int], Some(int)),
+            )
+            .unwrap();
         let args = [LocalValue::Int(1)];
-        assert_eq!(interp::run(&jvm, &method, &args)?, ReturnValue::Int(43));
-
-        fn test(jvm: JVM) {
-            let int = jvm.intern_type(Typ::Int);
-            let method = MethodRef {
-                class: jvm.intern_str("InvokeStatic"),
-                name: jvm.intern_str("add"),
-                typ: MethodDescriptor(vec![int], Some(int)),
-            };
-            let args = [LocalValue::Int(1)];
-            assert_eq!(
-                interp::run(&jvm, &method, &args).unwrap(),
-                ReturnValue::Int(43)
-            );
-        }
-        test(jvm);
+        assert_eq!(interp::run(&jvm, method, &args)?, ReturnValue::Int(43));
 
         Ok(())
     }
@@ -342,21 +277,24 @@ mod test {
     fn field_access() -> Result<()> {
         let jvm = JVM::new(vec!["classes".into(), "test_classes/pass".into()]);
         let int = jvm.intern_type(Typ::Int);
-        let set_method = MethodRef {
-            class: jvm.intern_str("FieldAccess".into()),
-            name: jvm.intern_str("set".into()),
-            typ: MethodDescriptor(vec![int], None),
-        };
-        let get_method = MethodRef {
-            class: jvm.intern_str("FieldAccess".into()),
-            name: jvm.intern_str("get".into()),
-            typ: MethodDescriptor(vec![], Some(int)),
-        };
+        let class = jvm.resolve_class(jvm.intern_str("FieldAccess".into()))?;
+        let set_method = class
+            .method(
+                jvm.intern_str("set".into()),
+                &MethodDescriptor(vec![int], None),
+            )
+            .unwrap();
+        let get_method = class
+            .method(
+                jvm.intern_str("get".into()),
+                &MethodDescriptor(vec![], Some(int)),
+            )
+            .unwrap();
         assert_eq!(
-            interp::run(&jvm, &set_method, &[LocalValue::Int(42)])?,
+            interp::run(&jvm, set_method, &[LocalValue::Int(42)])?,
             ReturnValue::Void
         );
-        assert_eq!(interp::run(&jvm, &get_method, &[])?, ReturnValue::Int(42));
+        assert_eq!(interp::run(&jvm, get_method, &[])?, ReturnValue::Int(42));
         Ok(())
     }
 }

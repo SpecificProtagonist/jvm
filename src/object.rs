@@ -24,7 +24,7 @@ impl ObjectData {
 impl std::fmt::Debug for ObjectData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}{{", self.class().name)?;
-        for field in &self.class().fields {
+        for field in self.class().fields.values() {
             if !field.access_flags.contains(AccessFlags::STATIC) {
                 write!(f, "{}: ", field.name)?;
                 // SAFETY: field.byte_offset has guaranteed correct alignment for type
