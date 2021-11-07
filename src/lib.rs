@@ -18,11 +18,9 @@ mod field_storage;
 pub mod interp;
 mod object;
 mod parse;
-mod type_interner;
 
 use class::*;
 use field_storage::FieldStorage;
-use type_interner::*;
 
 // TODO: Garbage collection for objects
 // TODO: figure out if I need to keep safety in mind when dropping
@@ -30,10 +28,11 @@ use type_interner::*;
 pub struct JVM<'a> {
     string_storage: Arena<String>,
     class_storage: Arena<Class<'a>>,
+    typ_storage: Arena<Typ<'a>>,
     class_path: Vec<PathBuf>,
     // TODO: intern string objects instead
     strings: RwLock<HashSet<&'a str>>,
-    types: RwLock<TypInterner<'a>>,
+    types: RwLock<HashSet<&'a Typ<'a>>>,
     classes: RwLock<HashMap<IntStr<'a>, &'a Class<'a>>>,
     /// As far as I can tell, JVM supports field overloading
     fields: RwLock<HashMap<FieldRef<'a>, Field<'a>>>,
@@ -53,7 +52,7 @@ bitflags::bitflags! {
 pub struct FieldRef<'a> {
     class: IntStr<'a>,
     name: IntStr<'a>,
-    typ: TypId,
+    typ: &'a Typ<'a>,
 }
 
 /// This Method doesn't necessarily exist and will need to be resolved
@@ -61,11 +60,11 @@ pub struct FieldRef<'a> {
 pub struct MethodRef<'a> {
     class: IntStr<'a>,
     name: IntStr<'a>,
-    typ: MethodDescriptor,
+    typ: MethodDescriptor<'a>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct MethodDescriptor(Vec<TypId>, Option<TypId>);
+pub struct MethodDescriptor<'a>(Vec<&'a Typ<'a>>, Option<&'a Typ<'a>>);
 
 // TODO: impl Copy?
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -79,7 +78,7 @@ enum Typ<'a> {
     Float,
     Double,
     Class(IntStr<'a>),
-    Array { base: TypId, dimensions: u8 },
+    Array { base: &'a Typ<'a>, dimensions: u8 },
 }
 
 impl<'a> Typ<'a> {
@@ -121,6 +120,7 @@ impl<'a> JVM<'a> {
         Self {
             string_storage: Default::default(),
             class_storage: Default::default(),
+            typ_storage: Default::default(),
             class_path,
             strings: Default::default(),
             types: Default::default(),
@@ -137,17 +137,30 @@ impl<'a> JVM<'a> {
             *str
         } else {
             drop(guard);
+            let mut guard = self.strings.write().unwrap();
             let storage = &self.string_storage as *const Arena<String>;
             // SAFETY: Strings inserted into the arena are valid as long as the arena exists,
             // even if the reference to it is invalidated
             let str = unsafe { &*storage }.alloc(str.into());
-            self.strings.write().unwrap().insert(str);
+            guard.insert(str);
             str
         })
     }
 
-    fn intern_type(&self, typ: Typ<'a>) -> TypId {
-        self.types.write().unwrap().intern(typ)
+    fn intern_type(&self, typ: Typ<'a>) -> &'a Typ<'a> {
+        let guard = self.types.read().unwrap();
+        if let Some(typ) = guard.get(&typ) {
+            *typ
+        } else {
+            drop(guard);
+            let mut guard = self.types.write().unwrap();
+            let storage = &self.typ_storage as *const Arena<Typ>;
+            // SAFETY: Strings inserted into the arena are valid as long as the arena exists,
+            // even if the reference to it is invalidated
+            let typ = unsafe { &*storage }.alloc(typ.into());
+            guard.insert(typ);
+            typ
+        }
     }
 
     fn resolve_class<'b>(&'b self, name: IntStr<'a>) -> Result<&'a Class<'a>> {
@@ -157,8 +170,6 @@ impl<'a> JVM<'a> {
 
         let mut bytes = None;
         for path in &self.class_path {
-            // TODO: package folder structure
-
             let mut path = path.clone();
             path.push(name.0);
             path.set_extension("class");
