@@ -762,20 +762,20 @@ pub fn run<'a, 'b>(
                 let index = frame.read_code_u16()?;
                 let field = *class.const_pool.get_field(index)?;
                 let field = jvm.resolve_field(field)?;
-                get_field(&mut frame, &jvm, field, &field.class.static_storage)?;
+                get_field(&mut frame, field, &field.class.static_storage)?;
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16()?;
                 let field = *class.const_pool.get_field(index)?;
                 let field = jvm.resolve_field(field)?;
-                put_field(&mut frame, &jvm, field, &field.class.static_storage)?;
+                put_field(&mut frame, field, &field.class.static_storage)?;
             }
             GETFIELD => {
                 let index = frame.read_code_u16()?;
                 let field = *class.const_pool.get_field(index)?;
                 let field = jvm.resolve_field(field)?;
                 let object = frame.pop_ref()?;
-                get_field(&mut frame, &jvm, field, &object.data)?;
+                get_field(&mut frame, field, &object.data)?;
             }
             PUTFIELD => {
                 let index = frame.read_code_u16()?;
@@ -783,10 +783,7 @@ pub fn run<'a, 'b>(
                 let field = jvm.resolve_field(field)?;
                 // Stack has object ref first, then value on top
                 // This is ugly
-                let object = if matches!(
-                    jvm.types.read().unwrap().get(field.meta.descriptor),
-                    Typ::Long | Typ::Double
-                ) {
+                let object = if matches!(field.meta.descriptor, Typ::Long | Typ::Double) {
                     let high = frame.pop()?;
                     let low = frame.pop()?;
                     let obj = frame.pop_ref()?;
@@ -799,7 +796,7 @@ pub fn run<'a, 'b>(
                     frame.push(value)?;
                     obj
                 };
-                put_field(&mut frame, &jvm, field, &object.data)?;
+                put_field(&mut frame, field, &object.data)?;
             }
             INVOKEVIRTUAL => {
                 let index = frame.read_code_u16()?;
@@ -862,10 +859,10 @@ pub fn run<'a, 'b>(
     }
 }
 
-fn get_field(frame: &mut Frame, jvm: &JVM, field: Field, storage: &FieldStorage) -> Result<()> {
+fn get_field(frame: &mut Frame, field: Field, storage: &FieldStorage) -> Result<()> {
     // Correct allignment guaranteed because it is used to construct the FieldStorage layout and is stored immutably
     unsafe {
-        match *jvm.types.read().unwrap().get(field.meta.descriptor) {
+        match field.meta.descriptor {
             Typ::Bool | Typ::Byte => frame.push(LocalValue::Int(
                 storage.read_u8(field.meta.byte_offset) as i8 as i32,
             ))?,
@@ -890,9 +887,9 @@ fn get_field(frame: &mut Frame, jvm: &JVM, field: Field, storage: &FieldStorage)
     Ok(())
 }
 
-fn put_field(frame: &mut Frame, jvm: &JVM, field: Field, storage: &FieldStorage) -> Result<()> {
+fn put_field(frame: &mut Frame, field: Field, storage: &FieldStorage) -> Result<()> {
     unsafe {
-        match *jvm.types.read().unwrap().get(field.meta.descriptor) {
+        match field.meta.descriptor {
             Typ::Bool | Typ::Byte => {
                 storage.write_u8(field.meta.byte_offset, frame.pop_int()? as i8 as u8)
             }

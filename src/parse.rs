@@ -4,8 +4,7 @@ use crate::{
     class::{Class, FieldMeta, MethodMeta},
     const_pool::{ConstPool, ConstPoolItem},
     object::min_object_layout,
-    AccessFlags, Code, FieldRef, FieldStorage, IntStr, MethodDescriptor, MethodRef, Typ, TypId,
-    JVM,
+    AccessFlags, Code, FieldRef, FieldStorage, IntStr, MethodDescriptor, MethodRef, Typ, JVM,
 };
 use anyhow::{bail, Context, Result};
 
@@ -151,7 +150,7 @@ fn parse_field_descriptor<'a, 'b>(
     jvm: &'b JVM<'a>,
     descriptor: IntStr<'a>,
     start: usize,
-) -> Result<(TypId, usize)> {
+) -> Result<(&'a Typ<'a>, usize)> {
     let str = &descriptor.0[start..];
     if let Some(typ) = match str.chars().next() {
         Some('Z') => Some(Typ::Bool),
@@ -180,10 +179,10 @@ fn parse_field_descriptor<'a, 'b>(
 
     if str.starts_with('[') {
         // TODO: array descriptor only valid for up to 255 dimensions
-        let (base_type_id, start) = parse_field_descriptor(jvm, descriptor, start + 1)?;
-        let typ = match *jvm.types.read().unwrap().get(base_type_id) {
+        let (base_type, start) = parse_field_descriptor(jvm, descriptor, start + 1)?;
+        let typ = match base_type {
             Typ::Array { base, dimensions } => {
-                if dimensions == u8::MAX {
+                if *dimensions == u8::MAX {
                     bail!("Array has too many dimensions")
                 }
                 Typ::Array {
@@ -192,7 +191,7 @@ fn parse_field_descriptor<'a, 'b>(
                 }
             }
             _ => Typ::Array {
-                base: base_type_id,
+                base: base_type,
                 dimensions: 1,
             },
         };
@@ -250,11 +249,11 @@ fn read_fields<'a, 'b, 'c>(
     }
     // Decide layout
     let types = jvm.types.read().unwrap();
-    fields.sort_by_key(|field| types.get(field.descriptor).layout().align());
+    fields.sort_by_key(|field| field.descriptor.layout().align());
     let mut static_layout = Layout::new::<()>();
     let mut object_layout = min_object_layout();
     for field in &mut fields {
-        let layout = types.get(field.descriptor).layout();
+        let layout = field.descriptor.layout();
         let fields_layout = if field.access_flags.contains(AccessFlags::STATIC) {
             &mut static_layout
         } else {
@@ -305,7 +304,7 @@ fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
 fn parse_method_descriptor<'a, 'b>(
     jvm: &'b JVM<'a>,
     descriptor: IntStr<'a>,
-) -> Result<MethodDescriptor> {
+) -> Result<MethodDescriptor<'a>> {
     if !descriptor.0.starts_with('(') {
         bail!("Invalid method descriptor")
     }

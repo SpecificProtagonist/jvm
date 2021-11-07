@@ -1,8 +1,8 @@
 use std::alloc::Layout;
 
 use crate::{
-    const_pool::ConstPool, field_storage::FieldStorage, type_interner::TypId, AccessFlags, Code,
-    IntStr, MethodDescriptor,
+    const_pool::ConstPool, field_storage::FieldStorage, AccessFlags, Code, IntStr,
+    MethodDescriptor, Typ,
 };
 
 impl<'a> PartialEq for &'a Class<'a> {
@@ -35,7 +35,7 @@ pub(crate) struct Field<'a> {
 pub(crate) struct FieldMeta<'a> {
     pub name: IntStr<'a>,
     pub access_flags: AccessFlags,
-    pub descriptor: TypId,
+    pub descriptor: &'a Typ<'a>,
     // Java has no multiple inheritance for fields, therefore each field can be at a set position
     pub byte_offset: u32,
 }
@@ -49,6 +49,6 @@ pub(crate) struct Method<'a> {
 pub(crate) struct MethodMeta<'a> {
     pub name: IntStr<'a>,
     pub access_flags: AccessFlags,
-    pub descriptor: MethodDescriptor,
+    pub descriptor: MethodDescriptor<'a>,
     pub code: Option<Code>,
 }
