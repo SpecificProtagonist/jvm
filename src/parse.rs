@@ -202,10 +202,20 @@ fn read_field<'a, 'b, 'c>(
         bail!("Invalid type descriptor")
     }
 
+    let mut const_value_index = None;
     let attributes_count = read_u16(input)?;
     for _ in 0..attributes_count {
         // Ignore attributes
-        let _ = read_attribute(input, constant_pool);
+        let (name, data) = read_attribute(input, constant_pool)?;
+        if name.0 == "ConstantValue" {
+            if access_flags.contains(AccessFlags::FINAL | AccessFlags::STATIC) {
+                if const_value_index.is_none() | (data.len() != 2) {
+                    const_value_index = Some(((data[0] as u16) << 8) + data[1] as u16)
+                } else {
+                    bail!("Invalid ConstantValue attribute")
+                }
+            }
+        }
     }
 
     Ok(FieldMeta {
@@ -214,6 +224,7 @@ fn read_field<'a, 'b, 'c>(
         descriptor,
         // The correct layout is set in read_fields after field disordering
         byte_offset: 0,
+        const_value_index,
     })
 }
 
@@ -364,7 +375,7 @@ fn read_methods<'a, 'b, 'c>(
     input: &'b mut &'c [u8],
     constant_pool: &ConstPool<'a>,
     jvm: &'b JVM<'a>,
-) -> Result<HashMap<MethodNaT<'a, 'a>, &'a MethodMeta<'a>>> {
+) -> Result<HashMap<MethodNaT<'a>, &'a MethodMeta<'a>>> {
     let length = read_u16(input)?;
     let mut methods = HashMap::with_capacity(length as usize);
     for _ in 0..length {
@@ -428,6 +439,8 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
             object_layout,
             fields,
             methods,
+            initializer: Default::default(),
+            init_lock: Default::default(),
         }
         .into(),
         super_class,

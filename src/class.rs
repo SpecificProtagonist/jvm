@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::{alloc::Layout, collections::HashMap};
+use std::{alloc::Layout, cell::Cell, collections::HashMap, sync::Mutex, thread::ThreadId};
 
 use crate::{const_pool::ConstPool, field_storage::FieldStorage, AccessFlags, Code, IntStr, Typ};
 
@@ -21,9 +21,12 @@ pub struct Class<'a> {
     pub(crate) interfaces: Vec<IntStr<'a>>,
     /// As far as I can tell, JVM supports field overloading
     pub(crate) fields: HashMap<FieldNaT<'a>, FieldMeta<'a>>,
-    pub(crate) methods: HashMap<MethodNaT<'a, 'a>, &'a MethodMeta<'a>>,
+    pub(crate) methods: HashMap<MethodNaT<'a>, &'a MethodMeta<'a>>,
     pub(crate) static_storage: FieldStorage,
     pub(crate) object_layout: Layout,
+    /// Thread doing the initialization. If None, this class is already initialized.
+    pub(crate) initializer: Cell<Option<ThreadId>>,
+    pub(crate) init_lock: Mutex<()>,
 }
 
 impl<'a> Class<'a> {
@@ -55,6 +58,12 @@ impl<'a> Class<'a> {
     }
 }
 
+impl<'a> std::fmt::Debug for Class<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Class({})", self.name)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Field<'a> {
     pub(crate) class: &'a Class<'a>,
@@ -74,6 +83,7 @@ pub(crate) struct FieldMeta<'a> {
     pub descriptor: &'a Typ<'a>,
     // Java has no multiple inheritance for fields, therefore each field can be at a set position
     pub byte_offset: u32,
+    pub const_value_index: Option<u16>,
 }
 
 #[derive(Clone, Copy)]
@@ -90,7 +100,7 @@ impl<'a> PartialEq for &'a Method<'a> {
 }
 
 pub(crate) struct MethodMeta<'a> {
-    pub nat: MethodNaT<'a, 'a>,
+    pub nat: MethodNaT<'a>,
     pub access_flags: AccessFlags,
     pub code: Option<Code>,
 }
@@ -101,11 +111,26 @@ pub struct FieldNaT<'a> {
     pub(crate) typ: &'a Typ<'a>,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
-pub struct MethodNaT<'a, 'b: 'a> {
-    // TODO: remove 'b
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct MethodNaT<'a> {
     pub(crate) name: IntStr<'a>,
-    pub(crate) typ: &'b MethodDescriptor<'a>,
+    pub(crate) typ: &'a MethodDescriptor<'a>,
+}
+
+impl<'a> std::fmt::Display for MethodNaT<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(ret) = self.typ.1 {
+            write!(f, "{}", ret)?;
+        } else {
+            write!(f, "void")?;
+        }
+        write!(f, " {}(", self.name)?;
+        for arg in &self.typ.0 {
+            write!(f, "{},", arg)?;
+        }
+        write!(f, ")")?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]

@@ -19,7 +19,7 @@ pub mod interp;
 mod object;
 mod parse;
 
-use class::*;
+pub use class::*;
 use field_storage::FieldStorage;
 
 // TODO: Garbage collection for objects
@@ -74,13 +74,32 @@ impl<'a> Typ<'a> {
     }
 }
 
+impl<'a> std::fmt::Display for Typ<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Typ::Bool => write!(f, "boolean"),
+            Typ::Byte => write!(f, "byte"),
+            Typ::Short => write!(f, "short"),
+            Typ::Char => write!(f, "char"),
+            Typ::Int => write!(f, "int"),
+            Typ::Long => write!(f, "long"),
+            Typ::Float => write!(f, "float"),
+            Typ::Double => write!(f, "double"),
+            Typ::Class(class) => write!(f, "{}", class),
+            Typ::Array { base, dimensions } => {
+                write!(f, "{}{}", base, "[]".repeat(*dimensions as usize))
+            }
+        }
+    }
+}
+
 pub struct Code {
     max_stack: u16,
     max_locals: u16,
     bytes: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, Hash, Eq)]
+#[derive(Debug, Clone, Copy, Eq)]
 pub struct IntStr<'a>(&'a str);
 
 impl<'a> PartialEq for IntStr<'a> {
@@ -89,15 +108,16 @@ impl<'a> PartialEq for IntStr<'a> {
     }
 }
 
+impl<'a> Hash for IntStr<'a> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.as_ptr().hash(state);
+    }
+}
+
 impl<'a> std::fmt::Display for IntStr<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0)
     }
-}
-
-pub(crate) enum MethodResolve {
-    VIRTUAL,
-    STATIC,
 }
 
 impl<'a> JVM<'a> {
@@ -116,7 +136,7 @@ impl<'a> JVM<'a> {
         .into()
     }
 
-    fn intern_str<'b>(&'b self, str: &'b str) -> IntStr<'a> {
+    pub fn intern_str<'b>(&'b self, str: &'b str) -> IntStr<'a> {
         let guard = self.strings.read().unwrap();
         IntStr(if let Some(str) = guard.get(str) {
             *str
@@ -160,8 +180,13 @@ impl<'a> JVM<'a> {
         name: IntStr<'a>,
         mut check_circular: Vec<IntStr<'a>>,
     ) -> Result<&'a Class<'a>> {
-        if let Some(class_ref) = self.classes.read().unwrap().get(&name) {
-            return Ok(*class_ref);
+        if let Some(class) = self.classes.read().unwrap().get(&name) {
+            if let Some(thread) = class.initializer.get() {
+                if thread != std::thread::current().id() {
+                    let _ = class.init_lock.lock().unwrap();
+                }
+            }
+            return Ok(*class);
         }
 
         let mut bytes = None;
@@ -213,6 +238,11 @@ impl<'a> JVM<'a> {
             }
 
             class.super_class = Some(super_class);
+
+            // Method resolution
+            for (nat, method) in &super_class.methods {
+                class.methods.entry(*nat).or_insert(*method);
+            }
         } else if class.name != self.intern_str("java/lang/Object") {
             bail!("Class has no superclass")
         }
@@ -223,15 +253,57 @@ impl<'a> JVM<'a> {
             return Ok(*class);
         }
         guard.insert(name, class);
-        drop(guard);
 
         // Initialization
-        // TODO: static final fields
+        class.initializer.set(Some(std::thread::current().id()));
+        let _init_lock_guard = class.init_lock.lock().unwrap();
+        drop(guard);
+
+        for field in class.fields.values() {
+            if let Some(index) = field.const_value_index {
+                unsafe {
+                    match field.descriptor {
+                        Typ::Bool | Typ::Byte => class.static_storage.write_u8(
+                            field.byte_offset,
+                            class.const_pool.get_int(index)? as i8 as u8,
+                        ),
+                        Typ::Short | Typ::Char => class.static_storage.write_u16(
+                            field.byte_offset,
+                            class.const_pool.get_int(index)? as i16 as u16,
+                        ),
+                        Typ::Int => class
+                            .static_storage
+                            .write_u32(field.byte_offset, class.const_pool.get_int(index)? as u32),
+                        Typ::Float => class.static_storage.write_u32(
+                            field.byte_offset,
+                            class.const_pool.get_float(index)?.to_bits(),
+                        ),
+                        Typ::Double => class.static_storage.write_u64(
+                            field.byte_offset,
+                            class.const_pool.get_double(index)?.to_bits(),
+                        ),
+                        Typ::Long => class
+                            .static_storage
+                            .write_u64(field.byte_offset, class.const_pool.get_long(index)? as u64),
+                        Typ::Class(class) => {
+                            if class.0 == "java/lang/String" {
+                                todo!()
+                            } else {
+                                bail!("final static non-null object")
+                            }
+                        }
+                        Typ::Array { .. } => bail!("final static non-null array"),
+                    }
+                }
+            }
+        }
+
         if let Some(method) =
-            class.method(self.intern_str("<cinit>"), &MethodDescriptor(vec![], None))
+            class.method(self.intern_str("<clinit>"), &MethodDescriptor(vec![], None))
         {
             interp::run(self, method, &[])?;
         }
+        class.initializer.set(None);
 
         Ok(class)
     }
@@ -241,60 +313,5 @@ impl<'a> JVM<'a> {
         let data = FieldStorage::new(layout);
         unsafe { data.write_usize(0, class as *const Class as usize) }
         Box::leak(ObjectData { data }.into())
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use interp::{LocalValue, ReturnValue};
-
-    #[test]
-    fn circular_loading() {
-        let jvm = JVM::new(vec!["classes".into(), "test_classes/fail".into()]);
-        let name = jvm.intern_str("CircularA");
-        assert!(jvm.resolve_class(name).is_err());
-    }
-
-    #[test]
-    fn invoke_static() -> Result<()> {
-        let jvm = JVM::new(vec!["classes".into(), "test_classes/pass".into()]);
-        let int = jvm.intern_type(Typ::Int);
-        let class = jvm.resolve_class(jvm.intern_str("InvokeStatic"))?;
-        let method = class
-            .method(
-                jvm.intern_str("add"),
-                &MethodDescriptor(vec![int], Some(int)),
-            )
-            .unwrap();
-        let args = [LocalValue::Int(1)];
-        assert_eq!(interp::run(&jvm, method, &args)?, ReturnValue::Int(43));
-
-        Ok(())
-    }
-
-    #[test]
-    fn field_access() -> Result<()> {
-        let jvm = JVM::new(vec!["classes".into(), "test_classes/pass".into()]);
-        let int = jvm.intern_type(Typ::Int);
-        let class = jvm.resolve_class(jvm.intern_str("FieldAccess".into()))?;
-        let set_method = class
-            .method(
-                jvm.intern_str("set".into()),
-                &MethodDescriptor(vec![int], None),
-            )
-            .unwrap();
-        let get_method = class
-            .method(
-                jvm.intern_str("get".into()),
-                &MethodDescriptor(vec![], Some(int)),
-            )
-            .unwrap();
-        assert_eq!(
-            interp::run(&jvm, set_method, &[LocalValue::Int(42)])?,
-            ReturnValue::Void
-        );
-        assert_eq!(interp::run(&jvm, get_method, &[])?, ReturnValue::Int(42));
-        Ok(())
     }
 }

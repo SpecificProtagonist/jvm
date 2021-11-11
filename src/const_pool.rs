@@ -23,7 +23,7 @@ pub(crate) enum ConstPoolItem<'a> {
     Field(Field<'a>),
     Method {
         class: &'a Class<'a>,
-        nat: MethodNaT<'a, 'a>,
+        nat: MethodNaT<'a>,
     },
     InterfaceMethodRef {
         class: u16,
@@ -47,17 +47,45 @@ pub(crate) enum ConstPoolItem<'a> {
 }
 
 impl<'a> ConstPool<'a> {
+    pub fn get_int(&self, index: u16) -> Result<i32> {
+        match self.items.get(index as usize).map(Cell::get) {
+            Some(ConstPoolItem::Integer(int)) => Ok(int),
+            _ => bail!("Constant pool index {} not Integer", index),
+        }
+    }
+
+    pub fn get_long(&self, index: u16) -> Result<i64> {
+        match self.items.get(index as usize).map(Cell::get) {
+            Some(ConstPoolItem::Long(long)) => Ok(long),
+            _ => bail!("Constant pool index {} not Long", index),
+        }
+    }
+
+    pub fn get_float(&self, index: u16) -> Result<f32> {
+        match self.items.get(index as usize).map(Cell::get) {
+            Some(ConstPoolItem::Float(float)) => Ok(float),
+            _ => bail!("Constant pool index {} not Float", index),
+        }
+    }
+
+    pub fn get_double(&self, index: u16) -> Result<f64> {
+        match self.items.get(index as usize).map(Cell::get) {
+            Some(ConstPoolItem::Double(double)) => Ok(double),
+            _ => bail!("Constant pool index {} not Double", index),
+        }
+    }
+
     pub fn get_utf8(&self, index: u16) -> Result<IntStr<'a>> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::Utf8(string)) => Ok(string),
-            _ => bail!("Constant pool index {} not Utf8", index,),
+            _ => bail!("Constant pool index {} not Utf8", index),
         }
     }
 
     pub fn get_class(&self, index: u16) -> Result<IntStr<'a>> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::Class(index)) => self.get_utf8(index),
-            _ => bail!("Constant pool index {} not Class", index,),
+            _ => bail!("Constant pool index {} not Class", index),
         }
     }
 
@@ -65,7 +93,7 @@ impl<'a> ConstPool<'a> {
         &'b self,
         jvm: &'b JVM<'a>,
         index: u16,
-    ) -> Result<(&'a Class<'a>, MethodNaT<'a, 'a>)> {
+    ) -> Result<(&'a Class<'a>, MethodNaT<'a>)> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::Method { class, nat }) => Ok((class, nat)),
             Some(ConstPoolItem::MethodRef { class, nat }) => {
