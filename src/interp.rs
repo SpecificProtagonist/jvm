@@ -224,7 +224,7 @@ impl<'jvm> Frame<'jvm> {
     }
 }
 
-pub(crate) fn run<'a, 'b>(
+pub fn run<'a, 'b>(
     jvm: &'b JVM<'a>,
     method: Method<'a>,
     args: &'b [LocalValue],
@@ -790,9 +790,7 @@ pub(crate) fn run<'a, 'b>(
                 let index = frame.read_code_u16()?;
                 let (_, method) = method.class.const_pool.get_method(jvm, index)?;
                 let obj = frame.pop_ref()?;
-                if (method.name == jvm.intern_str("<init>"))
-                    | (method.name == jvm.intern_str("<cinit>"))
-                {
+                if (method.name.0 == "<init>") | (method.name.0 == "<clinit>") {
                     bail!("Must not invokevirtual class or instance initialization method")
                 }
                 // TODO
