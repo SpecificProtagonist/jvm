@@ -1,9 +1,9 @@
 public class InvokeStatic extends InvokeStaticSuper {
-    static int ldc() {
+    static int get() {
         return 42;
     }
 
-    public static boolean test() {
-        return ldc() == 42 & ldc_super() == 42;
+    public static boolean test(boolean is_true, boolean is_false) {
+        return get_super(get(), is_true, is_false) & is_true & !is_false;
     }
 }

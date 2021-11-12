@@ -1,3 +1,4 @@
+#![feature(once_cell)]
 use anyhow::{anyhow, bail, Context, Result};
 use object::{Object, ObjectData};
 use std::{
@@ -29,7 +30,7 @@ pub struct JVM<'a> {
     string_storage: Arena<String>,
     class_storage: Arena<Class<'a>>,
     typ_storage: Arena<Typ<'a>>,
-    method_storage: Arena<MethodMeta<'a>>,
+    method_storage: Arena<Method<'a>>,
     // Implementation detail of const_pool, maybe remove in the future
     method_descriptor_storage: Arena<MethodDescriptor<'a>>,
     class_path: Vec<PathBuf>,
@@ -37,6 +38,9 @@ pub struct JVM<'a> {
     strings: RwLock<HashSet<&'a str>>,
     types: RwLock<HashSet<&'a Typ<'a>>>,
     classes: RwLock<HashMap<IntStr<'a>, &'a Class<'a>>>,
+    // I hate this
+    // I had a static Class in parse.rs, but apparently I can't use a &'a Class<'static> as a &'a Class<'a>
+    dummy_class: &'a Class<'a>,
 }
 
 bitflags::bitflags! {
@@ -122,9 +126,14 @@ impl<'a> std::fmt::Display for IntStr<'a> {
 
 impl<'a> JVM<'a> {
     pub fn new(class_path: Vec<PathBuf>) -> Self {
+        let class_storage = Default::default();
+        // SAFETY: Classes inserted into the arena are valid as long as the arena exists,
+        // even if the reference to it is invalidated
+        let dummy_class =
+            unsafe { &*(&class_storage as *const Arena<Class>) }.alloc(Class::dummy_class());
         Self {
             string_storage: Default::default(),
-            class_storage: Default::default(),
+            class_storage,
             typ_storage: Default::default(),
             method_storage: Default::default(),
             method_descriptor_storage: Default::default(),
@@ -132,6 +141,7 @@ impl<'a> JVM<'a> {
             strings: Default::default(),
             types: Default::default(),
             classes: Default::default(),
+            dummy_class,
         }
         .into()
     }
@@ -208,22 +218,16 @@ impl<'a> JVM<'a> {
 
         let (class, super_class) = parse::read_class_file(&bytes, &self)?;
 
-        if name != class.name {
-            bail!("Class name did not match file name")
-        }
-
-        if class.version.0 > 52 {
-            bail!(
-                "Class version {}.{} > 45.3 not supported yet",
-                class.version.0,
-                class.version.1
-            )
-        }
-
         let class_storage = &self.class_storage as *const Arena<Class>;
         // SAFETY: Classes inserted into the arena are valid as long as the arena exists,
         // even if the reference to it is invalidated
         let class = unsafe { &*class_storage }.alloc(class);
+
+        if name != class.name {
+            bail!("Class name did not match file name")
+        }
+
+        let new_methods = class.methods.clone();
 
         // Superclasses loading & verification
         if let Some(super_class_name) = super_class {
@@ -245,6 +249,15 @@ impl<'a> JVM<'a> {
             }
         } else if class.name != self.intern_str("java/lang/Object") {
             bail!("Class has no superclass")
+        }
+
+        // While parsing, each method has their class field set to a dummy
+        // We can't use class.methods directly because that also includes parent classes
+        for method in new_methods.values() {
+            method.class.set(class);
+        }
+        for field in class.fields.values() {
+            field.class.set(class);
         }
 
         let mut guard = self.classes.write().unwrap();

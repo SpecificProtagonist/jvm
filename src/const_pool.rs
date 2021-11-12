@@ -1,18 +1,18 @@
-use std::cell::Cell;
-
 use crate::{
-    class::{Class, Field, MethodDescriptor, MethodNaT},
-    IntStr, JVM,
+    class::{Field, MethodDescriptor},
+    IntStr, Method, JVM,
 };
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
+use std::cell::Cell;
 
 // Differentiating runtime- and on-disk const pool shouldn't be neccessary
 // although it would allow a speedup
+#[derive(Debug)]
 pub(crate) struct ConstPool<'a> {
     pub items: Vec<Cell<ConstPoolItem<'a>>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum ConstPoolItem<'a> {
     Utf8(IntStr<'a>),
     Integer(i32),
@@ -20,27 +20,12 @@ pub(crate) enum ConstPoolItem<'a> {
     Long(i64),
     Double(f64),
     Class(u16),
-    Field(Field<'a>),
-    Method {
-        class: &'a Class<'a>,
-        nat: MethodNaT<'a>,
-    },
-    InterfaceMethodRef {
-        class: u16,
-        nat: u16,
-    },
-    NameAndType {
-        name: u16,
-        descriptor: u16,
-    },
-    FieldRef {
-        class: u16,
-        nat: u16,
-    },
-    MethodRef {
-        class: u16,
-        nat: u16,
-    },
+    Field(&'a Field<'a>),
+    Method(&'a Method<'a>),
+    InterfaceMethodRef { _class: u16, _nat: u16 },
+    NameAndType { name: u16, descriptor: u16 },
+    FieldRef { class: u16, nat: u16 },
+    MethodRef { class: u16, nat: u16 },
     RawString(u16),
     // Accoring to the spec, long and doubles taking two entries was a design mistake
     PlaceholderAfterLongOrDoubleEntryOrForEntryZero,
@@ -89,13 +74,9 @@ impl<'a> ConstPool<'a> {
         }
     }
 
-    pub fn get_method<'b>(
-        &'b self,
-        jvm: &'b JVM<'a>,
-        index: u16,
-    ) -> Result<(&'a Class<'a>, MethodNaT<'a>)> {
+    pub fn get_method<'b>(&'b self, jvm: &'b JVM<'a>, index: u16) -> Result<&'a Method<'a>> {
         match self.items.get(index as usize).map(Cell::get) {
-            Some(ConstPoolItem::Method { class, nat }) => Ok((class, nat)),
+            Some(ConstPoolItem::Method(method)) => Ok(method),
             Some(ConstPoolItem::MethodRef { class, nat }) => {
                 let class = jvm.resolve_class(self.get_class(class)?)?;
                 let (name, descriptor) = self.get_raw_nat(nat)?;
@@ -104,15 +85,17 @@ impl<'a> ConstPool<'a> {
                 let typ = unsafe {
                     &*(jvm.method_descriptor_storage.alloc(typ) as *const MethodDescriptor)
                 };
-                let nat = MethodNaT { name, typ };
-                self.items[index as usize].set(ConstPoolItem::Method { class, nat });
-                Ok((class, nat))
+                let method = class
+                    .method(name, typ)
+                    .ok_or_else(|| anyhow!("Method not found"))?;
+                self.items[index as usize].set(ConstPoolItem::Method(method));
+                Ok(method)
             }
             _ => bail!("Constant pool index {} not a method", index,),
         }
     }
 
-    pub fn get_field(&self, jvm: &JVM<'a>, index: u16) -> Result<Field<'a>> {
+    pub fn get_field(&self, jvm: &JVM<'a>, index: u16) -> Result<&'a Field<'a>> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::Field(field)) => Ok(field),
             Some(ConstPoolItem::FieldRef { class, nat }) => {

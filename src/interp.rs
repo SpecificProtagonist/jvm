@@ -1,6 +1,7 @@
-use std::usize;
+use std::{cell::Cell, usize};
 
 use crate::{
+    const_pool::{ConstPool, ConstPoolItem},
     field_storage::FieldStorage,
     object::{Object, ObjectData},
     Field, Method, Typ, JVM,
@@ -50,11 +51,11 @@ impl From<LocalValue> for Result<i32> {
     }
 }
 
-struct Frame<'jvm> {
+struct Frame<'a> {
     // Code has to be accessed via method and unwraped (guaranteed to be Some)
     // to prevent lifetime issues
     // Maybe put Code into a Rc instead of Method?
-    method: Method<'jvm>,
+    method: &'a Method<'a>,
     locals: Vec<LocalValue>,
     stack: Vec<LocalValue>,
     pc: u16,
@@ -93,7 +94,7 @@ impl<'jvm> Frame<'jvm> {
         ) {
             Ok((((*high as u64) << 32) + *low as u64) as i64)
         } else {
-            bail!("Failed to load local long from slot {}", index)
+            bail!("Failed to load local long from slot {}", index,)
         }
     }
 
@@ -178,11 +179,7 @@ impl<'jvm> Frame<'jvm> {
             self.stack.push(value);
             Ok(())
         } else {
-            bail!(
-                "Max stack exceeded ({}): \n{:?}",
-                self.stack.len(),
-                &self.stack
-            )
+            bail!("Max stack exceeded ({})", self.stack.len(),)
         }
     }
 
@@ -201,7 +198,6 @@ impl<'jvm> Frame<'jvm> {
     fn read_code_u8(&mut self) -> Result<u8> {
         self.pc += 1;
         self.method
-            .data
             .code
             .as_ref()
             .unwrap()
@@ -220,23 +216,23 @@ impl<'jvm> Frame<'jvm> {
     }
 
     fn read_previous_byte(&mut self) -> u8 {
-        self.method.data.code.as_ref().unwrap().bytes[self.pc as usize - 1]
+        self.method.code.as_ref().unwrap().bytes[self.pc as usize - 1]
     }
 }
 
 pub fn run<'a, 'b>(
     jvm: &'b JVM<'a>,
-    method: Method<'a>,
+    method: &'a Method<'a>,
     args: &'b [LocalValue],
 ) -> Result<ReturnValue> {
-    if method.data.code.is_none() {
+    if method.code.is_none() {
         todo!("Methods without code attribute");
     }
 
     let mut frame = Frame {
         method,
         locals: {
-            let max_locals = method.data.code.as_ref().unwrap().max_locals as usize;
+            let max_locals = method.code.as_ref().unwrap().max_locals as usize;
             let mut locals = Vec::with_capacity(max_locals);
             locals.extend_from_slice(args);
             while locals.len() < max_locals {
@@ -244,7 +240,7 @@ pub fn run<'a, 'b>(
             }
             locals
         },
-        stack: Vec::with_capacity(method.data.code.as_ref().unwrap().max_stack as usize),
+        stack: Vec::with_capacity(method.code.as_ref().unwrap().max_stack as usize),
         pc: 0,
     };
 
@@ -274,6 +270,18 @@ pub fn run<'a, 'b>(
             SIPUSH => {
                 let value = frame.read_code_u16()? as i16;
                 frame.push(LocalValue::Int(value as i32))?;
+            }
+            LDC => {
+                let index = frame.read_code_u8()? as u16;
+                ldc(&mut frame, &method.class.get().const_pool, index)?;
+            }
+            LDC_W => {
+                let index = frame.read_code_u16()?;
+                ldc(&mut frame, &method.class.get().const_pool, index)?;
+            }
+            LDC2_W => {
+                let index = frame.read_code_u16()?;
+                ldc(&mut frame, &method.class.get().const_pool, index)?;
             }
             ILOAD => {
                 let index = frame.read_code_u8()? as u16;
@@ -752,26 +760,26 @@ pub fn run<'a, 'b>(
             RETURN => return Ok(ReturnValue::Void),
             GETSTATIC => {
                 let index = frame.read_code_u16()?;
-                let field = method.class.const_pool.get_field(jvm, index)?;
-                get_field(&mut frame, field, &field.class.static_storage)?;
+                let field = method.class.get().const_pool.get_field(jvm, index)?;
+                get_field(&mut frame, field, &field.class.get().static_storage)?;
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16()?;
-                let field = method.class.const_pool.get_field(jvm, index)?;
-                put_field(&mut frame, field, &field.class.static_storage)?;
+                let field = method.class.get().const_pool.get_field(jvm, index)?;
+                put_field(&mut frame, field, &field.class.get().static_storage)?;
             }
             GETFIELD => {
                 let index = frame.read_code_u16()?;
-                let field = method.class.const_pool.get_field(jvm, index)?;
+                let field = method.class.get().const_pool.get_field(jvm, index)?;
                 let object = frame.pop_ref()?;
                 get_field(&mut frame, field, &object.data)?;
             }
             PUTFIELD => {
                 let index = frame.read_code_u16()?;
-                let field = method.class.const_pool.get_field(jvm, index)?;
+                let field = method.class.get().const_pool.get_field(jvm, index)?;
                 // Stack has object ref first, then value on top
                 // This is ugly
-                let object = if matches!(field.meta.descriptor, Typ::Long | Typ::Double) {
+                let object = if matches!(field.descriptor, Typ::Long | Typ::Double) {
                     let high = frame.pop()?;
                     let low = frame.pop()?;
                     let obj = frame.pop_ref()?;
@@ -788,44 +796,47 @@ pub fn run<'a, 'b>(
             }
             INVOKEVIRTUAL => {
                 let index = frame.read_code_u16()?;
-                let (_, method) = method.class.const_pool.get_method(jvm, index)?;
+                let invoke_method = method.class.get().const_pool.get_method(jvm, index)?;
                 let obj = frame.pop_ref()?;
-                if (method.name.0 == "<init>") | (method.name.0 == "<clinit>") {
+                if (method.nat.name.0 == "<init>") | (method.nat.name.0 == "<clinit>") {
                     bail!("Must not invokevirtual class or instance initialization method")
                 }
                 // TODO
             }
             INVOKESPECIAL => {
                 let index = frame.read_code_u16()?;
-                let (invoke_class, method) = method.class.const_pool.get_method(jvm, index)?;
+                let invoke_method = method.class.get().const_pool.get_method(jvm, index)?;
                 let obj = frame.pop_ref()?;
                 // TODO
             }
             INVOKESTATIC => {
                 let index = frame.read_code_u16()?;
                 // TODO: intern MethodRef/use Id<Method> or something
-                let (invoked_class, invoked_method) =
-                    method.class.const_pool.get_method(jvm, index)?;
+                let invoke_method = method.class.get().const_pool.get_method(jvm, index)?;
 
-                let arg_count = invoked_method.typ.0.len();
+                let mut arg_count = invoke_method.nat.typ.0.len();
+                // Longs & doubles are double wide...
+                {
+                    let mut i = 1;
+                    for _ in 0..arg_count {
+                        if matches!(
+                            frame.stack.get(frame.stack.len() - i),
+                            Some(LocalValue::HighHalfOfLong(_) | LocalValue::HighHalfOfDouble(_))
+                        ) {
+                            arg_count += 1;
+                            i += 1;
+                        }
+                        i += 1;
+                    }
+                }
                 if arg_count > frame.stack.len() {
                     bail!("Invokestatic: not enough elements on stack")
                 }
-                let resolved = if let Some(resolved) =
-                    invoked_class.method(invoked_method.name, invoked_method.typ)
-                {
-                    resolved
-                } else {
-                    bail!(
-                        "Method {} not found in class {}",
-                        invoked_method.name,
-                        invoked_class.name
-                    );
-                };
                 let args = &frame.stack[frame.stack.len() - arg_count..];
-                match run(jvm, resolved, args)
-                    .with_context(|| format!("Trying to call {:?}", invoked_method.name))?
-                {
+                let result = run(jvm, invoke_method, args)
+                    .with_context(|| format!("Trying to call {}", invoke_method.nat.name))?;
+                frame.stack.truncate(frame.stack.len() - arg_count);
+                match result {
                     ReturnValue::Void => {}
                     ReturnValue::Ref(object) => frame.push(LocalValue::Ref(object))?,
                     ReturnValue::Int(value) => frame.push(LocalValue::Int(value))?,
@@ -836,7 +847,7 @@ pub fn run<'a, 'b>(
             }
             NEW => {
                 let index = frame.read_code_u16()?;
-                let new_class = method.class.const_pool.get_class(index)?;
+                let new_class = method.class.get().const_pool.get_class(index)?;
                 let new_class = jvm.resolve_class(new_class)?;
                 frame.push(LocalValue::Ref(jvm.create_object(new_class)))?;
             }
@@ -857,49 +868,58 @@ pub fn run<'a, 'b>(
     }
 }
 
-fn get_field(frame: &mut Frame, field: Field, storage: &FieldStorage) -> Result<()> {
+fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) -> Result<()> {
+    match const_pool.items.get(index as usize).map(Cell::get) {
+        Some(ConstPoolItem::Integer(i)) => frame.push(LocalValue::Int(i)),
+        Some(ConstPoolItem::Float(f)) => frame.push(LocalValue::Float(f)),
+        Some(ConstPoolItem::Long(l)) => frame.push_long(l),
+        Some(ConstPoolItem::Double(d)) => frame.push_double(d),
+        Some(ConstPoolItem::RawString(_) | ConstPoolItem::Class(_)) => todo!(),
+        _ => bail!("Invalid ldc/ldc_w/ldc2_w     index: {}", index,),
+    }
+}
+
+fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) -> Result<()> {
     // Correct allignment guaranteed because it is used to construct the FieldStorage layout and is stored immutably
     unsafe {
-        match field.meta.descriptor {
+        match field.descriptor {
             Typ::Bool | Typ::Byte => frame.push(LocalValue::Int(
-                storage.read_u8(field.meta.byte_offset) as i8 as i32,
+                storage.read_u8(field.byte_offset) as i8 as i32,
             ))?,
             Typ::Short | Typ::Char => frame.push(LocalValue::Int(
-                storage.read_u16(field.meta.byte_offset) as i16 as i32,
+                storage.read_u16(field.byte_offset) as i16 as i32,
             ))?,
-            Typ::Int => frame.push(LocalValue::Int(
-                storage.read_u32(field.meta.byte_offset) as i32
-            ))?,
+            Typ::Int => frame.push(LocalValue::Int(storage.read_u32(field.byte_offset) as i32))?,
             Typ::Float => frame.push(LocalValue::Float(f32::from_bits(
-                storage.read_u32(field.meta.byte_offset),
+                storage.read_u32(field.byte_offset),
             )))?,
-            Typ::Long => frame.push_long(storage.read_u64(field.meta.byte_offset) as i64)?,
+            Typ::Long => frame.push_long(storage.read_u64(field.byte_offset) as i64)?,
             Typ::Double => {
-                frame.push_double(f64::from_bits(storage.read_u64(field.meta.byte_offset)))?
+                frame.push_double(f64::from_bits(storage.read_u64(field.byte_offset)))?
             }
             Typ::Class(..) | Typ::Array { .. } => frame.push(LocalValue::Ref(
-                &*(storage.read_usize(field.meta.byte_offset) as *const ObjectData),
+                &*(storage.read_usize(field.byte_offset) as *const ObjectData),
             ))?,
         }
     }
     Ok(())
 }
 
-fn put_field(frame: &mut Frame, field: Field, storage: &FieldStorage) -> Result<()> {
+fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) -> Result<()> {
     unsafe {
-        match field.meta.descriptor {
+        match field.descriptor {
             Typ::Bool | Typ::Byte => {
-                storage.write_u8(field.meta.byte_offset, frame.pop_int()? as i8 as u8)
+                storage.write_u8(field.byte_offset, frame.pop_int()? as i8 as u8)
             }
             Typ::Short | Typ::Char => {
-                storage.write_u16(field.meta.byte_offset, frame.pop_int()? as i16 as u16)
+                storage.write_u16(field.byte_offset, frame.pop_int()? as i16 as u16)
             }
-            Typ::Int => storage.write_u32(field.meta.byte_offset, frame.pop_int()? as u32),
-            Typ::Float => storage.write_u32(field.meta.byte_offset, frame.pop_float()?.to_bits()),
-            Typ::Long => storage.write_u64(field.meta.byte_offset, frame.pop_long()? as u64),
-            Typ::Double => storage.write_u64(field.meta.byte_offset, frame.pop_double()?.to_bits()),
+            Typ::Int => storage.write_u32(field.byte_offset, frame.pop_int()? as u32),
+            Typ::Float => storage.write_u32(field.byte_offset, frame.pop_float()?.to_bits()),
+            Typ::Long => storage.write_u64(field.byte_offset, frame.pop_long()? as u64),
+            Typ::Double => storage.write_u64(field.byte_offset, frame.pop_double()?.to_bits()),
             Typ::Class(..) | Typ::Array { .. } => storage.write_usize(
-                field.meta.byte_offset,
+                field.byte_offset,
                 frame.pop_ref()? as *const ObjectData as usize,
             ),
         }
@@ -925,6 +945,9 @@ pub mod instructions {
     pub const DCONST_1: u8 = 15;
     pub const BIPUSH: u8 = 16;
     pub const SIPUSH: u8 = 17;
+    pub const LDC: u8 = 18;
+    pub const LDC_W: u8 = 19;
+    pub const LDC2_W: u8 = 20;
     pub const ILOAD: u8 = 21;
     pub const LLOAD: u8 = 22;
     pub const FLOAD: u8 = 23;
