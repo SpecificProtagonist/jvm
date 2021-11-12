@@ -1,7 +1,7 @@
 use std::{alloc::Layout, cell::Cell, collections::HashMap};
 
 use crate::{
-    class::{Class, FieldMeta, FieldNaT, MethodMeta, MethodNaT},
+    class::{Class, Field, FieldNaT, Method, MethodNaT},
     const_pool::{ConstPool, ConstPoolItem},
     object::min_object_layout,
     AccessFlags, Code, FieldStorage, IntStr, MethodDescriptor, Typ, JVM,
@@ -75,8 +75,8 @@ fn read_const_pool_item<'a, 'b, 'c>(
             nat: read_u16(input)?,
         }),
         11 => Ok(InterfaceMethodRef {
-            class: read_u16(input)?,
-            nat: read_u16(input)?,
+            _class: read_u16(input)?,
+            _nat: read_u16(input)?,
         }),
         12 => Ok(NameAndType {
             name: read_u16(input)?,
@@ -191,7 +191,7 @@ fn read_field<'a, 'b, 'c>(
     input: &'b mut &'c [u8],
     constant_pool: &ConstPool<'a>,
     jvm: &'b JVM<'a>,
-) -> Result<FieldMeta<'a>> {
+) -> Result<Field<'a>> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(input)?);
 
     let name = constant_pool.get_utf8(read_u16(input)?)?;
@@ -218,13 +218,14 @@ fn read_field<'a, 'b, 'c>(
         }
     }
 
-    Ok(FieldMeta {
+    Ok(Field {
         name,
         access_flags,
         descriptor,
         // The correct layout is set in read_fields after field disordering
         byte_offset: 0,
         const_value_index,
+        class: Cell::new(&jvm.dummy_class),
     })
 }
 
@@ -233,7 +234,7 @@ fn read_fields<'a, 'b, 'c>(
     constant_pool: &ConstPool<'a>,
     jvm: &'b JVM<'a>,
 ) -> Result<(
-    HashMap<FieldNaT<'a>, FieldMeta<'a>>,
+    HashMap<FieldNaT<'a>, Field<'a>>,
     /*static*/ Layout,
     /*object*/ Layout,
 )> {
@@ -337,9 +338,9 @@ pub(crate) fn parse_method_descriptor<'a, 'b>(
 
 fn read_method<'a, 'b, 'c>(
     input: &'b mut &'c [u8],
-    constant_pool: &ConstPool<'a>,
+    constant_pool: &'b ConstPool<'a>,
     jvm: &'b JVM<'a>,
-) -> Result<MethodMeta<'a>> {
+) -> Result<Method<'a>> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(input)?);
 
     let name = constant_pool.get_utf8(read_u16(input)?)?;
@@ -364,9 +365,10 @@ fn read_method<'a, 'b, 'c>(
     let typ =
         unsafe { &*(jvm.method_descriptor_storage.alloc(descriptor) as *const MethodDescriptor) };
 
-    Ok(MethodMeta {
+    Ok(Method {
         nat: MethodNaT { name, typ },
         access_flags,
+        class: Cell::new(&jvm.dummy_class),
         code,
     })
 }
@@ -375,7 +377,7 @@ fn read_methods<'a, 'b, 'c>(
     input: &'b mut &'c [u8],
     constant_pool: &ConstPool<'a>,
     jvm: &'b JVM<'a>,
-) -> Result<HashMap<MethodNaT<'a>, &'a MethodMeta<'a>>> {
+) -> Result<HashMap<MethodNaT<'a>, &'a Method<'a>>> {
     let length = read_u16(input)?;
     let mut methods = HashMap::with_capacity(length as usize);
     for _ in 0..length {
@@ -385,7 +387,7 @@ fn read_methods<'a, 'b, 'c>(
                 bail!("Duplicate method in same class")
             }
         }
-        let storage = &jvm.method_storage as *const Arena<MethodMeta>;
+        let storage = &jvm.method_storage as *const Arena<Method>;
         // SAFETY: Strings inserted into the arena are valid as long as the arena exists,
         // even if the reference to it is invalidated
         let method = unsafe { &*storage }.alloc(method);
@@ -394,7 +396,9 @@ fn read_methods<'a, 'b, 'c>(
     Ok(methods)
 }
 
-/// super_class is set to None, actual superclass name (which needs to be resolved) is returned alongside
+/// class of each field is set to the dummy,
+/// super_class is set to None,
+/// actual superclass name (which needs to be resolved) is returned alongside,
 pub(crate) fn read_class_file<'a, 'b, 'c>(
     mut input: &'c [u8],
     jvm: &'b JVM<'a>,
@@ -404,6 +408,14 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
     read_magic(input)?;
     let minor_version = read_u16(input)?;
     let major_version = read_u16(input)?;
+
+    if major_version > 52 {
+        bail!(
+            "Class version {}.{} > 52 not supported yet",
+            major_version,
+            minor_version
+        )
+    }
 
     let const_pool = read_const_pool(input, jvm)?;
 
@@ -438,11 +450,10 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
             static_storage,
             object_layout,
             fields,
-            methods,
+            methods: methods,
             initializer: Default::default(),
             init_lock: Default::default(),
-        }
-        .into(),
+        },
         super_class,
     ))
 }

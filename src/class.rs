@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Result};
-use std::{alloc::Layout, cell::Cell, collections::HashMap, sync::Mutex, thread::ThreadId};
+use std::{
+    alloc::Layout, cell::Cell, collections::HashMap, fmt::Debug, sync::Mutex, thread::ThreadId,
+};
 
 use crate::{const_pool::ConstPool, field_storage::FieldStorage, AccessFlags, Code, IntStr, Typ};
 
@@ -20,8 +22,8 @@ pub struct Class<'a> {
     #[allow(unused)]
     pub(crate) interfaces: Vec<IntStr<'a>>,
     /// As far as I can tell, JVM supports field overloading
-    pub(crate) fields: HashMap<FieldNaT<'a>, FieldMeta<'a>>,
-    pub(crate) methods: HashMap<MethodNaT<'a>, &'a MethodMeta<'a>>,
+    pub(crate) fields: HashMap<FieldNaT<'a>, Field<'a>>,
+    pub(crate) methods: HashMap<MethodNaT<'a>, &'a Method<'a>>,
     pub(crate) static_storage: FieldStorage,
     pub(crate) object_layout: Layout,
     /// Thread doing the initialization. If None, this class is already initialized.
@@ -30,9 +32,9 @@ pub struct Class<'a> {
 }
 
 impl<'a> Class<'a> {
-    pub(crate) fn resolve_field(&'a self, field: FieldNaT<'a>) -> Result<Field<'a>> {
-        if let Some(meta) = self.fields.get(&field) {
-            Ok(Field { class: self, meta })
+    pub(crate) fn resolve_field(&'a self, field: FieldNaT<'a>) -> Result<&'a Field<'a>> {
+        if let Some(field) = self.fields.get(&field) {
+            Ok(field)
         } else {
             let super_class = self
                 .super_class
@@ -45,16 +47,29 @@ impl<'a> Class<'a> {
         &'a self,
         name: IntStr<'a>,
         typ: &'b MethodDescriptor<'a>,
-    ) -> Option<Method<'a>> {
-        self.methods
-            .get(&MethodNaT { name, typ })
-            .map(|data| Method { class: self, data })
+    ) -> Option<&'a Method<'a>> {
+        self.methods.get(&MethodNaT { name, typ }).map(|m| *m)
     }
 
-    pub fn field(&'a self, name: IntStr<'a>, typ: &'a Typ<'a>) -> Option<Field<'a>> {
-        self.fields
-            .get(&FieldNaT { name, typ })
-            .map(|meta| Field { class: self, meta })
+    pub fn field(&'a self, name: IntStr<'a>, typ: &'a Typ<'a>) -> Option<&'a Field<'a>> {
+        self.fields.get(&FieldNaT { name, typ })
+    }
+
+    pub(crate) fn dummy_class() -> Self {
+        Class {
+            version: (0, 0),
+            const_pool: ConstPool { items: Vec::new() },
+            access_flags: AccessFlags::empty(),
+            name: IntStr(""),
+            super_class: None,
+            interfaces: Default::default(),
+            static_storage: FieldStorage::new(Layout::new::<()>()),
+            object_layout: Layout::new::<()>(),
+            fields: Default::default(),
+            methods: Default::default(),
+            initializer: Default::default(),
+            init_lock: Default::default(),
+        }
     }
 }
 
@@ -64,32 +79,22 @@ impl<'a> std::fmt::Debug for Class<'a> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Field<'a> {
-    pub(crate) class: &'a Class<'a>,
-    pub(crate) meta: &'a FieldMeta<'a>,
-}
-
-impl<'a> Eq for &'a FieldMeta<'a> {}
-impl<'a> PartialEq for &'a FieldMeta<'a> {
+impl<'a> Eq for &'a Field<'a> {}
+impl<'a> PartialEq for &'a Field<'a> {
     fn eq(&self, other: &Self) -> bool {
-        *self as *const FieldMeta == *other as *const FieldMeta
+        *self as *const Field == *other as *const Field
     }
 }
 
-pub(crate) struct FieldMeta<'a> {
-    pub name: IntStr<'a>,
-    pub access_flags: AccessFlags,
-    pub descriptor: &'a Typ<'a>,
+#[derive(Debug)]
+pub struct Field<'a> {
+    pub(crate) name: IntStr<'a>,
+    pub(crate) class: Cell<&'a Class<'a>>,
+    pub(crate) access_flags: AccessFlags,
+    pub(crate) descriptor: &'a Typ<'a>,
     // Java has no multiple inheritance for fields, therefore each field can be at a set position
-    pub byte_offset: u32,
-    pub const_value_index: Option<u16>,
-}
-
-#[derive(Clone, Copy)]
-pub struct Method<'a> {
-    pub(crate) class: &'a Class<'a>,
-    pub(crate) data: &'a MethodMeta<'a>,
+    pub(crate) byte_offset: u32,
+    pub(crate) const_value_index: Option<u16>,
 }
 
 impl<'a> Eq for &'a Method<'a> {}
@@ -99,10 +104,17 @@ impl<'a> PartialEq for &'a Method<'a> {
     }
 }
 
-pub(crate) struct MethodMeta<'a> {
-    pub nat: MethodNaT<'a>,
-    pub access_flags: AccessFlags,
-    pub code: Option<Code>,
+pub struct Method<'a> {
+    pub(crate) nat: MethodNaT<'a>,
+    pub(crate) access_flags: AccessFlags,
+    pub(crate) class: Cell<&'a Class<'a>>,
+    pub(crate) code: Option<Code>,
+}
+
+impl<'a> Debug for Method<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.nat)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

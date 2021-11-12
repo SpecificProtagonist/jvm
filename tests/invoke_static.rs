@@ -1,4 +1,4 @@
-use jvm::interp::ReturnValue;
+use jvm::interp::{LocalValue, ReturnValue};
 use jvm::*;
 
 #[test]
@@ -9,10 +9,13 @@ fn invoke_static() -> anyhow::Result<()> {
     let method = class
         .method(
             jvm.intern_str("test"),
-            &MethodDescriptor(vec![], Some(bool)),
+            &MethodDescriptor(vec![bool, bool], Some(bool)),
         )
         .unwrap();
-    assert_eq!(interp::run(&jvm, method, &[])?, ReturnValue::Int(1));
+    assert_eq!(
+        interp::run(&jvm, method, &[LocalValue::Int(1), LocalValue::Int(0)])?,
+        ReturnValue::Int(1)
+    );
 
     Ok(())
 }
