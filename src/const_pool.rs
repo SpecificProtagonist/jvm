@@ -1,6 +1,6 @@
 use crate::{
     class::{Field, MethodDescriptor},
-    IntStr, Method, JVM,
+    AccessFlags, Class, IntStr, Method, MethodNaT, JVM,
 };
 use anyhow::{anyhow, bail, Result};
 use std::cell::Cell;
@@ -21,7 +21,9 @@ pub(crate) enum ConstPoolItem<'a> {
     Double(f64),
     Class(u16),
     Field(&'a Field<'a>),
-    Method(&'a Method<'a>),
+    StaticMethod(&'a Method<'a>),
+    // Class is neccessary for invoke_special
+    VirtualMethod(&'a Class<'a>, MethodNaT<'a>),
     InterfaceMethodRef { _class: u16, _nat: u16 },
     NameAndType { name: u16, descriptor: u16 },
     FieldRef { class: u16, nat: u16 },
@@ -74,9 +76,9 @@ impl<'a> ConstPool<'a> {
         }
     }
 
-    pub fn get_method<'b>(&'b self, jvm: &'b JVM<'a>, index: u16) -> Result<&'a Method<'a>> {
+    pub fn get_static_method<'b>(&'b self, jvm: &'b JVM<'a>, index: u16) -> Result<&'a Method<'a>> {
         match self.items.get(index as usize).map(Cell::get) {
-            Some(ConstPoolItem::Method(method)) => Ok(method),
+            Some(ConstPoolItem::StaticMethod(method)) => Ok(method),
             Some(ConstPoolItem::MethodRef { class, nat }) => {
                 let class = jvm.resolve_class(self.get_class(class)?)?;
                 let (name, descriptor) = self.get_raw_nat(nat)?;
@@ -88,8 +90,40 @@ impl<'a> ConstPool<'a> {
                 let method = class
                     .method(name, typ)
                     .ok_or_else(|| anyhow!("Method not found"))?;
-                self.items[index as usize].set(ConstPoolItem::Method(method));
+                if !method.access_flags.contains(AccessFlags::STATIC) {
+                    bail!("Method {} not static", &method.nat)
+                }
+                self.items[index as usize].set(ConstPoolItem::StaticMethod(method));
                 Ok(method)
+            }
+            _ => bail!("Constant pool index {} not a method", index,),
+        }
+    }
+
+    pub fn get_virtual_method<'b>(
+        &'b self,
+        jvm: &'b JVM<'a>,
+        index: u16,
+    ) -> Result<(&'a Class<'a>, MethodNaT<'a>)> {
+        match self.items.get(index as usize).map(Cell::get) {
+            Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, nat)),
+            Some(ConstPoolItem::MethodRef { class, nat }) => {
+                let class = jvm.resolve_class(self.get_class(class)?)?;
+                let (name, descriptor) = self.get_raw_nat(nat)?;
+                let typ = crate::parse::parse_method_descriptor(jvm, descriptor)?;
+                // SAFETY: elements of the arena are at the same pos as long as the arena exists
+                let typ = unsafe {
+                    &*(jvm.method_descriptor_storage.alloc(typ) as *const MethodDescriptor)
+                };
+                let nat = MethodNaT { name, typ };
+                let method = class
+                    .method(name, typ)
+                    .ok_or_else(|| anyhow!("Method {} not found", nat))?;
+                if method.access_flags.contains(AccessFlags::STATIC) {
+                    bail!("Method {} is static", nat)
+                }
+                self.items[index as usize].set(ConstPoolItem::VirtualMethod(class, nat));
+                Ok((class, nat))
             }
             _ => bail!("Constant pool index {} not a method", index,),
         }

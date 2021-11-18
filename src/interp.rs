@@ -4,7 +4,7 @@ use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     field_storage::FieldStorage,
     object::{Object, ObjectData},
-    Field, Method, Typ, JVM,
+    AccessFlags, Field, Method, Typ, JVM,
 };
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -283,7 +283,7 @@ pub fn run<'a, 'b>(
                 let index = frame.read_code_u16()?;
                 ldc(&mut frame, &method.class.get().const_pool, index)?;
             }
-            ILOAD => {
+            ILOAD | FLOAD | ALOAD => {
                 let index = frame.read_code_u8()? as u16;
                 frame.push(frame.load(index)?)?;
             }
@@ -291,26 +291,18 @@ pub fn run<'a, 'b>(
                 let index = frame.read_code_u8()? as u16;
                 frame.push_long(frame.load_long(index)?)?;
             }
-            FLOAD => {
-                let index = frame.read_code_u8()? as u16;
-                frame.push(frame.load(index)?)?;
-            }
             DLOAD => {
                 let index = frame.read_code_u8()? as u16;
                 frame.push_double(frame.load_double(index)?)?;
             }
-            ILOAD_0 => frame.push(frame.load(0)?)?,
-            ILOAD_1 => frame.push(frame.load(1)?)?,
-            ILOAD_2 => frame.push(frame.load(2)?)?,
-            ILOAD_3 => frame.push(frame.load(3)?)?,
+            ILOAD_0 | FLOAD_0 | ALOAD_0 => frame.push(frame.load(0)?)?,
+            ILOAD_1 | FLOAD_1 | ALOAD_1 => frame.push(frame.load(1)?)?,
+            ILOAD_2 | FLOAD_2 | ALOAD_2 => frame.push(frame.load(2)?)?,
+            ILOAD_3 | FLOAD_3 | ALOAD_3 => frame.push(frame.load(3)?)?,
             LLOAD_0 => frame.push_long(frame.load_long(0)?)?,
             LLOAD_1 => frame.push_long(frame.load_long(1)?)?,
             LLOAD_2 => frame.push_long(frame.load_long(2)?)?,
             LLOAD_3 => frame.push_long(frame.load_long(3)?)?,
-            FLOAD_0 => frame.push(frame.load(0)?)?,
-            FLOAD_1 => frame.push(frame.load(1)?)?,
-            FLOAD_2 => frame.push(frame.load(2)?)?,
-            FLOAD_3 => frame.push(frame.load(3)?)?,
             DLOAD_0 => frame.push_double(frame.load_double(0)?)?,
             DLOAD_1 => frame.push_double(frame.load_double(1)?)?,
             DLOAD_2 => frame.push_double(frame.load_double(2)?)?,
@@ -334,6 +326,11 @@ pub fn run<'a, 'b>(
                 let index = frame.read_code_u8()? as u16;
                 let value = frame.pop_double()?;
                 frame.store_double(index, value)?;
+            }
+            ASTORE => {
+                let index = frame.read_code_u8()? as u16;
+                let value = frame.pop_ref()?;
+                frame.store(index, LocalValue::Ref(value))?;
             }
             ISTORE_0 => {
                 let value = frame.pop_int()?;
@@ -398,6 +395,22 @@ pub fn run<'a, 'b>(
             DSTORE_3 => {
                 let value = frame.pop_double()?;
                 frame.store_double(3, value)?;
+            }
+            ASTORE_0 => {
+                let value = frame.pop_ref()?;
+                frame.store(0, LocalValue::Ref(value))?;
+            }
+            ASTORE_1 => {
+                let value = frame.pop_ref()?;
+                frame.store(1, LocalValue::Ref(value))?;
+            }
+            ASTORE_2 => {
+                let value = frame.pop_ref()?;
+                frame.store(2, LocalValue::Ref(value))?;
+            }
+            ASTORE_3 => {
+                let value = frame.pop_ref()?;
+                frame.store(3, LocalValue::Ref(value))?;
             }
             DUP => {
                 let value = frame.pop()?;
@@ -757,6 +770,7 @@ pub fn run<'a, 'b>(
             LRETURN => return Ok(ReturnValue::Long(frame.pop_long()?)),
             FRETURN => return Ok(ReturnValue::Float(frame.pop_float()?)),
             DRETURN => return Ok(ReturnValue::Double(frame.pop_double()?)),
+            ARETURN => return Ok(ReturnValue::Ref(frame.pop_ref()?)),
             RETURN => return Ok(ReturnValue::Void),
             GETSTATIC => {
                 let index = frame.read_code_u16()?;
@@ -796,54 +810,60 @@ pub fn run<'a, 'b>(
             }
             INVOKEVIRTUAL => {
                 let index = frame.read_code_u16()?;
-                let invoke_method = method.class.get().const_pool.get_method(jvm, index)?;
-                let obj = frame.pop_ref()?;
-                if (method.nat.name.0 == "<init>") | (method.nat.name.0 == "<clinit>") {
+                let (_, nat) = method
+                    .class
+                    .get()
+                    .const_pool
+                    .get_virtual_method(jvm, index)?;
+                if (nat.name.0 == "<init>") | (nat.name.0 == "<clinit>") {
                     bail!("Must not invokevirtual class or instance initialization method")
                 }
-                // TODO
+                let obj = if let Some(LocalValue::Ref(obj)) = frame.stack.get(frame.stack.len() - 1)
+                {
+                    obj
+                } else {
+                    bail!("Failed invoke_special")
+                };
+                // TODO: check if obj.class() subclasses (or is) the referred class
+                let invoke_method = obj
+                    .class()
+                    .methods
+                    .get(&nat)
+                    .ok_or_else(|| anyhow!("Method not found"))?;
+                invoke(jvm, &mut frame, *invoke_method)?;
             }
             INVOKESPECIAL => {
                 let index = frame.read_code_u16()?;
-                let invoke_method = method.class.get().const_pool.get_method(jvm, index)?;
-                let obj = frame.pop_ref()?;
-                // TODO
+                let (named_class, nat) = method
+                    .class
+                    .get()
+                    .const_pool
+                    .get_virtual_method(jvm, index)?;
+
+                let class = if (nat.name.0 != "<init>")
+                    & method.class.get().is_subclass_of(named_class)
+                    & method.class.get().access_flags.contains(AccessFlags::SUPER)
+                {
+                    method.class.get().super_class.unwrap()
+                } else {
+                    named_class
+                };
+
+                let invoke_method = class
+                    .methods
+                    .get(&nat)
+                    .ok_or_else(|| anyhow!("Method not found"))?;
+                invoke(jvm, &mut frame, *invoke_method)?;
             }
             INVOKESTATIC => {
                 let index = frame.read_code_u16()?;
                 // TODO: intern MethodRef/use Id<Method> or something
-                let invoke_method = method.class.get().const_pool.get_method(jvm, index)?;
-
-                let mut arg_count = invoke_method.nat.typ.0.len();
-                // Longs & doubles are double wide...
-                {
-                    let mut i = 1;
-                    for _ in 0..arg_count {
-                        if matches!(
-                            frame.stack.get(frame.stack.len() - i),
-                            Some(LocalValue::HighHalfOfLong(_) | LocalValue::HighHalfOfDouble(_))
-                        ) {
-                            arg_count += 1;
-                            i += 1;
-                        }
-                        i += 1;
-                    }
-                }
-                if arg_count > frame.stack.len() {
-                    bail!("Invokestatic: not enough elements on stack")
-                }
-                let args = &frame.stack[frame.stack.len() - arg_count..];
-                let result = run(jvm, invoke_method, args)
-                    .with_context(|| format!("Trying to call {}", invoke_method.nat.name))?;
-                frame.stack.truncate(frame.stack.len() - arg_count);
-                match result {
-                    ReturnValue::Void => {}
-                    ReturnValue::Ref(object) => frame.push(LocalValue::Ref(object))?,
-                    ReturnValue::Int(value) => frame.push(LocalValue::Int(value))?,
-                    ReturnValue::Float(value) => frame.push(LocalValue::Float(value))?,
-                    ReturnValue::Long(value) => frame.push_long(value)?,
-                    ReturnValue::Double(value) => frame.push_double(value)?,
-                }
+                let invoke_method = method
+                    .class
+                    .get()
+                    .const_pool
+                    .get_static_method(jvm, index)?;
+                invoke(jvm, &mut frame, invoke_method)?;
             }
             NEW => {
                 let index = frame.read_code_u16()?;
@@ -927,6 +947,40 @@ fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) -> Result
     Ok(())
 }
 
+fn invoke<'a, 'b>(
+    jvm: &'b JVM<'a>,
+    frame: &'b mut Frame<'a>,
+    method: &'a Method<'a>,
+) -> Result<()> {
+    let mut arg_count = 0;
+    if !method.access_flags.contains(AccessFlags::STATIC) {
+        arg_count = 1;
+    }
+    for typ in &method.nat.typ.0 {
+        // Longs & doubles are double wide...
+        if matches!(typ, Typ::Long | Typ::Double) {
+            arg_count += 2;
+        } else {
+            arg_count += 1;
+        }
+    }
+    if arg_count > frame.stack.len() {
+        bail!("Invokestatic: not enough elements on stack")
+    }
+    let args = &frame.stack[frame.stack.len() - arg_count..];
+    let result =
+        run(jvm, method, args).with_context(|| format!("Trying to call {}", method.nat.name))?;
+    frame.stack.truncate(frame.stack.len() - arg_count);
+    match result {
+        ReturnValue::Void => Ok(()),
+        ReturnValue::Ref(object) => frame.push(LocalValue::Ref(object)),
+        ReturnValue::Int(value) => frame.push(LocalValue::Int(value)),
+        ReturnValue::Float(value) => frame.push(LocalValue::Float(value)),
+        ReturnValue::Long(value) => frame.push_long(value),
+        ReturnValue::Double(value) => frame.push_double(value),
+    }
+}
+
 pub mod instructions {
     pub const NOP: u8 = 0;
     pub const ICONST_M1: u8 = 2;
@@ -952,6 +1006,7 @@ pub mod instructions {
     pub const LLOAD: u8 = 22;
     pub const FLOAD: u8 = 23;
     pub const DLOAD: u8 = 24;
+    pub const ALOAD: u8 = 25;
     pub const ILOAD_0: u8 = 26;
     pub const ILOAD_1: u8 = 27;
     pub const ILOAD_2: u8 = 28;
@@ -968,10 +1023,15 @@ pub mod instructions {
     pub const DLOAD_1: u8 = 39;
     pub const DLOAD_2: u8 = 40;
     pub const DLOAD_3: u8 = 41;
+    pub const ALOAD_0: u8 = 42;
+    pub const ALOAD_1: u8 = 43;
+    pub const ALOAD_2: u8 = 44;
+    pub const ALOAD_3: u8 = 45;
     pub const ISTORE: u8 = 54;
     pub const LSTORE: u8 = 55;
     pub const FSTORE: u8 = 56;
     pub const DSTORE: u8 = 57;
+    pub const ASTORE: u8 = 58;
     pub const ISTORE_0: u8 = 59;
     pub const ISTORE_1: u8 = 60;
     pub const ISTORE_2: u8 = 61;
@@ -988,6 +1048,10 @@ pub mod instructions {
     pub const DSTORE_1: u8 = 72;
     pub const DSTORE_2: u8 = 73;
     pub const DSTORE_3: u8 = 74;
+    pub const ASTORE_0: u8 = 75;
+    pub const ASTORE_1: u8 = 76;
+    pub const ASTORE_2: u8 = 77;
+    pub const ASTORE_3: u8 = 78;
     pub const POP: u8 = 87;
     pub const POP2: u8 = 88;
     pub const DUP: u8 = 89;
@@ -1075,6 +1139,7 @@ pub mod instructions {
     pub const LRETURN: u8 = 173;
     pub const FRETURN: u8 = 174;
     pub const DRETURN: u8 = 175;
+    pub const ARETURN: u8 = 176;
     pub const RETURN: u8 = 177;
     pub const GETSTATIC: u8 = 178;
     pub const PUTSTATIC: u8 = 179;

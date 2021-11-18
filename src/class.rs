@@ -32,6 +32,12 @@ pub struct Class<'a> {
 }
 
 impl<'a> Class<'a> {
+    pub fn is_subclass_of(&'a self, other: &'a Class<'a>) -> bool {
+        self.super_class
+            .map(|sc| (sc == other) || sc.is_subclass_of(other))
+            .unwrap_or(false)
+    }
+
     pub(crate) fn resolve_field(&'a self, field: FieldNaT<'a>) -> Result<&'a Field<'a>> {
         if let Some(field) = self.fields.get(&field) {
             Ok(field)
