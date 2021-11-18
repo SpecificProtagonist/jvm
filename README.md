@@ -4,7 +4,7 @@ It currently allows
 - class initialization
 - operations on primitives
 - intra-function control flow (except exceptions)
-- calling static functions
+- calling functions (except via interfaces)
 - accessing fields
 
 Rough overview:

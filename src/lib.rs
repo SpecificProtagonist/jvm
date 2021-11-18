@@ -47,6 +47,7 @@ bitflags::bitflags! {
     pub struct AccessFlags: u16 {
         const STATIC = 0x0008;
         const FINAL = 0x0010;
+        const SUPER = 0x0020;
     }
 }
 
