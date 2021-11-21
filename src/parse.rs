@@ -75,8 +75,8 @@ fn read_const_pool_item<'a, 'b, 'c>(
             nat: read_u16(input)?,
         }),
         11 => Ok(InterfaceMethodRef {
-            _class: read_u16(input)?,
-            _nat: read_u16(input)?,
+            class: read_u16(input)?,
+            nat: read_u16(input)?,
         }),
         12 => Ok(NameAndType {
             name: read_u16(input)?,
@@ -103,6 +103,42 @@ fn read_const_pool<'a, 'b, 'c>(input: &'b mut &'c [u8], jvm: &'b JVM<'a>) -> Res
             ))
         }
     }
+    // Const pool validity is part of format checking
+    if !items.iter().all(|item| match item.get() {
+        ConstPoolItem::Class(index) => matches!(
+            items.get(index as usize).map(Cell::get),
+            Some(ConstPoolItem::Utf8(..))
+        ),
+        ConstPoolItem::FieldRef { class, nat }
+        | ConstPoolItem::MethodRef { class, nat }
+        | ConstPoolItem::InterfaceMethodRef { class, nat } => matches!(
+            (
+                items.get(class as usize).map(Cell::get),
+                items.get(nat as usize).map(Cell::get)
+            ),
+            (
+                Some(ConstPoolItem::Class(..)),
+                Some(ConstPoolItem::NameAndType { .. })
+            )
+        ),
+        ConstPoolItem::NameAndType { name, descriptor } => matches!(
+            (
+                items.get(name as usize).map(Cell::get),
+                items.get(descriptor as usize).map(Cell::get)
+            ),
+            (Some(ConstPoolItem::Utf8(..)), Some(ConstPoolItem::Utf8(..)))
+        ),
+        ConstPoolItem::RawString(index) => {
+            matches!(
+                items.get(index as usize).map(Cell::get),
+                Some(ConstPoolItem::Utf8(..))
+            )
+        }
+        _ => true,
+    }) {
+        bail!("Invalid constant pool")
+    }
+
     Ok(ConstPool { items })
 }
 
@@ -205,7 +241,6 @@ fn read_field<'a, 'b, 'c>(
     let mut const_value_index = None;
     let attributes_count = read_u16(input)?;
     for _ in 0..attributes_count {
-        // Ignore attributes
         let (name, data) = read_attribute(input, constant_pool)?;
         if name.0 == "ConstantValue" {
             if access_flags.contains(AccessFlags::FINAL | AccessFlags::STATIC) {
@@ -416,6 +451,7 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
             minor_version
         )
     }
+    // Maybe only allow classes >= 51? Would remove some cruft
 
     let const_pool = read_const_pool(input, jvm)?;
 
@@ -438,6 +474,15 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
     let methods = read_methods(input, &const_pool, jvm).context("Reading methods")?;
 
     let static_storage = FieldStorage::new(static_layout);
+
+    let attributes_count = read_u16(input)?;
+    for _ in 0..attributes_count {
+        read_attribute(input, &const_pool)?;
+    }
+
+    if input.len() > 0 {
+        bail!("Malformed class file: Expected EOF")
+    }
 
     Ok((
         Class {
