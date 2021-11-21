@@ -209,7 +209,7 @@ impl<'a> JVM<'a> {
             if path.exists() {
                 let mut file = Vec::new();
                 File::open(path)
-                    .with_context(|| format!("Trying to load class {}", name))?
+                    .with_context(|| format!("Failed to load class {}", name))?
                     .read_to_end(&mut file)?;
                 bytes = Some(file);
                 break;
@@ -217,7 +217,8 @@ impl<'a> JVM<'a> {
         }
         let bytes = bytes.ok_or_else(|| anyhow!("No class def found for {}", name))?;
 
-        let (class, super_class) = parse::read_class_file(&bytes, &self)?;
+        let (class, super_class) = parse::read_class_file(&bytes, &self)
+            .with_context(|| format!("Failed to parse class {}", name))?;
 
         let class_storage = &self.class_storage as *const Arena<Class>;
         // SAFETY: Classes inserted into the arena are valid as long as the arena exists,

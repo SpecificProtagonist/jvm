@@ -815,7 +815,7 @@ pub fn run<'a, 'b>(
                     .get()
                     .const_pool
                     .get_virtual_method(jvm, index)?;
-                if (nat.name.0 == "<init>") | (nat.name.0 == "<clinit>") {
+                if nat.name.0.starts_with('<') {
                     bail!("Must not invokevirtual class or instance initialization method")
                 }
                 let obj = if let Some(LocalValue::Ref(obj)) = frame.stack.get(frame.stack.len() - 1)

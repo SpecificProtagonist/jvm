@@ -24,7 +24,7 @@ pub(crate) enum ConstPoolItem<'a> {
     StaticMethod(&'a Method<'a>),
     // Class is neccessary for invoke_special
     VirtualMethod(&'a Class<'a>, MethodNaT<'a>),
-    InterfaceMethodRef { _class: u16, _nat: u16 },
+    InterfaceMethodRef { class: u16, nat: u16 },
     NameAndType { name: u16, descriptor: u16 },
     FieldRef { class: u16, nat: u16 },
     MethodRef { class: u16, nat: u16 },
