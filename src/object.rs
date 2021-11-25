@@ -1,63 +1,71 @@
-use std::alloc::Layout;
+use std::{marker::PhantomData, mem::size_of};
 
-use crate::{class::Class, field_storage::FieldStorage, AccessFlags, Typ};
+use crate::{field_storage::FieldStorage, AccessFlags, RefType, Typ};
 
-pub type Object = &'static ObjectData;
-
-impl PartialEq for Object {
+impl<'a> PartialEq for Object<'a> {
     fn eq(&self, other: &Self) -> bool {
-        *self as *const ObjectData == *other as *const ObjectData
+        self.data.addr() == other.data.addr()
     }
 }
 
-pub struct ObjectData {
-    pub data: FieldStorage,
+/// contains the ClassOrArray, followed by the fields/items
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Object<'a> {
+    pub(crate) data: FieldStorage,
+    pub(crate) _marker: PhantomData<&'a ()>,
 }
 
-impl ObjectData {
-    // TODO: arrays
-    pub(crate) fn class(&self) -> &Class {
-        unsafe { std::mem::transmute(self.data.read_usize(0)) }
+impl<'a> Object<'a> {
+    pub fn null(self) -> bool {
+        self.data.addr() == 0
+    }
+
+    pub fn class(self) -> &'a RefType<'a> {
+        unsafe { std::mem::transmute(self.data.read_usize(0).unwrap()) }
     }
 }
 
-impl std::fmt::Debug for ObjectData {
+impl<'a> std::fmt::Debug for Object<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}{{", self.class().name)?;
-        let mut first = true;
-        for field in self.class().fields.values() {
-            if !field.access_flags.contains(AccessFlags::STATIC) {
-                if !first {
-                    write!(f, ", ")?;
-                }
-                first = false;
-                write!(f, "{}: ", field.name)?;
-                // SAFETY: field.byte_offset has guaranteed correct alignment for type
-                unsafe {
-                    match field.descriptor {
-                        Typ::Bool | Typ::Byte => {
-                            write!(f, "{}", self.data.read_u8(field.byte_offset) as i8)?
+        match self.class() {
+            RefType::Array { base, .. } => {
+                write!(f, "{}[]{{…}}", base)?;
+            }
+            RefType::Class(class) => {
+                write!(f, "{}{{", class.name)?;
+                let mut first = true;
+                for field in class.fields.values() {
+                    if !field.access_flags.contains(AccessFlags::STATIC) {
+                        if !first {
+                            write!(f, ", ")?;
                         }
-                        Typ::Short => {
-                            write!(f, "{}", self.data.read_u16(field.byte_offset) as i16)?
+                        first = false;
+                        write!(f, "{}: ", field.name)?;
+                        match field.descriptor {
+                            Typ::Bool | Typ::Byte => {
+                                write!(f, "{}", self.data.read_i8(field.byte_offset).unwrap())?
+                            }
+                            Typ::Short => {
+                                write!(f, "{}", self.data.read_i16(field.byte_offset).unwrap())?
+                            }
+                            Typ::Char => {
+                                write!(f, "u+{:x}", self.data.read_i16(field.byte_offset).unwrap())?
+                            }
+                            Typ::Int => {
+                                write!(f, "{}", self.data.read_i32(field.byte_offset).unwrap())?
+                            }
+                            Typ::Long => {
+                                write!(f, "{}", self.data.read_i64(field.byte_offset).unwrap())?
+                            }
+                            Typ::Float => {
+                                write!(f, "{}", self.data.read_f32(field.byte_offset).unwrap())?
+                            }
+                            Typ::Double => {
+                                write!(f, "{}", self.data.read_f64(field.byte_offset).unwrap())?
+                            }
+                            Typ::Ref(_) => write!(f, "obj")?,
                         }
-                        Typ::Char => {
-                            write!(f, "u+{:x}", self.data.read_u16(field.byte_offset) as i16)?
-                        }
-                        Typ::Int => write!(f, "{}", self.data.read_u32(field.byte_offset) as i32)?,
-                        Typ::Long => write!(f, "{}", self.data.read_u64(field.byte_offset) as i64)?,
-                        Typ::Float => write!(
-                            f,
-                            "{}",
-                            f32::from_bits(self.data.read_u32(field.byte_offset))
-                        )?,
-                        Typ::Double => write!(
-                            f,
-                            "{}",
-                            f64::from_bits(self.data.read_u64(field.byte_offset))
-                        )?,
-                        Typ::Class(_) => write!(f, "obj")?,
-                        Typ::Array { dimensions, .. } => write!(f, "array[{}]", dimensions)?,
                     }
                 }
             }
@@ -66,6 +74,6 @@ impl std::fmt::Debug for ObjectData {
     }
 }
 
-pub fn min_object_layout() -> Layout {
-    Layout::new::<&Class>()
+pub fn min_object_size() -> usize {
+    size_of::<&RefType>()
 }

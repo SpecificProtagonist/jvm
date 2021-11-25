@@ -1,17 +1,17 @@
-use std::{cell::Cell, usize};
+use std::{cell::Cell, mem::size_of, usize};
 
 use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     field_storage::FieldStorage,
-    object::{Object, ObjectData},
-    AccessFlags, Field, Method, Typ, JVM,
+    object::{min_object_size, Object},
+    AccessFlags, Field, Method, RefType, Typ, JVM,
 };
 use anyhow::{anyhow, bail, Context, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ReturnValue {
+pub enum ReturnValue<'a> {
     Void,
-    Ref(Object),
+    Ref(Object<'a>),
     Int(i32),
     Long(i64),
     Float(f32),
@@ -20,9 +20,9 @@ pub enum ReturnValue {
 
 /// A value on the stack or in the local variables
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LocalValue {
+pub enum LocalValue<'a> {
     Uninitialized,
-    Ref(Object),
+    Ref(Object<'a>),
     ReturnAddress(u16),
     Int(i32),
     /// Both on stack & locals, the low half is stored first
@@ -34,14 +34,14 @@ pub enum LocalValue {
     HighHalfOfDouble(u32),
 }
 
-impl Default for LocalValue {
+impl<'a> Default for LocalValue<'a> {
     fn default() -> Self {
         LocalValue::Uninitialized
     }
 }
 
 // I'd use TryFrom, but then type interference fails
-impl From<LocalValue> for Result<i32> {
+impl<'a> From<LocalValue<'a>> for Result<i32> {
     fn from(value: LocalValue) -> Self {
         if let LocalValue::Int(value) = value {
             Ok(value)
@@ -56,18 +56,18 @@ struct Frame<'a> {
     // to prevent lifetime issues
     // Maybe put Code into a Rc instead of Method?
     method: &'a Method<'a>,
-    locals: Vec<LocalValue>,
-    stack: Vec<LocalValue>,
+    locals: Vec<LocalValue<'a>>,
+    stack: Vec<LocalValue<'a>>,
     pc: u16,
 }
 
-impl<'jvm> Frame<'jvm> {
+impl<'a> Frame<'a> {
     fn jump_relative(&mut self, base: u16, target_offset: i32) {
         // TODO: verify the target is an op boundary
         self.pc = (base as i32 + target_offset as i32) as u16;
     }
 
-    fn load(&self, index: u16) -> Result<LocalValue> {
+    fn load(&self, index: u16) -> Result<LocalValue<'a>> {
         self.locals
             .get(index as usize)
             .copied()
@@ -79,7 +79,7 @@ impl<'jvm> Frame<'jvm> {
         self.load(index)?.into()
     }
 
-    fn store(&mut self, index: u16, value: LocalValue) -> Result<()> {
+    fn store(&mut self, index: u16, value: LocalValue<'a>) -> Result<()> {
         *self
             .locals
             .get_mut(index as usize)
@@ -131,7 +131,7 @@ impl<'jvm> Frame<'jvm> {
         }
     }
 
-    fn pop(&mut self) -> Result<LocalValue> {
+    fn pop(&mut self) -> Result<LocalValue<'a>> {
         self.stack.pop().ok_or(anyhow!("Pop empty stack"))
     }
 
@@ -167,14 +167,14 @@ impl<'jvm> Frame<'jvm> {
         }
     }
 
-    fn pop_ref(&mut self) -> Result<Object> {
+    fn pop_ref(&mut self) -> Result<Object<'a>> {
         match self.pop()? {
             LocalValue::Ref(value) => Ok(value),
             other => bail!("Stack value mismatch: not an object ({:?})", other),
         }
     }
 
-    fn push(&mut self, value: LocalValue) -> Result<()> {
+    fn push(&mut self, value: LocalValue<'a>) -> Result<()> {
         if self.stack.len() < self.stack.capacity() {
             self.stack.push(value);
             Ok(())
@@ -223,8 +223,8 @@ impl<'jvm> Frame<'jvm> {
 pub fn run<'a, 'b>(
     jvm: &'b JVM<'a>,
     method: &'a Method<'a>,
-    args: &'b [LocalValue],
-) -> Result<ReturnValue> {
+    args: &'b [LocalValue<'a>],
+) -> Result<ReturnValue<'a>> {
     if method.code.is_none() {
         todo!("Methods without code attribute");
     }
@@ -307,6 +307,161 @@ pub fn run<'a, 'b>(
             DLOAD_1 => frame.push_double(frame.load_double(1)?)?,
             DLOAD_2 => frame.push_double(frame.load_double(2)?)?,
             DLOAD_3 => frame.push_double(frame.load_double(3)?)?,
+            IALOAD => {
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(obj.class(), &RefType::Array { base: Typ::Int, .. }) {
+                    frame.push(LocalValue::Int(
+                        obj.data
+                            .read_i32((min_object_size() as isize + 4 * index as isize) as u32)
+                            .ok_or_else(|| anyhow!("index out of bounds"))?,
+                    ))?;
+                } else {
+                    bail!("expected int array")
+                }
+            }
+            LALOAD => {
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Long,
+                        ..
+                    }
+                ) {
+                    frame.push_long(
+                        obj.data
+                            .read_i64((min_object_size() as isize + 8 * index as isize) as u32)
+                            .ok_or_else(|| anyhow!("index out of bounds"))?,
+                    )?;
+                } else {
+                    bail!("expected long array")
+                }
+            }
+            FALOAD => {
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Float,
+                        ..
+                    }
+                ) {
+                    frame.push(LocalValue::Float(
+                        obj.data
+                            .read_f32((min_object_size() as isize + 4 * index as isize) as u32)
+                            .ok_or_else(|| anyhow!("index out of bounds"))?,
+                    ))?;
+                } else {
+                    bail!("expected float array")
+                }
+            }
+            DALOAD => {
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Double,
+                        ..
+                    }
+                ) {
+                    frame.push_double(
+                        obj.data
+                            .read_f64((min_object_size() as isize + 8 * index as isize) as u32)
+                            .ok_or_else(|| anyhow!("index out of bounds"))?,
+                    )?;
+                } else {
+                    bail!("expected double array")
+                }
+            }
+            AALOAD => {
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Ref(_),
+                        ..
+                    }
+                ) {
+                    frame.push(LocalValue::Ref(unsafe {
+                        std::mem::transmute(
+                            obj.data
+                                .read_usize(
+                                    (min_object_size() as isize
+                                        + size_of::<usize>() as isize * index as isize)
+                                        as u32,
+                                )
+                                .ok_or_else(|| anyhow!("index out of bounds"))?,
+                        )
+                    }))?;
+                } else {
+                    bail!("expected object array")
+                }
+            }
+            BALOAD => {
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Byte | Typ::Bool,
+                        ..
+                    }
+                ) {
+                    frame.push(LocalValue::Int(
+                        obj.data
+                            .read_i8((min_object_size() as isize + index as isize) as u32)
+                            .ok_or_else(|| anyhow!("index out of bounds"))?
+                            as i32,
+                    ))?;
+                } else {
+                    bail!("expected bool or byte array")
+                }
+            }
+            CALOAD => {
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Char,
+                        ..
+                    }
+                ) {
+                    frame.push(LocalValue::Int(
+                        obj.data
+                            .read_i16((min_object_size() as isize + 2 * index as isize) as u32)
+                            .ok_or_else(|| anyhow!("index out of bounds"))?
+                            as u16 as i32,
+                    ))?;
+                } else {
+                    bail!("expected char array")
+                }
+            }
+            SALOAD => {
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Short,
+                        ..
+                    }
+                ) {
+                    frame.push(LocalValue::Int(
+                        obj.data
+                            .read_i16((min_object_size() as isize + 2 * index as isize) as u32)
+                            .ok_or_else(|| anyhow!("index out of bounds"))?
+                            as i32,
+                    ))?;
+                } else {
+                    bail!("expected short array")
+                }
+            }
             ISTORE => {
                 let index = frame.read_code_u8()? as u16;
                 let value = frame.pop_int()?;
@@ -411,6 +566,171 @@ pub fn run<'a, 'b>(
             ASTORE_3 => {
                 let value = frame.pop_ref()?;
                 frame.store(3, LocalValue::Ref(value))?;
+            }
+            IASTORE => {
+                let value = frame.pop_int()?;
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(obj.class(), &RefType::Array { base: Typ::Int, .. }) {
+                    obj.data
+                        .write_i32(
+                            (min_object_size() as isize + 4 * index as isize) as u32,
+                            value,
+                        )
+                        .ok_or_else(|| anyhow!("index out of bounds"))?;
+                } else {
+                    bail!("expected int array")
+                }
+            }
+            LASTORE => {
+                let value = frame.pop_long()?;
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Long,
+                        ..
+                    }
+                ) {
+                    obj.data
+                        .write_i64(
+                            (min_object_size() as isize + 8 * index as isize) as u32,
+                            value,
+                        )
+                        .ok_or_else(|| anyhow!("index out of bounds"))?;
+                } else {
+                    bail!("expected long array")
+                }
+            }
+            FASTORE => {
+                let value = frame.pop_float()?;
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Float,
+                        ..
+                    }
+                ) {
+                    obj.data
+                        .write_f32(
+                            (min_object_size() as isize + 4 * index as isize) as u32,
+                            value,
+                        )
+                        .ok_or_else(|| anyhow!("index out of bounds"))?;
+                } else {
+                    bail!("expected float array")
+                }
+            }
+            DASTORE => {
+                let value = frame.pop_double()?;
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Double,
+                        ..
+                    }
+                ) {
+                    obj.data
+                        .write_f64(
+                            (min_object_size() as isize + 8 * index as isize) as u32,
+                            value,
+                        )
+                        .ok_or_else(|| anyhow!("index out of bounds"))?;
+                } else {
+                    bail!("expected double array")
+                }
+            }
+            AASTORE => {
+                let value = frame.pop_ref()?;
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if let RefType::Array {
+                    base: Typ::Ref(component),
+                    ..
+                } = obj.class()
+                {
+                    if !obj.class().assignable_to(jvm.resolve_class(*component)?) {
+                        bail!("ArrayStoreException")
+                    }
+                    obj.data
+                        .write_usize(
+                            (min_object_size() as isize
+                                + size_of::<usize>() as isize * index as isize)
+                                as u32,
+                            value.data.addr(),
+                        )
+                        .ok_or_else(|| anyhow!("index out of bounds"))?;
+                } else {
+                    bail!("expected object array")
+                }
+            }
+            BASTORE => {
+                let value = frame.pop_int()?;
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Bool | Typ::Byte,
+                        ..
+                    }
+                ) {
+                    obj.data
+                        .write_i8(
+                            (min_object_size() as isize + index as isize) as u32,
+                            value as i8,
+                        )
+                        .ok_or_else(|| anyhow!("index out of bounds"))?;
+                } else {
+                    bail!("expected boolean or byte array")
+                }
+            }
+            CASTORE => {
+                let value = frame.pop_int()?;
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Char,
+                        ..
+                    }
+                ) {
+                    obj.data
+                        .write_i16(
+                            (min_object_size() as isize + 2 * index as isize) as u32,
+                            value as u16 as i16,
+                        )
+                        .ok_or_else(|| anyhow!("index out of bounds"))?;
+                } else {
+                    bail!("expected char array")
+                }
+            }
+            SASTORE => {
+                let value = frame.pop_int()?;
+                let index = frame.pop_int()?;
+                let obj = frame.pop_ref()?;
+                if matches!(
+                    obj.class(),
+                    &RefType::Array {
+                        base: Typ::Short,
+                        ..
+                    }
+                ) {
+                    obj.data
+                        .write_i16(
+                            (min_object_size() as isize + 2 * index as isize) as u32,
+                            value as i16,
+                        )
+                        .ok_or_else(|| anyhow!("index out of bounds"))?;
+                } else {
+                    bail!("expected short array")
+                }
             }
             DUP => {
                 let value = frame.pop()?;
@@ -818,19 +1138,20 @@ pub fn run<'a, 'b>(
                 if nat.name.0.starts_with('<') {
                     bail!("Must not invokevirtual class or instance initialization method")
                 }
-                let obj = if let Some(LocalValue::Ref(obj)) = frame.stack.get(frame.stack.len() - 1)
-                {
-                    obj
-                } else {
-                    bail!("Failed invoke_special")
-                };
-                // TODO: check if obj.class() subclasses (or is) the referred class
+                let obj =
+                    *if let Some(LocalValue::Ref(obj)) = frame.stack.get(frame.stack.len() - 1) {
+                        obj
+                    } else {
+                        bail!("Failed invoke_special")
+                    };
+                if obj.null() {
+                    bail!("NullPointerException")
+                }
                 let invoke_method = obj
                     .class()
-                    .methods
-                    .get(&nat)
+                    .method(nat.name, &nat.typ)
                     .ok_or_else(|| anyhow!("Method not found"))?;
-                invoke(jvm, &mut frame, *invoke_method)?;
+                invoke(jvm, &mut frame, invoke_method)?;
             }
             INVOKESPECIAL => {
                 let index = frame.read_code_u16()?;
@@ -841,19 +1162,22 @@ pub fn run<'a, 'b>(
                     .get_virtual_method(jvm, index)?;
 
                 let class = if (nat.name.0 != "<init>")
-                    & method.class.get().is_subclass_of(named_class)
+                    & method.class.get().subclass_of(named_class)
                     & method.class.get().access_flags.contains(AccessFlags::SUPER)
                 {
-                    method.class.get().super_class.unwrap()
+                    method
+                        .class
+                        .get()
+                        .super_class
+                        .ok_or_else(|| anyhow!("Invalid invokespecial"))?
                 } else {
                     named_class
                 };
 
                 let invoke_method = class
-                    .methods
-                    .get(&nat)
+                    .method(nat.name, nat.typ)
                     .ok_or_else(|| anyhow!("Method not found"))?;
-                invoke(jvm, &mut frame, *invoke_method)?;
+                invoke(jvm, &mut frame, invoke_method)?;
             }
             INVOKESTATIC => {
                 let index = frame.read_code_u16()?;
@@ -867,9 +1191,65 @@ pub fn run<'a, 'b>(
             }
             NEW => {
                 let index = frame.read_code_u16()?;
-                let new_class = method.class.get().const_pool.get_class(index)?;
-                let new_class = jvm.resolve_class(new_class)?;
-                frame.push(LocalValue::Ref(jvm.create_object(new_class)))?;
+                let class = method.class.get().const_pool.get_class(index)?;
+                let class = jvm.resolve_class(class)?;
+                match class {
+                    RefType::Class(_) => frame.push(LocalValue::Ref(jvm.create_object(class)))?,
+                    RefType::Array { .. } => bail!("must not use new for arrays"),
+                }
+            }
+            NEWARRAY => {
+                let length = frame.pop_int()?;
+                if length < 0 {
+                    bail!("Negative array length")
+                }
+                let typ = match frame.read_code_u8()? {
+                    4 => "[Z",
+                    5 => "[C",
+                    6 => "[F",
+                    7 => "[D",
+                    8 => "[B",
+                    9 => "[S",
+                    10 => "[I",
+                    11 => "[J",
+                    _ => bail!("invalid array type"),
+                };
+                let typ = jvm.resolve_class(jvm.intern_str(typ))?;
+                frame.push(LocalValue::Ref(jvm.create_array(typ, length as usize)))?;
+            }
+            ANEWARRAY => {
+                let length = frame.pop_int()?;
+                let index = frame.read_code_u16()?;
+                let component = method.class.get().const_pool.get_class(index)?;
+                // TODO: make it easier to refer to array types
+                let typ = jvm.resolve_class(jvm.intern_str(&format!("[L{};", component)))?;
+                if length < 0 {
+                    bail!("Negative array length")
+                }
+                frame.push(LocalValue::Ref(jvm.create_array(typ, length as usize)))?;
+            }
+            ARRAYLENGTH => {
+                let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
+                if let RefType::Array { base, .. } = obj.class() {
+                    frame.push(LocalValue::Int(
+                        ((obj.data.size() - min_object_size()) / base.layout().size()) as i32,
+                    ))?;
+                } else {
+                    bail!("object not array")
+                }
+            }
+            MULTIANEWARRAY => {
+                todo!()
+            }
+            IF_NULL => {
+                let base = frame.pc - 1;
+                let target_offset = frame.read_code_u16()? as i16;
+                if frame.pop_ref()?.null() {
+                    frame.jump_relative(base, target_offset as i32);
+                }
             }
             GOTO_W => {
                 let base = frame.pc - 1;
@@ -901,48 +1281,51 @@ fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) -> Result<()> {
 
 fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) -> Result<()> {
     // Correct allignment guaranteed because it is used to construct the FieldStorage layout and is stored immutably
-    unsafe {
-        match field.descriptor {
-            Typ::Bool | Typ::Byte => frame.push(LocalValue::Int(
-                storage.read_u8(field.byte_offset) as i8 as i32,
-            ))?,
-            Typ::Short | Typ::Char => frame.push(LocalValue::Int(
-                storage.read_u16(field.byte_offset) as i16 as i32,
-            ))?,
-            Typ::Int => frame.push(LocalValue::Int(storage.read_u32(field.byte_offset) as i32))?,
-            Typ::Float => frame.push(LocalValue::Float(f32::from_bits(
-                storage.read_u32(field.byte_offset),
-            )))?,
-            Typ::Long => frame.push_long(storage.read_u64(field.byte_offset) as i64)?,
-            Typ::Double => {
-                frame.push_double(f64::from_bits(storage.read_u64(field.byte_offset)))?
-            }
-            Typ::Class(..) | Typ::Array { .. } => frame.push(LocalValue::Ref(
-                &*(storage.read_usize(field.byte_offset) as *const ObjectData),
-            ))?,
-        }
+    match field.descriptor {
+        Typ::Bool | Typ::Byte => frame.push(LocalValue::Int(
+            storage.read_i8(field.byte_offset).unwrap() as i32,
+        ))?,
+        Typ::Short | Typ::Char => frame.push(LocalValue::Int(
+            storage.read_i16(field.byte_offset).unwrap() as i32,
+        ))?,
+        Typ::Int => frame.push(LocalValue::Int(
+            storage.read_i32(field.byte_offset).unwrap(),
+        ))?,
+        Typ::Float => frame.push(LocalValue::Float(
+            storage.read_f32(field.byte_offset).unwrap(),
+        ))?,
+        Typ::Long => frame.push_long(storage.read_i64(field.byte_offset).unwrap())?,
+        Typ::Double => frame.push_double(storage.read_f64(field.byte_offset).unwrap())?,
+        Typ::Ref(..) => frame.push(LocalValue::Ref(unsafe {
+            std::mem::transmute(storage.read_usize(field.byte_offset).unwrap())
+        }))?,
     }
     Ok(())
 }
 
 fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) -> Result<()> {
-    unsafe {
-        match field.descriptor {
-            Typ::Bool | Typ::Byte => {
-                storage.write_u8(field.byte_offset, frame.pop_int()? as i8 as u8)
-            }
-            Typ::Short | Typ::Char => {
-                storage.write_u16(field.byte_offset, frame.pop_int()? as i16 as u16)
-            }
-            Typ::Int => storage.write_u32(field.byte_offset, frame.pop_int()? as u32),
-            Typ::Float => storage.write_u32(field.byte_offset, frame.pop_float()?.to_bits()),
-            Typ::Long => storage.write_u64(field.byte_offset, frame.pop_long()? as u64),
-            Typ::Double => storage.write_u64(field.byte_offset, frame.pop_double()?.to_bits()),
-            Typ::Class(..) | Typ::Array { .. } => storage.write_usize(
-                field.byte_offset,
-                frame.pop_ref()? as *const ObjectData as usize,
-            ),
-        }
+    match field.descriptor {
+        Typ::Bool | Typ::Byte => storage
+            .write_i8(field.byte_offset, frame.pop_int()? as i8)
+            .unwrap(),
+        Typ::Short | Typ::Char => storage
+            .write_i16(field.byte_offset, frame.pop_int()? as i16)
+            .unwrap(),
+        Typ::Int => storage
+            .write_i32(field.byte_offset, frame.pop_int()?)
+            .unwrap(),
+        Typ::Float => storage
+            .write_f32(field.byte_offset, frame.pop_float()?)
+            .unwrap(),
+        Typ::Long => storage
+            .write_i64(field.byte_offset, frame.pop_long()?)
+            .unwrap(),
+        Typ::Double => storage
+            .write_f64(field.byte_offset, frame.pop_double()?)
+            .unwrap(),
+        Typ::Ref(..) => storage
+            .write_usize(field.byte_offset, frame.pop_ref()?.data.addr())
+            .unwrap(),
     }
     Ok(())
 }
@@ -1027,6 +1410,14 @@ pub mod instructions {
     pub const ALOAD_1: u8 = 43;
     pub const ALOAD_2: u8 = 44;
     pub const ALOAD_3: u8 = 45;
+    pub const IALOAD: u8 = 46;
+    pub const LALOAD: u8 = 47;
+    pub const FALOAD: u8 = 48;
+    pub const DALOAD: u8 = 49;
+    pub const AALOAD: u8 = 50;
+    pub const BALOAD: u8 = 51;
+    pub const CALOAD: u8 = 52;
+    pub const SALOAD: u8 = 53;
     pub const ISTORE: u8 = 54;
     pub const LSTORE: u8 = 55;
     pub const FSTORE: u8 = 56;
@@ -1052,6 +1443,14 @@ pub mod instructions {
     pub const ASTORE_1: u8 = 76;
     pub const ASTORE_2: u8 = 77;
     pub const ASTORE_3: u8 = 78;
+    pub const IASTORE: u8 = 79;
+    pub const LASTORE: u8 = 80;
+    pub const FASTORE: u8 = 81;
+    pub const DASTORE: u8 = 82;
+    pub const AASTORE: u8 = 83;
+    pub const BASTORE: u8 = 84;
+    pub const CASTORE: u8 = 85;
+    pub const SASTORE: u8 = 86;
     pub const POP: u8 = 87;
     pub const POP2: u8 = 88;
     pub const DUP: u8 = 89;
@@ -1149,6 +1548,11 @@ pub mod instructions {
     pub const INVOKESPECIAL: u8 = 183;
     pub const INVOKESTATIC: u8 = 184;
     pub const NEW: u8 = 187;
+    pub const NEWARRAY: u8 = 188;
+    pub const ANEWARRAY: u8 = 189;
+    pub const ARRAYLENGTH: u8 = 190;
+    pub const MULTIANEWARRAY: u8 = 197;
+    pub const IF_NULL: u8 = 198;
     pub const GOTO_W: u8 = 200;
     pub const JSR_W: u8 = 201;
 }

@@ -1,6 +1,6 @@
 use crate::{
     class::{Field, MethodDescriptor},
-    AccessFlags, Class, IntStr, Method, MethodNaT, JVM,
+    AccessFlags, IntStr, Method, MethodNaT, RefType, JVM,
 };
 use anyhow::{anyhow, bail, Result};
 use std::cell::Cell;
@@ -23,7 +23,7 @@ pub(crate) enum ConstPoolItem<'a> {
     Field(&'a Field<'a>),
     StaticMethod(&'a Method<'a>),
     // Class is neccessary for invoke_special
-    VirtualMethod(&'a Class<'a>, MethodNaT<'a>),
+    VirtualMethod(&'a RefType<'a>, MethodNaT<'a>),
     InterfaceMethodRef { class: u16, nat: u16 },
     NameAndType { name: u16, descriptor: u16 },
     FieldRef { class: u16, nat: u16 },
@@ -80,7 +80,12 @@ impl<'a> ConstPool<'a> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::StaticMethod(method)) => Ok(method),
             Some(ConstPoolItem::MethodRef { class, nat }) => {
-                let class = jvm.resolve_class(self.get_class(class)?)?;
+                let mut class = self.get_class(class)?;
+                // Arrays inherit methods from Object
+                if class.0.starts_with('[') {
+                    class = jvm.intern_str("java/lang/Object");
+                }
+                let class = jvm.resolve_class(class)?;
                 let (name, descriptor) = self.get_raw_nat(nat)?;
                 let typ = crate::parse::parse_method_descriptor(jvm, descriptor)?;
                 // SAFETY: elements of the arena are at the same pos as long as the arena exists
@@ -104,11 +109,12 @@ impl<'a> ConstPool<'a> {
         &'b self,
         jvm: &'b JVM<'a>,
         index: u16,
-    ) -> Result<(&'a Class<'a>, MethodNaT<'a>)> {
+    ) -> Result<(&'a RefType<'a>, MethodNaT<'a>)> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, nat)),
             Some(ConstPoolItem::MethodRef { class, nat }) => {
                 let class = jvm.resolve_class(self.get_class(class)?)?;
+
                 let (name, descriptor) = self.get_raw_nat(nat)?;
                 let typ = crate::parse::parse_method_descriptor(jvm, descriptor)?;
                 // SAFETY: elements of the arena are at the same pos as long as the arena exists
@@ -118,10 +124,11 @@ impl<'a> ConstPool<'a> {
                 let nat = MethodNaT { name, typ };
                 let method = class
                     .method(name, typ)
-                    .ok_or_else(|| anyhow!("Method {} not found", nat))?;
+                    .ok_or_else(|| anyhow!("Method not found"))?;
                 if method.access_flags.contains(AccessFlags::STATIC) {
                     bail!("Method {} is static", nat)
                 }
+                // TODO: check if returning java/lang/Object for arrays is correct for invokespecial
                 self.items[index as usize].set(ConstPoolItem::VirtualMethod(class, nat));
                 Ok((class, nat))
             }
@@ -133,7 +140,10 @@ impl<'a> ConstPool<'a> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::Field(field)) => Ok(field),
             Some(ConstPoolItem::FieldRef { class, nat }) => {
-                let class = jvm.resolve_class(self.get_class(class)?)?;
+                let class = match jvm.resolve_class(self.get_class(class)?)? {
+                    RefType::Class(class) => class,
+                    RefType::Array { .. } => bail!("Tried to get field of array"),
+                };
                 let (name, typ) = self.get_raw_nat(nat)?;
                 let (typ, _) = crate::parse::parse_field_descriptor(jvm, typ, 0)?;
                 if let Some(field) = class.field(name, typ) {
