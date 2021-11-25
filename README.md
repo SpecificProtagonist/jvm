@@ -5,10 +5,11 @@ It currently allows
 - operations on primitives
 - intra-function control flow (except exceptions)
 - calling functions (except via interfaces)
+- creating object, including arrays
 - accessing fields
 
 Rough overview:
-- a `JVM` contains classes as well as interned strings & types
+- a `JVM` contains classes as well as interned strings
 - methods are executed using a simple interpreter loop in `interp.rs`
 - classes are resolved lazily by `JVM::resolve_class` and parsed in `parse.rs`
 - one `FieldStorage` per class/object stores the static/instance fields 
@@ -16,7 +17,7 @@ Rough overview:
 - objects are currently are `Box::leak`ed
 
 Unsafe is currently used in the following ways:
-- when accessing fields, as correct alignment is required 
+- when accessing fields (in `fields_storage.rs` and when dereferencing pointers to objects)
 - to cast the lifetime of Classes, Strings, … to the lifetime of the JVM,
   as they are never reallocated and are allocated in `TypedArena`s 
   which are only dropped when the JVM is dropped

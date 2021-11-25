@@ -3,7 +3,7 @@ use std::{alloc::Layout, cell::Cell, collections::HashMap};
 use crate::{
     class::{Class, Field, FieldNaT, Method, MethodNaT},
     const_pool::{ConstPool, ConstPoolItem},
-    object::min_object_layout,
+    object::min_object_size,
     AccessFlags, Code, FieldStorage, IntStr, MethodDescriptor, Typ, JVM,
 };
 use anyhow::{bail, Context, Result};
@@ -172,7 +172,7 @@ pub(crate) fn parse_field_descriptor<'a, 'b>(
     jvm: &'b JVM<'a>,
     descriptor: IntStr<'a>,
     start: usize,
-) -> Result<(&'a Typ<'a>, usize)> {
+) -> Result<(Typ<'a>, usize)> {
     let str = &descriptor.0[start..];
     if let Some(typ) = match str.chars().next() {
         Some('Z') => Some(Typ::Bool),
@@ -185,39 +185,27 @@ pub(crate) fn parse_field_descriptor<'a, 'b>(
         Some('J') => Some(Typ::Long),
         _ => None,
     } {
-        return Ok((jvm.intern_type(typ), start + 1));
+        return Ok((typ, start + 1));
     }
 
     if str.starts_with('L') {
         if let Some((class_name, _)) = str[1..].split_once(';') {
             let start = start + 1 + class_name.len() + 1;
             let class_name = String::from(class_name);
-            let typ = Typ::Class(jvm.intern_str(&class_name));
-            return Ok((jvm.intern_type(typ), start));
+            let typ = Typ::Ref(jvm.intern_str(&class_name));
+            return Ok((typ, start));
         } else {
             bail!("Invalid type descriptor")
         }
     }
 
     if str.starts_with('[') {
-        // TODO: array descriptor only valid for up to 255 dimensions
-        let (base_type, start) = parse_field_descriptor(jvm, descriptor, start + 1)?;
-        let typ = match base_type {
-            Typ::Array { base, dimensions } => {
-                if *dimensions == u8::MAX {
-                    bail!("Array has too many dimensions")
-                }
-                Typ::Array {
-                    base,
-                    dimensions: dimensions + 1,
-                }
-            }
-            _ => Typ::Array {
-                base: base_type,
-                dimensions: 1,
-            },
-        };
-        return Ok((jvm.intern_type(typ), start));
+        let (_, end) = parse_field_descriptor(jvm, descriptor, start + 1)?;
+        let typ = Typ::Ref(jvm.intern_str(&str[..end]));
+        if typ.array_dimensions() > 255 {
+            bail!("Too many array dimensions")
+        }
+        return Ok((typ, start));
     }
 
     bail!("Invalid type descriptor: {}", str)
@@ -270,8 +258,8 @@ fn read_fields<'a, 'b, 'c>(
     jvm: &'b JVM<'a>,
 ) -> Result<(
     HashMap<FieldNaT<'a>, Field<'a>>,
-    /*static*/ Layout,
-    /*object*/ Layout,
+    /*static fields size*/ usize,
+    /*object fields size*/ usize,
 )> {
     // Read fields
     let length = read_u16(input)?;
@@ -283,7 +271,7 @@ fn read_fields<'a, 'b, 'c>(
     // Decide layout
     fields.sort_by_key(|field| field.descriptor.layout().align());
     let mut static_layout = Layout::new::<()>();
-    let mut object_layout = min_object_layout();
+    let mut object_layout = Layout::from_size_align(min_object_size(), 8).unwrap();
     let fields = fields
         .into_iter()
         .map(|mut field| {
@@ -306,7 +294,7 @@ fn read_fields<'a, 'b, 'c>(
         })
         .collect();
 
-    Ok((fields, static_layout, object_layout))
+    Ok((fields, static_layout.size(), object_layout.size()))
 }
 
 fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
@@ -493,7 +481,7 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
             super_class: None,
             interfaces,
             static_storage,
-            object_layout,
+            object_size: object_layout,
             fields,
             methods: methods,
             initializer: Default::default(),
