@@ -5,8 +5,8 @@ It currently allows
 - operations on primitives
 - intra-function control flow (except exceptions)
 - calling functions (except via interfaces)
-- creating object, including arrays
-- accessing fields
+- creating objects, including arrays
+- accessing fields & array elements
 
 Rough overview:
 - a `JVM` contains classes as well as interned strings
