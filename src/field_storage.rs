@@ -55,14 +55,17 @@ impl FieldStorage {
         self.0 as usize
     }
 
+    /// Size usable for fields, does not include size necessary for storing size
     pub fn size(self) -> usize {
-        unsafe { (self.0 as *const u64).offset(-1) as usize }
+        unsafe { *(self.0 as *const u64).offset(-1) as usize }
     }
 
     /// Safety: Must only be called once, and called with the layout used to create this
     pub unsafe fn delete(self) {
-        let start = self.0.offset(-(size_of::<u64>() as isize));
-        dealloc(start as *mut u8, layout(self.size() as usize))
+        dealloc(
+            (self.0 as *const u64).offset(-1) as *mut u8,
+            layout(self.size() as usize),
+        )
     }
 
     access!(read_i8, write_i8, AtomicI8, 1, i8);

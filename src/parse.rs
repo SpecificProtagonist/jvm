@@ -4,6 +4,7 @@ use crate::{
     class::{Class, Field, FieldNaT, Method, MethodNaT},
     const_pool::{ConstPool, ConstPoolItem},
     object::min_object_size,
+    verification::{StackMapFrame, StackMapFrameInfo, VerificationType},
     AccessFlags, Code, FieldStorage, IntStr, MethodDescriptor, Typ, JVM,
 };
 use anyhow::{bail, Context, Result};
@@ -297,6 +298,103 @@ fn read_fields<'a, 'b, 'c>(
     Ok((fields, static_layout.size(), object_layout.size()))
 }
 
+fn read_verification_type(input: &mut &[u8]) -> Result<VerificationType> {
+    Ok(match read_u8(input)? {
+        0 => VerificationType::Top,
+        1 => VerificationType::Integer,
+        2 => VerificationType::Float,
+        3 => VerificationType::Double,
+        4 => VerificationType::Long,
+        5 => VerificationType::Null,
+        6 => VerificationType::UninitializedThis,
+        7 => VerificationType::ObjectVariable {
+            index: read_u16(input)?,
+        },
+        8 => VerificationType::UninitializedVariable {
+            offset: read_u16(input)?,
+        },
+        _ => bail!("Invalid verification type"),
+    })
+}
+
+fn read_stack_map_table(mut input: &[u8]) -> Result<Vec<StackMapFrame>> {
+    let input = &mut input;
+    let length = read_u16(input)?;
+    let mut vec = Vec::with_capacity(length as usize);
+    for _ in 0..length {
+        let frame_type = read_u8(input)?;
+        vec.push(if frame_type < 64 {
+            StackMapFrame {
+                offset_delta: frame_type as u16,
+                info: StackMapFrameInfo::SameFrame,
+            }
+        } else if frame_type < 128 {
+            StackMapFrame {
+                offset_delta: frame_type as u16 - 64,
+                info: StackMapFrameInfo::SameLocals1StackItem(read_verification_type(input)?),
+            }
+        } else if frame_type == 247 {
+            StackMapFrame {
+                offset_delta: read_u16(input)?,
+                info: StackMapFrameInfo::SameLocals1StackItem(read_verification_type(input)?),
+            }
+        } else if (frame_type > 247) & (frame_type < 251) {
+            StackMapFrame {
+                offset_delta: read_u16(input)?,
+                info: StackMapFrameInfo::ChopFrame(251 - frame_type),
+            }
+        } else if frame_type == 251 {
+            StackMapFrame {
+                offset_delta: read_u16(input)?,
+                info: StackMapFrameInfo::SameFrame,
+            }
+        } else if (frame_type > 251) & (frame_type < 255) {
+            let k = frame_type - 251;
+            StackMapFrame {
+                offset_delta: read_u16(input)?,
+                info: StackMapFrameInfo::AppendFrame([
+                    Some(read_verification_type(input)?),
+                    if k > 1 {
+                        Some(read_verification_type(input)?)
+                    } else {
+                        None
+                    },
+                    if k > 2 {
+                        Some(read_verification_type(input)?)
+                    } else {
+                        None
+                    },
+                ]),
+            }
+        } else if frame_type == 255 {
+            let offset_delta = read_u16(input)?;
+            let num_locals = read_u16(input)?;
+            let mut locals = Vec::with_capacity(num_locals as usize);
+            for _ in 0..num_locals {
+                locals.push(read_verification_type(input)?)
+            }
+            let num_stack = read_u16(input)?;
+            let mut stack = Vec::with_capacity(num_stack as usize);
+            for _ in 0..num_stack {
+                stack.push(read_verification_type(input)?)
+            }
+            StackMapFrame {
+                offset_delta,
+                info: StackMapFrameInfo::FullFrame {
+                    locals: locals.into(),
+                    stack: stack.into(),
+                },
+            }
+        } else {
+            bail!("invalid verification type: {}", frame_type)
+        })
+    }
+    if input.len() > 0 {
+        bail!("invalid stack map table: {:?}", input)
+    }
+    Ok(vec)
+}
+
 fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
     let input = &mut input;
     let max_stack = read_u16(input)?;
@@ -317,7 +415,11 @@ fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
     let attributes_count = read_u16(input)?;
     for _ in 0..attributes_count {
         // Ignore attributes for now
-        let _ = read_attribute(input, constant_pool).context("Reading attributes")?;
+        let (name, bytes) = read_attribute(input, constant_pool).context("Reading attributes")?;
+        if name.0 == "StackMapTable" {
+            // TODO: supply for verification
+            let _ = read_stack_map_table(bytes)?;
+        }
     }
 
     if input.len() > 0 {

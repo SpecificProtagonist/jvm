@@ -18,6 +18,7 @@ mod field_storage;
 pub mod interp;
 mod object;
 mod parse;
+mod verification;
 
 pub use class::*;
 use field_storage::FieldStorage;

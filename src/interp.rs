@@ -310,6 +310,9 @@ pub fn run<'a, 'b>(
             IALOAD => {
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(obj.class(), &RefType::Array { base: Typ::Int, .. }) {
                     frame.push(LocalValue::Int(
                         obj.data
@@ -323,6 +326,9 @@ pub fn run<'a, 'b>(
             LALOAD => {
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -342,6 +348,9 @@ pub fn run<'a, 'b>(
             FALOAD => {
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -361,6 +370,9 @@ pub fn run<'a, 'b>(
             DALOAD => {
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -380,6 +392,9 @@ pub fn run<'a, 'b>(
             AALOAD => {
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -405,6 +420,9 @@ pub fn run<'a, 'b>(
             BALOAD => {
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -425,6 +443,9 @@ pub fn run<'a, 'b>(
             CALOAD => {
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -445,6 +466,9 @@ pub fn run<'a, 'b>(
             SALOAD => {
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -571,6 +595,9 @@ pub fn run<'a, 'b>(
                 let value = frame.pop_int()?;
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(obj.class(), &RefType::Array { base: Typ::Int, .. }) {
                     obj.data
                         .write_i32(
@@ -586,6 +613,9 @@ pub fn run<'a, 'b>(
                 let value = frame.pop_long()?;
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -607,6 +637,9 @@ pub fn run<'a, 'b>(
                 let value = frame.pop_float()?;
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -628,6 +661,9 @@ pub fn run<'a, 'b>(
                 let value = frame.pop_double()?;
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -649,6 +685,9 @@ pub fn run<'a, 'b>(
                 let value = frame.pop_ref()?;
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if let RefType::Array {
                     base: Typ::Ref(component),
                     ..
@@ -673,6 +712,9 @@ pub fn run<'a, 'b>(
                 let value = frame.pop_int()?;
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -694,6 +736,9 @@ pub fn run<'a, 'b>(
                 let value = frame.pop_int()?;
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -715,6 +760,9 @@ pub fn run<'a, 'b>(
                 let value = frame.pop_int()?;
                 let index = frame.pop_int()?;
                 let obj = frame.pop_ref()?;
+                if obj.null() {
+                    bail!("NullPointerException");
+                }
                 if matches!(
                     obj.class(),
                     &RefType::Array {
@@ -1234,9 +1282,9 @@ pub fn run<'a, 'b>(
                     bail!("NullPointerException");
                 }
                 if let RefType::Array { base, .. } = obj.class() {
-                    frame.push(LocalValue::Int(
-                        ((obj.data.size() - min_object_size()) / base.layout().size()) as i32,
-                    ))?;
+                    let length =
+                        ((obj.data.size() - min_object_size()) / base.layout().size()) as i32;
+                    frame.push(LocalValue::Int(length))?;
                 } else {
                     bail!("object not array")
                 }
