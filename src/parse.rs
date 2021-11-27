@@ -5,7 +5,7 @@ use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     object::min_object_size,
     verification::{StackMapFrame, StackMapFrameInfo, VerificationType},
-    AccessFlags, Code, FieldStorage, IntStr, MethodDescriptor, Typ, JVM,
+    AccessFlags, ClassInitState, Code, FieldStorage, IntStr, MethodDescriptor, Typ, JVM,
 };
 use anyhow::{bail, Context, Result};
 use typed_arena::Arena;
@@ -559,7 +559,7 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
 
     let interfaces =
         read_interfaces(input, &const_pool).context("Reading implemented interfaces")?;
-    let (fields, static_layout, object_layout) =
+    let (fields, static_layout, object_size) =
         read_fields(input, &const_pool, jvm).context("Reading fields")?;
     let methods = read_methods(input, &const_pool, jvm).context("Reading methods")?;
 
@@ -583,11 +583,11 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
             super_class: None,
             interfaces,
             static_storage,
-            object_size: object_layout,
+            object_size,
             fields,
-            methods: methods,
-            initializer: Default::default(),
-            init_lock: Default::default(),
+            methods,
+            init: ClassInitState::Uninit.into(),
+            init_waiter: Default::default(),
         },
         super_class,
     ))
