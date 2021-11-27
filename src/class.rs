@@ -1,5 +1,11 @@
 use anyhow::{anyhow, bail, Result};
-use std::{cell::Cell, collections::HashMap, fmt::Debug, sync::Mutex, thread::ThreadId};
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    fmt::Debug,
+    sync::{Condvar, Mutex},
+    thread::ThreadId,
+};
 
 use crate::{const_pool::ConstPool, field_storage::FieldStorage, AccessFlags, IntStr, Typ, JVM};
 
@@ -83,9 +89,15 @@ pub struct Class<'a> {
     pub(crate) methods: HashMap<MethodNaT<'a>, &'a Method<'a>>,
     pub(crate) static_storage: FieldStorage,
     pub(crate) object_size: usize,
-    /// Thread doing the initialization. If None, this class is already initialized.
-    pub(crate) initializer: Cell<Option<ThreadId>>,
-    pub(crate) init_lock: Mutex<()>,
+    pub(crate) init: Mutex<ClassInitState>,
+    pub(crate) init_waiter: Condvar,
+}
+
+pub(crate) enum ClassInitState {
+    Uninit,
+    InProgress(ThreadId),
+    Done,
+    Error,
 }
 
 impl<'a> Class<'a> {
@@ -111,9 +123,101 @@ impl<'a> Class<'a> {
             object_size: 0,
             fields: Default::default(),
             methods: Default::default(),
-            initializer: Default::default(),
-            init_lock: Default::default(),
+            init: ClassInitState::Uninit.into(),
+            init_waiter: Condvar::new(),
         }
+    }
+
+    /// Ensures this class is initialized. This includes linking, verification, preparation & resolution
+    /// May only be called by the instuctions new, getstatic, putstatic or invokestatic or by being the initial class
+    pub(crate) fn ensure_init(&self, jvm: &JVM<'a>) -> Result<()> {
+        let mut guard = self.init.lock().unwrap();
+        match *guard {
+            ClassInitState::Done => Ok(()),
+            ClassInitState::Error => Err(anyhow!("NoClassDefFoundError")),
+            ClassInitState::InProgress(thread) => {
+                if thread == std::thread::current().id() {
+                    Ok(())
+                } else {
+                    loop {
+                        guard = self.init_waiter.wait(guard).unwrap();
+                        match *guard {
+                            ClassInitState::Done => return Ok(()),
+                            ClassInitState::Error => return Err(anyhow!("NoClassDefFoundError")),
+                            _ => (),
+                        }
+                    }
+                }
+            }
+            ClassInitState::Uninit => {
+                *guard = ClassInitState::InProgress(std::thread::current().id());
+                drop(guard);
+
+                let init_result = self.init(jvm);
+
+                *self.init.lock().unwrap() = if init_result.is_ok() {
+                    ClassInitState::Done
+                } else {
+                    ClassInitState::Error
+                };
+
+                self.init_waiter.notify_all();
+
+                Ok(())
+            }
+        }
+    }
+
+    /// This may only be called from self.ensure_init
+    fn init(&self, jvm: &JVM<'a>) -> Result<()> {
+        // Preparation
+        for field in self.fields.values() {
+            if let Some(index) = field.const_value_index {
+                match field.descriptor {
+                    Typ::Bool | Typ::Byte => self
+                        .static_storage
+                        .write_i8(field.byte_offset, self.const_pool.get_int(index)? as i8)
+                        .unwrap(),
+                    Typ::Short | Typ::Char => self
+                        .static_storage
+                        .write_i16(field.byte_offset, self.const_pool.get_int(index)? as i16)
+                        .unwrap(),
+                    Typ::Int => self
+                        .static_storage
+                        .write_i32(field.byte_offset, self.const_pool.get_int(index)?)
+                        .unwrap(),
+                    Typ::Float => self
+                        .static_storage
+                        .write_f32(field.byte_offset, self.const_pool.get_float(index)?)
+                        .unwrap(),
+                    Typ::Double => self
+                        .static_storage
+                        .write_f64(field.byte_offset, self.const_pool.get_double(index)?)
+                        .unwrap(),
+                    Typ::Long => self
+                        .static_storage
+                        .write_i64(field.byte_offset, self.const_pool.get_long(index)?)
+                        .unwrap(),
+                    Typ::Ref(name) => {
+                        if name.0 == "java/lang/String" {
+                            todo!()
+                        } else {
+                            bail!("final static non-null object")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Initialization
+        if let Some(method) = self.methods.get(&MethodNaT {
+            name: jvm.intern_str("<clinit>"),
+            typ: &MethodDescriptor(vec![], None),
+        }) {
+            crate::interp::run(jvm, method, &[])?;
+        }
+
+        Ok(())
     }
 }
 

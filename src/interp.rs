@@ -1143,11 +1143,13 @@ pub fn run<'a, 'b>(
             GETSTATIC => {
                 let index = frame.read_code_u16()?;
                 let field = method.class.get().const_pool.get_field(jvm, index)?;
+                field.class.get().ensure_init(jvm)?;
                 get_field(&mut frame, field, &field.class.get().static_storage)?;
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16()?;
                 let field = method.class.get().const_pool.get_field(jvm, index)?;
+                field.class.get().ensure_init(jvm)?;
                 put_field(&mut frame, field, &field.class.get().static_storage)?;
             }
             GETFIELD => {
@@ -1240,9 +1242,12 @@ pub fn run<'a, 'b>(
             NEW => {
                 let index = frame.read_code_u16()?;
                 let class = method.class.get().const_pool.get_class(index)?;
-                let class = jvm.resolve_class(class)?;
-                match class {
-                    RefType::Class(_) => frame.push(LocalValue::Ref(jvm.create_object(class)))?,
+                let reftype = jvm.resolve_class(class)?;
+                match reftype {
+                    RefType::Class(class) => {
+                        class.ensure_init(jvm)?;
+                        frame.push(LocalValue::Ref(jvm.create_object(reftype)))?
+                    }
                     RefType::Array { .. } => bail!("must not use new for arrays"),
                 }
             }
@@ -1384,7 +1389,10 @@ fn invoke<'a, 'b>(
     method: &'a Method<'a>,
 ) -> Result<()> {
     let mut arg_count = 0;
-    if !method.access_flags.contains(AccessFlags::STATIC) {
+    if method.access_flags.contains(AccessFlags::STATIC) {
+        method.class.get().ensure_init(jvm)?;
+    } else {
+        // `this` is treated as an argument, but not mentioned in method descriptor
         arg_count = 1;
     }
     for typ in &method.nat.typ.0 {

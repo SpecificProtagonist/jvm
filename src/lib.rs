@@ -163,9 +163,7 @@ impl<'a> JVM<'a> {
         })
     }
 
-    /// Load & initializes a class if it hasn't already been.
-    /// Since this is called as late as possible, both can be done together
-    /// TODO: split this up (neccessary for type-checking during verification)
+    /// Returns the class, loading it if it wasn't already loaded. Does not initialize the class!
     pub fn resolve_class<'b>(&'b self, name: IntStr<'a>) -> Result<&'a RefType<'a>> {
         self.resolve_class_impl(name, Vec::new())
     }
@@ -176,13 +174,6 @@ impl<'a> JVM<'a> {
         mut check_circular: Vec<IntStr<'a>>,
     ) -> Result<&'a RefType<'a>> {
         if let Some(class) = self.classes.read().unwrap().get(&name) {
-            if let RefType::Class(class) = class {
-                if let Some(thread) = class.initializer.get() {
-                    if thread != std::thread::current().id() {
-                        let _ = class.init_lock.lock().unwrap();
-                    }
-                }
-            }
             return Ok(*class);
         }
 
@@ -305,57 +296,6 @@ impl<'a> JVM<'a> {
         for field in class.fields.values() {
             field.class.set(class);
         }
-
-        // Initialization
-        class.initializer.set(Some(std::thread::current().id()));
-        let _init_lock_guard = class.init_lock.lock().unwrap();
-        drop(guard);
-
-        for field in class.fields.values() {
-            if let Some(index) = field.const_value_index {
-                match field.descriptor {
-                    Typ::Bool | Typ::Byte => class
-                        .static_storage
-                        .write_i8(field.byte_offset, class.const_pool.get_int(index)? as i8)
-                        .unwrap(),
-                    Typ::Short | Typ::Char => class
-                        .static_storage
-                        .write_i16(field.byte_offset, class.const_pool.get_int(index)? as i16)
-                        .unwrap(),
-                    Typ::Int => class
-                        .static_storage
-                        .write_i32(field.byte_offset, class.const_pool.get_int(index)?)
-                        .unwrap(),
-                    Typ::Float => class
-                        .static_storage
-                        .write_f32(field.byte_offset, class.const_pool.get_float(index)?)
-                        .unwrap(),
-                    Typ::Double => class
-                        .static_storage
-                        .write_f64(field.byte_offset, class.const_pool.get_double(index)?)
-                        .unwrap(),
-                    Typ::Long => class
-                        .static_storage
-                        .write_i64(field.byte_offset, class.const_pool.get_long(index)?)
-                        .unwrap(),
-                    Typ::Ref(name) => {
-                        if name.0 == "java/lang/String" {
-                            todo!()
-                        } else {
-                            bail!("final static non-null object")
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(method) = class.methods.get(&MethodNaT {
-            name: self.intern_str("<clinit>"),
-            typ: &MethodDescriptor(vec![], None),
-        }) {
-            interp::run(self, method, &[])?;
-        }
-        class.initializer.set(None);
 
         Ok(class_or_array)
     }
