@@ -3,27 +3,19 @@ use std::{cell::Cell, mem::size_of, usize};
 use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     field_storage::FieldStorage,
-    object::{min_object_size, Object},
+    instructions::*,
+    object::{self, Object},
     AccessFlags, Field, Method, RefType, Typ, JVM,
 };
 use anyhow::{anyhow, bail, Context, Result};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ReturnValue<'a> {
-    Void,
-    Ref(Object<'a>),
-    Int(i32),
-    Long(i64),
-    Float(f32),
-    Double(f64),
-}
-
 /// A value on the stack or in the local variables
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LocalValue<'a> {
+pub enum LocalValue<'jvm> {
     Uninitialized,
-    Ref(Object<'a>),
-    ReturnAddress(u16),
+    Ref(Object<'jvm>),
+    // Only in class version < 50.0:
+    // ReturnAddress(u16),
     Int(i32),
     /// Both on stack & locals, the low half is stored first
     LowHalfOfLong(u32),
@@ -34,193 +26,26 @@ pub enum LocalValue<'a> {
     HighHalfOfDouble(u32),
 }
 
-impl<'a> Default for LocalValue<'a> {
-    fn default() -> Self {
-        LocalValue::Uninitialized
-    }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ReturnValue<'jvm> {
+    Void,
+    Ref(Object<'jvm>),
+    Int(i32),
+    Long(i64),
+    Float(f32),
+    Double(f64),
 }
 
-// I'd use TryFrom, but then type interference fails
-impl<'a> From<LocalValue<'a>> for Result<i32> {
-    fn from(value: LocalValue) -> Self {
-        if let LocalValue::Int(value) = value {
-            Ok(value)
-        } else {
-            bail!("Value not an int")
-        }
-    }
-}
-
-struct Frame<'a> {
-    // Code has to be accessed via method and unwraped (guaranteed to be Some)
-    // to prevent lifetime issues
-    // Maybe put Code into a Rc instead of Method?
+pub fn invoke<'a, 'b>(
+    jvm: &'b JVM<'a>,
     method: &'a Method<'a>,
-    locals: Vec<LocalValue<'a>>,
-    stack: Vec<LocalValue<'a>>,
-    pc: u16,
+    args: &'b [LocalValue<'a>],
+) -> Result<ReturnValue<'a>> {
+    method.class.get().ensure_init(jvm)?;
+    invoke_initialized(jvm, method, args).with_context(|| format!("Trying to call {}", method.nat))
 }
 
-impl<'a> Frame<'a> {
-    fn jump_relative(&mut self, base: u16, target_offset: i32) {
-        // TODO: verify the target is an op boundary
-        self.pc = (base as i32 + target_offset as i32) as u16;
-    }
-
-    fn load(&self, index: u16) -> Result<LocalValue<'a>> {
-        self.locals
-            .get(index as usize)
-            .copied()
-            .ok_or(anyhow!("Invalid local index"))
-    }
-
-    // I would have made get generic but type interference doesn't like its uses
-    fn load_i32(&self, index: u16) -> Result<i32> {
-        self.load(index)?.into()
-    }
-
-    fn store(&mut self, index: u16, value: LocalValue<'a>) -> Result<()> {
-        *self
-            .locals
-            .get_mut(index as usize)
-            .ok_or(anyhow!("Invalid locals index"))? = value;
-        Ok(())
-    }
-
-    fn load_long(&self, index: u16) -> Result<i64> {
-        if let (Some(LocalValue::LowHalfOfLong(low)), Some(LocalValue::HighHalfOfLong(high))) = (
-            self.locals.get(index as usize),
-            self.locals.get(index as usize + 1),
-        ) {
-            Ok((((*high as u64) << 32) + *low as u64) as i64)
-        } else {
-            bail!("Failed to load local long from slot {}", index,)
-        }
-    }
-
-    fn load_double(&self, index: u16) -> Result<f64> {
-        if let (Some(LocalValue::LowHalfOfDouble(low)), Some(LocalValue::HighHalfOfDouble(high))) = (
-            self.locals.get(index as usize),
-            self.locals.get(index as usize + 1),
-        ) {
-            Ok(f64::from_bits(((*high as u64) << 32) + *low as u64))
-        } else {
-            bail!("Failed to load local double from slot {}", index)
-        }
-    }
-
-    fn store_long(&mut self, index: u16, value: i64) -> Result<()> {
-        if (index as usize) < self.locals.len() - 1 {
-            self.locals[index as usize] = LocalValue::LowHalfOfLong(value as u32);
-            self.locals[index as usize + 1] =
-                LocalValue::HighHalfOfLong(((value as u64) >> 32) as u32);
-            Ok(())
-        } else {
-            bail!("Failed to store long into slot {}", index)
-        }
-    }
-
-    fn store_double(&mut self, index: u16, value: f64) -> Result<()> {
-        if (index as usize) < self.locals.len() - 1 {
-            self.locals[index as usize] = LocalValue::LowHalfOfDouble(value.to_bits() as u32);
-            self.locals[index as usize + 1] =
-                LocalValue::HighHalfOfDouble((value.to_bits() >> 32) as u32);
-            Ok(())
-        } else {
-            bail!("Failed to store double into slot {}", index)
-        }
-    }
-
-    fn pop(&mut self) -> Result<LocalValue<'a>> {
-        self.stack.pop().ok_or(anyhow!("Pop empty stack"))
-    }
-
-    fn pop_int(&mut self) -> Result<i32> {
-        match self.pop()? {
-            LocalValue::Int(value) => Ok(value),
-            other => bail!("Stack value mismatch: not an int ({:?})", other),
-        }
-    }
-
-    fn pop_float(&mut self) -> Result<f32> {
-        match self.pop()? {
-            LocalValue::Float(value) => Ok(value),
-            other => bail!("Stack value mismatch: not an float ({:?})", other),
-        }
-    }
-
-    fn pop_long(&mut self) -> Result<i64> {
-        match (self.pop()?, self.pop()?) {
-            (LocalValue::HighHalfOfLong(high), LocalValue::LowHalfOfLong(low)) => {
-                Ok((((high as u64) << 32) + low as u64) as i64)
-            }
-            other => bail!("Failed to pop long {:?}", other),
-        }
-    }
-
-    fn pop_double(&mut self) -> Result<f64> {
-        match (self.pop()?, self.pop()?) {
-            (LocalValue::HighHalfOfDouble(high), LocalValue::LowHalfOfDouble(low)) => {
-                Ok(f64::from_bits(((high as u64) << 32) + low as u64))
-            }
-            other => bail!("Failed to pop double {:?}", other),
-        }
-    }
-
-    fn pop_ref(&mut self) -> Result<Object<'a>> {
-        match self.pop()? {
-            LocalValue::Ref(value) => Ok(value),
-            other => bail!("Stack value mismatch: not an object ({:?})", other),
-        }
-    }
-
-    fn push(&mut self, value: LocalValue<'a>) -> Result<()> {
-        if self.stack.len() < self.stack.capacity() {
-            self.stack.push(value);
-            Ok(())
-        } else {
-            bail!("Max stack exceeded ({})", self.stack.len(),)
-        }
-    }
-
-    fn push_long(&mut self, value: i64) -> Result<()> {
-        self.push(LocalValue::LowHalfOfLong(value as u32))?;
-        self.push(LocalValue::HighHalfOfLong((value as u64 >> 32) as u32))
-    }
-
-    fn push_double(&mut self, value: f64) -> Result<()> {
-        self.push(LocalValue::LowHalfOfDouble(value.to_bits() as u32))?;
-        self.push(LocalValue::HighHalfOfDouble(
-            (value.to_bits() as u64 >> 32) as u32,
-        ))
-    }
-
-    fn read_code_u8(&mut self) -> Result<u8> {
-        self.pc += 1;
-        self.method
-            .code
-            .as_ref()
-            .unwrap()
-            .bytes
-            .get(self.pc as usize - 1)
-            .copied()
-            .ok_or(anyhow!("PC out of bounds"))
-    }
-
-    fn read_code_u16(&mut self) -> Result<u16> {
-        Ok(((self.read_code_u8()? as u16) << 8) + self.read_code_u8()? as u16)
-    }
-
-    fn read_code_u32(&mut self) -> Result<u32> {
-        Ok(((self.read_code_u16()? as u32) << 16) + self.read_code_u16()? as u32)
-    }
-
-    fn read_previous_byte(&mut self) -> u8 {
-        self.method.code.as_ref().unwrap().bytes[self.pc as usize - 1]
-    }
-}
-
-pub fn run<'a, 'b>(
+pub(crate) fn invoke_initialized<'a, 'b>(
     jvm: &'b JVM<'a>,
     method: &'a Method<'a>,
     args: &'b [LocalValue<'a>],
@@ -231,6 +56,7 @@ pub fn run<'a, 'b>(
 
     let mut frame = Frame {
         method,
+        code_bytes: &method.code.as_ref().unwrap().bytes,
         locals: {
             let max_locals = method.code.as_ref().unwrap().max_locals as usize;
             let mut locals = Vec::with_capacity(max_locals);
@@ -246,8 +72,7 @@ pub fn run<'a, 'b>(
 
     // Todo: bytecode verification, esp. about pc
     loop {
-        use instructions::*;
-        match frame.read_code_u8()? {
+        match frame.read_code_u8() {
             NOP => {}
             ICONST_M1 => frame.push(LocalValue::Int(-1))?,
             ICONST_0 => frame.push(LocalValue::Int(0))?,
@@ -264,35 +89,35 @@ pub fn run<'a, 'b>(
             DCONST_0 => frame.push_double(0.0)?,
             DCONST_1 => frame.push_double(1.0)?,
             BIPUSH => {
-                let value = frame.read_code_u8()? as i8;
+                let value = frame.read_code_u8() as i8;
                 frame.push(LocalValue::Int(value as i32))?;
             }
             SIPUSH => {
-                let value = frame.read_code_u16()? as i16;
+                let value = frame.read_code_u16() as i16;
                 frame.push(LocalValue::Int(value as i32))?;
             }
             LDC => {
-                let index = frame.read_code_u8()? as u16;
+                let index = frame.read_code_u8() as u16;
                 ldc(&mut frame, &method.class.get().const_pool, index)?;
             }
             LDC_W => {
-                let index = frame.read_code_u16()?;
+                let index = frame.read_code_u16();
                 ldc(&mut frame, &method.class.get().const_pool, index)?;
             }
             LDC2_W => {
-                let index = frame.read_code_u16()?;
+                let index = frame.read_code_u16();
                 ldc(&mut frame, &method.class.get().const_pool, index)?;
             }
             ILOAD | FLOAD | ALOAD => {
-                let index = frame.read_code_u8()? as u16;
+                let index = frame.read_code_u8() as u16;
                 frame.push(frame.load(index)?)?;
             }
             LLOAD => {
-                let index = frame.read_code_u8()? as u16;
+                let index = frame.read_code_u8() as u16;
                 frame.push_long(frame.load_long(index)?)?;
             }
             DLOAD => {
-                let index = frame.read_code_u8()? as u16;
+                let index = frame.read_code_u8() as u16;
                 frame.push_double(frame.load_double(index)?)?;
             }
             ILOAD_0 | FLOAD_0 | ALOAD_0 => frame.push(frame.load(0)?)?,
@@ -316,7 +141,7 @@ pub fn run<'a, 'b>(
                 if matches!(obj.class(), &RefType::Array { base: Typ::Int, .. }) {
                     frame.push(LocalValue::Int(
                         obj.data
-                            .read_i32((min_object_size() as isize + 4 * index as isize) as u32)
+                            .read_i32((object::header_size() as isize + 4 * index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?,
                     ))?;
                 } else {
@@ -338,7 +163,7 @@ pub fn run<'a, 'b>(
                 ) {
                     frame.push_long(
                         obj.data
-                            .read_i64((min_object_size() as isize + 8 * index as isize) as u32)
+                            .read_i64((object::header_size() as isize + 8 * index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?,
                     )?;
                 } else {
@@ -360,7 +185,7 @@ pub fn run<'a, 'b>(
                 ) {
                     frame.push(LocalValue::Float(
                         obj.data
-                            .read_f32((min_object_size() as isize + 4 * index as isize) as u32)
+                            .read_f32((object::header_size() as isize + 4 * index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?,
                     ))?;
                 } else {
@@ -382,7 +207,7 @@ pub fn run<'a, 'b>(
                 ) {
                     frame.push_double(
                         obj.data
-                            .read_f64((min_object_size() as isize + 8 * index as isize) as u32)
+                            .read_f64((object::header_size() as isize + 8 * index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?,
                     )?;
                 } else {
@@ -406,7 +231,7 @@ pub fn run<'a, 'b>(
                         std::mem::transmute(
                             obj.data
                                 .read_usize(
-                                    (min_object_size() as isize
+                                    (object::header_size() as isize
                                         + size_of::<usize>() as isize * index as isize)
                                         as u32,
                                 )
@@ -432,7 +257,7 @@ pub fn run<'a, 'b>(
                 ) {
                     frame.push(LocalValue::Int(
                         obj.data
-                            .read_i8((min_object_size() as isize + index as isize) as u32)
+                            .read_i8((object::header_size() as isize + index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?
                             as i32,
                     ))?;
@@ -455,7 +280,7 @@ pub fn run<'a, 'b>(
                 ) {
                     frame.push(LocalValue::Int(
                         obj.data
-                            .read_i16((min_object_size() as isize + 2 * index as isize) as u32)
+                            .read_i16((object::header_size() as isize + 2 * index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?
                             as u16 as i32,
                     ))?;
@@ -478,7 +303,7 @@ pub fn run<'a, 'b>(
                 ) {
                     frame.push(LocalValue::Int(
                         obj.data
-                            .read_i16((min_object_size() as isize + 2 * index as isize) as u32)
+                            .read_i16((object::header_size() as isize + 2 * index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?
                             as i32,
                     ))?;
@@ -487,27 +312,27 @@ pub fn run<'a, 'b>(
                 }
             }
             ISTORE => {
-                let index = frame.read_code_u8()? as u16;
+                let index = frame.read_code_u8() as u16;
                 let value = frame.pop_int()?;
                 frame.store(index, LocalValue::Int(value))?;
             }
             LSTORE => {
-                let index = frame.read_code_u8()? as u16;
+                let index = frame.read_code_u8() as u16;
                 let value = frame.pop_long()?;
                 frame.store_long(index, value)?;
             }
             FSTORE => {
-                let index = frame.read_code_u8()? as u16;
+                let index = frame.read_code_u8() as u16;
                 let value = frame.pop_float()?;
                 frame.store(index, LocalValue::Float(value))?;
             }
             DSTORE => {
-                let index = frame.read_code_u8()? as u16;
+                let index = frame.read_code_u8() as u16;
                 let value = frame.pop_double()?;
                 frame.store_double(index, value)?;
             }
             ASTORE => {
-                let index = frame.read_code_u8()? as u16;
+                let index = frame.read_code_u8() as u16;
                 let value = frame.pop_ref()?;
                 frame.store(index, LocalValue::Ref(value))?;
             }
@@ -601,7 +426,7 @@ pub fn run<'a, 'b>(
                 if matches!(obj.class(), &RefType::Array { base: Typ::Int, .. }) {
                     obj.data
                         .write_i32(
-                            (min_object_size() as isize + 4 * index as isize) as u32,
+                            (object::header_size() as isize + 4 * index as isize) as u32,
                             value,
                         )
                         .ok_or_else(|| anyhow!("index out of bounds"))?;
@@ -625,7 +450,7 @@ pub fn run<'a, 'b>(
                 ) {
                     obj.data
                         .write_i64(
-                            (min_object_size() as isize + 8 * index as isize) as u32,
+                            (object::header_size() as isize + 8 * index as isize) as u32,
                             value,
                         )
                         .ok_or_else(|| anyhow!("index out of bounds"))?;
@@ -649,7 +474,7 @@ pub fn run<'a, 'b>(
                 ) {
                     obj.data
                         .write_f32(
-                            (min_object_size() as isize + 4 * index as isize) as u32,
+                            (object::header_size() as isize + 4 * index as isize) as u32,
                             value,
                         )
                         .ok_or_else(|| anyhow!("index out of bounds"))?;
@@ -673,7 +498,7 @@ pub fn run<'a, 'b>(
                 ) {
                     obj.data
                         .write_f64(
-                            (min_object_size() as isize + 8 * index as isize) as u32,
+                            (object::header_size() as isize + 8 * index as isize) as u32,
                             value,
                         )
                         .ok_or_else(|| anyhow!("index out of bounds"))?;
@@ -698,7 +523,7 @@ pub fn run<'a, 'b>(
                     }
                     obj.data
                         .write_usize(
-                            (min_object_size() as isize
+                            (object::header_size() as isize
                                 + size_of::<usize>() as isize * index as isize)
                                 as u32,
                             value.data.addr(),
@@ -724,7 +549,7 @@ pub fn run<'a, 'b>(
                 ) {
                     obj.data
                         .write_i8(
-                            (min_object_size() as isize + index as isize) as u32,
+                            (object::header_size() as isize + index as isize) as u32,
                             value as i8,
                         )
                         .ok_or_else(|| anyhow!("index out of bounds"))?;
@@ -748,7 +573,7 @@ pub fn run<'a, 'b>(
                 ) {
                     obj.data
                         .write_i16(
-                            (min_object_size() as isize + 2 * index as isize) as u32,
+                            (object::header_size() as isize + 2 * index as isize) as u32,
                             value as u16 as i16,
                         )
                         .ok_or_else(|| anyhow!("index out of bounds"))?;
@@ -772,13 +597,22 @@ pub fn run<'a, 'b>(
                 ) {
                     obj.data
                         .write_i16(
-                            (min_object_size() as isize + 2 * index as isize) as u32,
+                            (object::header_size() as isize + 2 * index as isize) as u32,
                             value as i16,
                         )
                         .ok_or_else(|| anyhow!("index out of bounds"))?;
                 } else {
                     bail!("expected short array")
                 }
+            }
+            POP => {
+                if frame.pop()?.category_2() {
+                    bail!("Tried to pop category 2 value")
+                }
+            }
+            POP2 => {
+                frame.pop()?;
+                frame.pop()?;
             }
             DUP => {
                 let value = frame.pop()?;
@@ -930,8 +764,8 @@ pub fn run<'a, 'b>(
                 frame.push_long(result)?;
             }
             IINC => {
-                let index = frame.read_code_u8()? as u16;
-                let constant = frame.read_code_u8()? as i32;
+                let index = frame.read_code_u8() as u16;
+                let constant = frame.read_code_u8() as i32;
                 frame.store(index, LocalValue::Int(frame.load_i32(index)? + constant))?;
             }
             I2L => {
@@ -1054,7 +888,7 @@ pub fn run<'a, 'b>(
                 };
                 let b = if two_operand { frame.pop_int()? } else { 0 };
                 let a = frame.pop_int()?;
-                let target_offset = frame.read_code_u16()? as i16;
+                let target_offset = frame.read_code_u16() as i16;
                 if match op {
                     IFEQ => a == b,
                     IFNE => a != b,
@@ -1069,11 +903,11 @@ pub fn run<'a, 'b>(
             }
             GOTO => {
                 let base = frame.pc - 1;
-                let target_offset = frame.read_code_u16()? as i16;
+                let target_offset = frame.read_code_u16() as i16;
                 frame.jump_relative(base, target_offset as i32)
             }
-            JSR => {
-                // This instruction is soft-depretiated since v50?
+            // Only supported in class version < 50.0
+            /*JSR => {
                 let base = frame.pc - 1;
                 let target = frame.read_code_u16()? as i16 as i32;
                 frame.push(LocalValue::ReturnAddress(frame.pc))?;
@@ -1086,7 +920,7 @@ pub fn run<'a, 'b>(
                 } else {
                     bail!("Failed to load return address from slot {}", index);
                 }
-            }
+            }*/
             TABLESWITCH => {
                 let base = frame.pc - 1;
 
@@ -1095,9 +929,9 @@ pub fn run<'a, 'b>(
                 frame.pc &= 0xfffc;
 
                 let index = frame.pop_int()?;
-                let default = frame.read_code_u32()? as i32;
-                let low = frame.read_code_u32()? as i32;
-                let high = frame.read_code_u32()? as i32;
+                let default = frame.read_code_u32() as i32;
+                let low = frame.read_code_u32() as i32;
+                let high = frame.read_code_u32() as i32;
 
                 if low > high {
                     bail!("Invalid tableswitch")
@@ -1107,7 +941,7 @@ pub fn run<'a, 'b>(
                     default
                 } else {
                     frame.pc += (index - low) as u16 * 4;
-                    frame.read_code_u32()? as i32
+                    frame.read_code_u32() as i32
                 };
                 frame.jump_relative(base, target);
             }
@@ -1119,14 +953,14 @@ pub fn run<'a, 'b>(
                 frame.pc &= 0xfffc;
 
                 let key = frame.pop_int()?;
-                let default = frame.read_code_u32()? as i32;
-                let npairs = frame.read_code_u32()?;
+                let default = frame.read_code_u32() as i32;
+                let npairs = frame.read_code_u32();
 
                 // TODO: binary search
                 let mut target = default;
                 for _ in 0..npairs {
-                    let compare = frame.read_code_u32()? as i32;
-                    let value = frame.read_code_u32()? as i32;
+                    let compare = frame.read_code_u32() as i32;
+                    let value = frame.read_code_u32() as i32;
                     if key == compare {
                         target = value;
                         break;
@@ -1141,26 +975,26 @@ pub fn run<'a, 'b>(
             ARETURN => return Ok(ReturnValue::Ref(frame.pop_ref()?)),
             RETURN => return Ok(ReturnValue::Void),
             GETSTATIC => {
-                let index = frame.read_code_u16()?;
-                let field = method.class.get().const_pool.get_field(jvm, index)?;
+                let index = frame.read_code_u16();
+                let field = method.class.get().const_pool.get_field(index).unwrap();
                 field.class.get().ensure_init(jvm)?;
                 get_field(&mut frame, field, &field.class.get().static_storage)?;
             }
             PUTSTATIC => {
-                let index = frame.read_code_u16()?;
-                let field = method.class.get().const_pool.get_field(jvm, index)?;
+                let index = frame.read_code_u16();
+                let field = method.class.get().const_pool.get_field(index).unwrap();
                 field.class.get().ensure_init(jvm)?;
                 put_field(&mut frame, field, &field.class.get().static_storage)?;
             }
             GETFIELD => {
-                let index = frame.read_code_u16()?;
-                let field = method.class.get().const_pool.get_field(jvm, index)?;
+                let index = frame.read_code_u16();
+                let field = method.class.get().const_pool.get_field(index)?;
                 let object = frame.pop_ref()?;
                 get_field(&mut frame, field, &object.data)?;
             }
             PUTFIELD => {
-                let index = frame.read_code_u16()?;
-                let field = method.class.get().const_pool.get_field(jvm, index)?;
+                let index = frame.read_code_u16();
+                let field = method.class.get().const_pool.get_field(index)?;
                 // Stack has object ref first, then value on top
                 // This is ugly
                 let object = if matches!(field.descriptor, Typ::Long | Typ::Double) {
@@ -1179,12 +1013,8 @@ pub fn run<'a, 'b>(
                 put_field(&mut frame, field, &object.data)?;
             }
             INVOKEVIRTUAL => {
-                let index = frame.read_code_u16()?;
-                let (_, nat) = method
-                    .class
-                    .get()
-                    .const_pool
-                    .get_virtual_method(jvm, index)?;
+                let index = frame.read_code_u16();
+                let (_, nat) = method.class.get().const_pool.get_virtual_method(index)?;
                 if nat.name.0.starts_with('<') {
                     bail!("Must not invokevirtual class or instance initialization method")
                 }
@@ -1201,15 +1031,11 @@ pub fn run<'a, 'b>(
                     .class()
                     .method(nat.name, &nat.typ)
                     .ok_or_else(|| anyhow!("Method not found"))?;
-                invoke(jvm, &mut frame, invoke_method)?;
+                execute_invoke_instr(jvm, &mut frame, invoke_method)?;
             }
             INVOKESPECIAL => {
-                let index = frame.read_code_u16()?;
-                let (named_class, nat) = method
-                    .class
-                    .get()
-                    .const_pool
-                    .get_virtual_method(jvm, index)?;
+                let index = frame.read_code_u16();
+                let (named_class, nat) = method.class.get().const_pool.get_virtual_method(index)?;
 
                 let class = if (nat.name.0 != "<init>")
                     & method.class.get().subclass_of(named_class)
@@ -1227,26 +1053,22 @@ pub fn run<'a, 'b>(
                 let invoke_method = class
                     .method(nat.name, nat.typ)
                     .ok_or_else(|| anyhow!("Method not found"))?;
-                invoke(jvm, &mut frame, invoke_method)?;
+                execute_invoke_instr(jvm, &mut frame, invoke_method)?;
             }
             INVOKESTATIC => {
-                let index = frame.read_code_u16()?;
-                // TODO: intern MethodRef/use Id<Method> or something
-                let invoke_method = method
-                    .class
-                    .get()
-                    .const_pool
-                    .get_static_method(jvm, index)?;
-                invoke(jvm, &mut frame, invoke_method)?;
+                let index = frame.read_code_u16();
+                let class = method.class.get();
+                class.ensure_init(jvm)?;
+                let invoke_method = class.const_pool.get_static_method(index)?;
+                execute_invoke_instr(jvm, &mut frame, invoke_method)?;
             }
             NEW => {
-                let index = frame.read_code_u16()?;
-                let class = method.class.get().const_pool.get_class(index)?;
-                let reftype = jvm.resolve_class(class)?;
-                match reftype {
+                let index = frame.read_code_u16();
+                let ref_type = method.class.get().const_pool.get_class(index)?;
+                match ref_type {
                     RefType::Class(class) => {
                         class.ensure_init(jvm)?;
-                        frame.push(LocalValue::Ref(jvm.create_object(reftype)))?
+                        frame.push(LocalValue::Ref(jvm.create_object(ref_type)))?
                     }
                     RefType::Array { .. } => bail!("must not use new for arrays"),
                 }
@@ -1256,7 +1078,7 @@ pub fn run<'a, 'b>(
                 if length < 0 {
                     bail!("Negative array length")
                 }
-                let typ = match frame.read_code_u8()? {
+                let typ = match frame.read_code_u8() {
                     4 => "[Z",
                     5 => "[C",
                     6 => "[F",
@@ -1267,15 +1089,15 @@ pub fn run<'a, 'b>(
                     11 => "[J",
                     _ => bail!("invalid array type"),
                 };
-                let typ = jvm.resolve_class(jvm.intern_str(typ))?;
+                let typ = jvm.resolve_class(typ)?;
                 frame.push(LocalValue::Ref(jvm.create_array(typ, length as usize)))?;
             }
             ANEWARRAY => {
                 let length = frame.pop_int()?;
-                let index = frame.read_code_u16()?;
+                let index = frame.read_code_u16();
                 let component = method.class.get().const_pool.get_class(index)?;
                 // TODO: make it easier to refer to array types
-                let typ = jvm.resolve_class(jvm.intern_str(&format!("[L{};", component)))?;
+                let typ = jvm.resolve_class(format!("[L{};", component.name(jvm)))?;
                 if length < 0 {
                     bail!("Negative array length")
                 }
@@ -1288,7 +1110,7 @@ pub fn run<'a, 'b>(
                 }
                 if let RefType::Array { base, .. } = obj.class() {
                     let length =
-                        ((obj.data.size() - min_object_size()) / base.layout().size()) as i32;
+                        ((obj.data.size() - object::header_size()) / base.layout().size()) as i32;
                     frame.push(LocalValue::Int(length))?;
                 } else {
                     bail!("object not array")
@@ -1299,23 +1121,23 @@ pub fn run<'a, 'b>(
             }
             IF_NULL => {
                 let base = frame.pc - 1;
-                let target_offset = frame.read_code_u16()? as i16;
+                let target_offset = frame.read_code_u16() as i16;
                 if frame.pop_ref()?.null() {
                     frame.jump_relative(base, target_offset as i32);
                 }
             }
             GOTO_W => {
                 let base = frame.pc - 1;
-                let target_offset = frame.read_code_u32()? as i32;
+                let target_offset = frame.read_code_u32() as i32;
                 frame.jump_relative(base, target_offset)
             }
-            JSR_W => {
-                // This instruction is soft-depretiated since v50?
+            // Only supported in class version < 50.0
+            /*JSR_W => {
                 let base = frame.pc - 1;
                 let target = frame.read_code_u32()? as i32;
                 frame.push(LocalValue::ReturnAddress(frame.pc))?;
                 frame.jump_relative(base, target);
-            }
+            }*/
             other => todo!("Bytecode: {}", other),
         }
     }
@@ -1383,23 +1205,20 @@ fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) -> Result
     Ok(())
 }
 
-fn invoke<'a, 'b>(
-    jvm: &'b JVM<'a>,
-    frame: &'b mut Frame<'a>,
-    method: &'a Method<'a>,
+fn execute_invoke_instr<'jvm, 'b>(
+    jvm: &'b JVM<'jvm>,
+    frame: &'b mut Frame<'jvm>,
+    method: &'jvm Method<'jvm>,
 ) -> Result<()> {
     let mut arg_count = 0;
-    if method.access_flags.contains(AccessFlags::STATIC) {
-        method.class.get().ensure_init(jvm)?;
-    } else {
+    if !method.access_flags.contains(AccessFlags::STATIC) {
         // `this` is treated as an argument, but not mentioned in method descriptor
         arg_count = 1;
     }
     for typ in &method.nat.typ.0 {
+        arg_count += 1;
         // Longs & doubles are double wide...
         if matches!(typ, Typ::Long | Typ::Double) {
-            arg_count += 2;
-        } else {
             arg_count += 1;
         }
     }
@@ -1407,8 +1226,8 @@ fn invoke<'a, 'b>(
         bail!("Invokestatic: not enough elements on stack")
     }
     let args = &frame.stack[frame.stack.len() - arg_count..];
-    let result =
-        run(jvm, method, args).with_context(|| format!("Trying to call {}", method.nat.name))?;
+    let result = invoke_initialized(jvm, method, args)
+        .with_context(|| format!("Trying to call {}", method.nat.name))?;
     frame.stack.truncate(frame.stack.len() - arg_count);
     match result {
         ReturnValue::Void => Ok(()),
@@ -1420,195 +1239,204 @@ fn invoke<'a, 'b>(
     }
 }
 
-pub mod instructions {
-    pub const NOP: u8 = 0;
-    pub const ICONST_M1: u8 = 2;
-    pub const ICONST_0: u8 = 3;
-    pub const ICONST_1: u8 = 4;
-    pub const ICONST_2: u8 = 5;
-    pub const ICONST_3: u8 = 6;
-    pub const ICONST_4: u8 = 7;
-    pub const ICONST_5: u8 = 8;
-    pub const LCONST_0: u8 = 9;
-    pub const LCONST_1: u8 = 10;
-    pub const FCONST_0: u8 = 11;
-    pub const FCONST_1: u8 = 12;
-    pub const FCONST_2: u8 = 13;
-    pub const DCONST_0: u8 = 14;
-    pub const DCONST_1: u8 = 15;
-    pub const BIPUSH: u8 = 16;
-    pub const SIPUSH: u8 = 17;
-    pub const LDC: u8 = 18;
-    pub const LDC_W: u8 = 19;
-    pub const LDC2_W: u8 = 20;
-    pub const ILOAD: u8 = 21;
-    pub const LLOAD: u8 = 22;
-    pub const FLOAD: u8 = 23;
-    pub const DLOAD: u8 = 24;
-    pub const ALOAD: u8 = 25;
-    pub const ILOAD_0: u8 = 26;
-    pub const ILOAD_1: u8 = 27;
-    pub const ILOAD_2: u8 = 28;
-    pub const ILOAD_3: u8 = 29;
-    pub const LLOAD_0: u8 = 30;
-    pub const LLOAD_1: u8 = 31;
-    pub const LLOAD_2: u8 = 32;
-    pub const LLOAD_3: u8 = 33;
-    pub const FLOAD_0: u8 = 34;
-    pub const FLOAD_1: u8 = 35;
-    pub const FLOAD_2: u8 = 36;
-    pub const FLOAD_3: u8 = 37;
-    pub const DLOAD_0: u8 = 38;
-    pub const DLOAD_1: u8 = 39;
-    pub const DLOAD_2: u8 = 40;
-    pub const DLOAD_3: u8 = 41;
-    pub const ALOAD_0: u8 = 42;
-    pub const ALOAD_1: u8 = 43;
-    pub const ALOAD_2: u8 = 44;
-    pub const ALOAD_3: u8 = 45;
-    pub const IALOAD: u8 = 46;
-    pub const LALOAD: u8 = 47;
-    pub const FALOAD: u8 = 48;
-    pub const DALOAD: u8 = 49;
-    pub const AALOAD: u8 = 50;
-    pub const BALOAD: u8 = 51;
-    pub const CALOAD: u8 = 52;
-    pub const SALOAD: u8 = 53;
-    pub const ISTORE: u8 = 54;
-    pub const LSTORE: u8 = 55;
-    pub const FSTORE: u8 = 56;
-    pub const DSTORE: u8 = 57;
-    pub const ASTORE: u8 = 58;
-    pub const ISTORE_0: u8 = 59;
-    pub const ISTORE_1: u8 = 60;
-    pub const ISTORE_2: u8 = 61;
-    pub const ISTORE_3: u8 = 62;
-    pub const LSTORE_0: u8 = 63;
-    pub const LSTORE_1: u8 = 64;
-    pub const LSTORE_2: u8 = 65;
-    pub const LSTORE_3: u8 = 66;
-    pub const FSTORE_0: u8 = 67;
-    pub const FSTORE_1: u8 = 68;
-    pub const FSTORE_2: u8 = 69;
-    pub const FSTORE_3: u8 = 70;
-    pub const DSTORE_0: u8 = 71;
-    pub const DSTORE_1: u8 = 72;
-    pub const DSTORE_2: u8 = 73;
-    pub const DSTORE_3: u8 = 74;
-    pub const ASTORE_0: u8 = 75;
-    pub const ASTORE_1: u8 = 76;
-    pub const ASTORE_2: u8 = 77;
-    pub const ASTORE_3: u8 = 78;
-    pub const IASTORE: u8 = 79;
-    pub const LASTORE: u8 = 80;
-    pub const FASTORE: u8 = 81;
-    pub const DASTORE: u8 = 82;
-    pub const AASTORE: u8 = 83;
-    pub const BASTORE: u8 = 84;
-    pub const CASTORE: u8 = 85;
-    pub const SASTORE: u8 = 86;
-    pub const POP: u8 = 87;
-    pub const POP2: u8 = 88;
-    pub const DUP: u8 = 89;
-    pub const DUP_X1: u8 = 90;
-    pub const DUP_X2: u8 = 91;
-    pub const DUP2: u8 = 92;
-    pub const DUP2_X1: u8 = 93;
-    pub const DUP2_X2: u8 = 94;
-    pub const SWAP: u8 = 95;
-    pub const IADD: u8 = 96;
-    pub const LADD: u8 = 97;
-    pub const FADD: u8 = 98;
-    pub const DADD: u8 = 99;
-    pub const ISUB: u8 = 100;
-    pub const LSUB: u8 = 101;
-    pub const FSUB: u8 = 102;
-    pub const DSUB: u8 = 103;
-    pub const IMUL: u8 = 104;
-    pub const LMUL: u8 = 105;
-    pub const FMUL: u8 = 106;
-    pub const DMUL: u8 = 107;
-    pub const IDIV: u8 = 108;
-    pub const LDIV: u8 = 109;
-    pub const FDIV: u8 = 110;
-    pub const DDIV: u8 = 111;
-    pub const IREM: u8 = 112;
-    pub const LREM: u8 = 113;
-    pub const FREM: u8 = 114;
-    pub const DREM: u8 = 115;
-    pub const INEG: u8 = 116;
-    pub const LNEG: u8 = 117;
-    pub const FNEG: u8 = 118;
-    pub const DNEG: u8 = 119;
-    pub const ISHL: u8 = 120;
-    pub const LSHL: u8 = 121;
-    pub const ISHR: u8 = 122;
-    pub const LSHR: u8 = 123;
-    pub const IUSHR: u8 = 124;
-    pub const LUSHR: u8 = 125;
-    pub const IAND: u8 = 126;
-    pub const LAND: u8 = 127;
-    pub const IOR: u8 = 128;
-    pub const LOR: u8 = 129;
-    pub const IXOR: u8 = 130;
-    pub const LXOR: u8 = 131;
-    pub const IINC: u8 = 132;
-    pub const I2L: u8 = 133;
-    pub const I2F: u8 = 134;
-    pub const I2D: u8 = 135;
-    pub const L2I: u8 = 136;
-    pub const L2F: u8 = 137;
-    pub const L2D: u8 = 138;
-    pub const F2I: u8 = 139;
-    pub const F2L: u8 = 140;
-    pub const F2D: u8 = 141;
-    pub const D2I: u8 = 142;
-    pub const D2L: u8 = 143;
-    pub const D2F: u8 = 144;
-    pub const I2B: u8 = 145;
-    pub const I2C: u8 = 146;
-    pub const I2S: u8 = 147;
-    pub const LCMP: u8 = 148;
-    pub const FCMPL: u8 = 149;
-    pub const FCMPG: u8 = 150;
-    pub const DCMPL: u8 = 151;
-    pub const DCMPG: u8 = 152;
-    pub const IFEQ: u8 = 153;
-    pub const IFNE: u8 = 154;
-    pub const IFLT: u8 = 155;
-    pub const IFGE: u8 = 156;
-    pub const IFGT: u8 = 157;
-    pub const IFLE: u8 = 158;
-    pub const IF_ICMPEQ: u8 = 159;
-    pub const IF_ICMPNE: u8 = 160;
-    pub const IF_ICMPLT: u8 = 161;
-    pub const IF_ICMPGE: u8 = 162;
-    pub const IF_ICMPGT: u8 = 163;
-    pub const IF_ICMPLE: u8 = 164;
-    pub const GOTO: u8 = 167;
-    pub const JSR: u8 = 168;
-    pub const RET: u8 = 169;
-    pub const TABLESWITCH: u8 = 170;
-    pub const LOOKUPSWITCH: u8 = 171;
-    pub const IRETURN: u8 = 172;
-    pub const LRETURN: u8 = 173;
-    pub const FRETURN: u8 = 174;
-    pub const DRETURN: u8 = 175;
-    pub const ARETURN: u8 = 176;
-    pub const RETURN: u8 = 177;
-    pub const GETSTATIC: u8 = 178;
-    pub const PUTSTATIC: u8 = 179;
-    pub const GETFIELD: u8 = 180;
-    pub const PUTFIELD: u8 = 181;
-    pub const INVOKEVIRTUAL: u8 = 182;
-    pub const INVOKESPECIAL: u8 = 183;
-    pub const INVOKESTATIC: u8 = 184;
-    pub const NEW: u8 = 187;
-    pub const NEWARRAY: u8 = 188;
-    pub const ANEWARRAY: u8 = 189;
-    pub const ARRAYLENGTH: u8 = 190;
-    pub const MULTIANEWARRAY: u8 = 197;
-    pub const IF_NULL: u8 = 198;
-    pub const GOTO_W: u8 = 200;
-    pub const JSR_W: u8 = 201;
+impl<'jvm> LocalValue<'jvm> {
+    fn category_2(self) -> bool {
+        matches!(
+            self,
+            Self::LowHalfOfLong(_)
+                | Self::HighHalfOfLong(_)
+                | Self::LowHalfOfDouble(_)
+                | Self::HighHalfOfDouble(_)
+        )
+    }
+}
+
+impl<'jvm> Default for LocalValue<'jvm> {
+    fn default() -> Self {
+        LocalValue::Uninitialized
+    }
+}
+
+impl<'jvm> From<i32> for LocalValue<'jvm> {
+    fn from(i: i32) -> Self {
+        Self::Int(i)
+    }
+}
+
+impl<'jvm> From<f32> for LocalValue<'jvm> {
+    fn from(f: f32) -> Self {
+        Self::Float(f)
+    }
+}
+
+// I'd use TryFrom, but then type interference fails
+impl<'jvm> From<LocalValue<'jvm>> for Result<i32> {
+    fn from(value: LocalValue) -> Self {
+        if let LocalValue::Int(value) = value {
+            Ok(value)
+        } else {
+            bail!("Value not an int")
+        }
+    }
+}
+
+struct Frame<'jvm> {
+    method: &'jvm Method<'jvm>,
+    code_bytes: &'jvm [u8],
+    locals: Vec<LocalValue<'jvm>>,
+    stack: Vec<LocalValue<'jvm>>,
+    pc: u16,
+}
+
+impl<'jvm> Frame<'jvm> {
+    fn jump_relative(&mut self, base: u16, target_offset: i32) {
+        // TODO: verify the target is an op boundary
+        self.pc = (base as i32 + target_offset as i32) as u16;
+    }
+
+    fn load(&self, index: u16) -> Result<LocalValue<'jvm>> {
+        self.locals
+            .get(index as usize)
+            .copied()
+            .ok_or(anyhow!("Invalid local index"))
+    }
+
+    // I would have made get generic but type interference doesn't like its uses
+    fn load_i32(&self, index: u16) -> Result<i32> {
+        self.load(index)?.into()
+    }
+
+    fn store(&mut self, index: u16, value: LocalValue<'jvm>) -> Result<()> {
+        *self
+            .locals
+            .get_mut(index as usize)
+            .ok_or(anyhow!("Invalid locals index"))? = value;
+        Ok(())
+    }
+
+    fn load_long(&self, index: u16) -> Result<i64> {
+        if let (Some(LocalValue::LowHalfOfLong(low)), Some(LocalValue::HighHalfOfLong(high))) = (
+            self.locals.get(index as usize),
+            self.locals.get(index as usize + 1),
+        ) {
+            Ok((((*high as u64) << 32) + *low as u64) as i64)
+        } else {
+            bail!("Failed to load local long from slot {}", index,)
+        }
+    }
+
+    fn load_double(&self, index: u16) -> Result<f64> {
+        if let (Some(LocalValue::LowHalfOfDouble(low)), Some(LocalValue::HighHalfOfDouble(high))) = (
+            self.locals.get(index as usize),
+            self.locals.get(index as usize + 1),
+        ) {
+            Ok(f64::from_bits(((*high as u64) << 32) + *low as u64))
+        } else {
+            bail!("Failed to load local double from slot {}", index)
+        }
+    }
+
+    fn store_long(&mut self, index: u16, value: i64) -> Result<()> {
+        if (index as usize) < self.locals.len() - 1 {
+            self.locals[index as usize] = LocalValue::LowHalfOfLong(value as u32);
+            self.locals[index as usize + 1] =
+                LocalValue::HighHalfOfLong(((value as u64) >> 32) as u32);
+            Ok(())
+        } else {
+            bail!("Failed to store long into slot {}", index)
+        }
+    }
+
+    fn store_double(&mut self, index: u16, value: f64) -> Result<()> {
+        if (index as usize) < self.locals.len() - 1 {
+            self.locals[index as usize] = LocalValue::LowHalfOfDouble(value.to_bits() as u32);
+            self.locals[index as usize + 1] =
+                LocalValue::HighHalfOfDouble((value.to_bits() >> 32) as u32);
+            Ok(())
+        } else {
+            bail!("Failed to store double into slot {}", index)
+        }
+    }
+
+    fn pop(&mut self) -> Result<LocalValue<'jvm>> {
+        self.stack.pop().ok_or(anyhow!("Pop empty stack"))
+    }
+
+    fn pop_int(&mut self) -> Result<i32> {
+        match self.pop()? {
+            LocalValue::Int(value) => Ok(value),
+            other => bail!("Stack value mismatch: not an int ({:?})", other),
+        }
+    }
+
+    fn pop_float(&mut self) -> Result<f32> {
+        match self.pop()? {
+            LocalValue::Float(value) => Ok(value),
+            other => bail!("Stack value mismatch: not an float ({:?})", other),
+        }
+    }
+
+    fn pop_long(&mut self) -> Result<i64> {
+        match (self.pop()?, self.pop()?) {
+            (LocalValue::HighHalfOfLong(high), LocalValue::LowHalfOfLong(low)) => {
+                Ok((((high as u64) << 32) + low as u64) as i64)
+            }
+            other => bail!("Failed to pop long {:?}", other),
+        }
+    }
+
+    fn pop_double(&mut self) -> Result<f64> {
+        match (self.pop()?, self.pop()?) {
+            (LocalValue::HighHalfOfDouble(high), LocalValue::LowHalfOfDouble(low)) => {
+                Ok(f64::from_bits(((high as u64) << 32) + low as u64))
+            }
+            other => bail!("Failed to pop double {:?}", other),
+        }
+    }
+
+    fn pop_ref(&mut self) -> Result<Object<'jvm>> {
+        match self.pop()? {
+            LocalValue::Ref(value) => Ok(value),
+            other => bail!("Stack value mismatch: not an object ({:?})", other),
+        }
+    }
+
+    fn push(&mut self, value: LocalValue<'jvm>) -> Result<()> {
+        if self.stack.len() < self.stack.capacity() {
+            self.stack.push(value);
+            Ok(())
+        } else {
+            bail!("Max stack exceeded ({})", self.stack.len(),)
+        }
+    }
+
+    fn push_long(&mut self, value: i64) -> Result<()> {
+        self.push(LocalValue::LowHalfOfLong(value as u32))?;
+        self.push(LocalValue::HighHalfOfLong((value as u64 >> 32) as u32))
+    }
+
+    fn push_double(&mut self, value: f64) -> Result<()> {
+        self.push(LocalValue::LowHalfOfDouble(value.to_bits() as u32))?;
+        self.push(LocalValue::HighHalfOfDouble(
+            (value.to_bits() as u64 >> 32) as u32,
+        ))
+    }
+
+    /// This always succeeds because bounds were already checked during verification
+    fn read_code_u8(&mut self) -> u8 {
+        self.pc += 1;
+        self.code_bytes[self.pc as usize - 1]
+    }
+
+    fn read_code_u16(&mut self) -> u16 {
+        ((self.read_code_u8() as u16) << 8) + self.read_code_u8() as u16
+    }
+
+    fn read_code_u32(&mut self) -> u32 {
+        ((self.read_code_u16() as u32) << 16) + self.read_code_u16() as u32
+    }
+
+    fn read_previous_byte(&mut self) -> u8 {
+        self.method.code.as_ref().unwrap().bytes[self.pc as usize - 1]
+    }
 }

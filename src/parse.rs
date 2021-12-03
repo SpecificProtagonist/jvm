@@ -1,11 +1,15 @@
-use std::{alloc::Layout, cell::Cell, collections::HashMap};
+use std::{
+    alloc::Layout,
+    cell::Cell,
+    collections::{BTreeMap, HashMap},
+};
 
 use crate::{
-    class::{Class, Field, FieldNaT, Method, MethodNaT},
+    class::{Field, FieldNaT, Method, MethodNaT},
     const_pool::{ConstPool, ConstPoolItem},
-    object::min_object_size,
-    verification::{StackMapFrame, StackMapFrameInfo, VerificationType},
-    AccessFlags, ClassInitState, Code, FieldStorage, IntStr, MethodDescriptor, Typ, JVM,
+    object::header_size,
+    verification::{StackMapFrame, VerificationType},
+    AccessFlags, Code, FieldStorage, IntStr, MethodDescriptor, StackMapTable, Typ, JVM,
 };
 use anyhow::{bail, Context, Result};
 
@@ -64,7 +68,7 @@ fn read_const_pool_item<'a, 'b, 'c>(
         4 => Ok(Float(f32::from_bits(read_u32(input)?))),
         5 => Ok(Long(read_u64(input)? as i64)),
         6 => Ok(Double(f64::from_bits(read_u64(input)?))),
-        7 => Ok(Class(read_u16(input)?)),
+        7 => Ok(RawClass(read_u16(input)?)),
         8 => Ok(RawString(read_u16(input)?)),
         9 => Ok(FieldRef {
             class: read_u16(input)?,
@@ -104,39 +108,41 @@ fn read_const_pool<'a, 'b, 'c>(input: &'b mut &'c [u8], jvm: &'b JVM<'a>) -> Res
         }
     }
     // Const pool validity is part of format checking
-    if !items.iter().all(|item| match item.get() {
-        ConstPoolItem::Class(index) => matches!(
-            items.get(index as usize).map(Cell::get),
-            Some(ConstPoolItem::Utf8(..))
-        ),
-        ConstPoolItem::FieldRef { class, nat }
-        | ConstPoolItem::MethodRef { class, nat }
-        | ConstPoolItem::InterfaceMethodRef { class, nat } => matches!(
-            (
-                items.get(class as usize).map(Cell::get),
-                items.get(nat as usize).map(Cell::get)
-            ),
-            (
-                Some(ConstPoolItem::Class(..)),
-                Some(ConstPoolItem::NameAndType { .. })
-            )
-        ),
-        ConstPoolItem::NameAndType { name, descriptor } => matches!(
-            (
-                items.get(name as usize).map(Cell::get),
-                items.get(descriptor as usize).map(Cell::get)
-            ),
-            (Some(ConstPoolItem::Utf8(..)), Some(ConstPoolItem::Utf8(..)))
-        ),
-        ConstPoolItem::RawString(index) => {
-            matches!(
+    for item in items.iter() {
+        if !match item.get() {
+            ConstPoolItem::RawClass(index) => matches!(
                 items.get(index as usize).map(Cell::get),
                 Some(ConstPoolItem::Utf8(..))
-            )
+            ),
+            ConstPoolItem::FieldRef { class, nat }
+            | ConstPoolItem::MethodRef { class, nat }
+            | ConstPoolItem::InterfaceMethodRef { class, nat } => matches!(
+                (
+                    items.get(class as usize).map(Cell::get),
+                    items.get(nat as usize).map(Cell::get)
+                ),
+                (
+                    Some(ConstPoolItem::RawClass(..)),
+                    Some(ConstPoolItem::NameAndType { .. })
+                )
+            ),
+            ConstPoolItem::NameAndType { name, descriptor } => matches!(
+                (
+                    items.get(name as usize).map(Cell::get),
+                    items.get(descriptor as usize).map(Cell::get)
+                ),
+                (Some(ConstPoolItem::Utf8(..)), Some(ConstPoolItem::Utf8(..)))
+            ),
+            ConstPoolItem::RawString(index) => {
+                matches!(
+                    items.get(index as usize).map(Cell::get),
+                    Some(ConstPoolItem::Utf8(..))
+                )
+            }
+            _ => true,
+        } {
+            bail!("Invalid constant pool item: {:?}", item.get())
         }
-        _ => true,
-    }) {
-        bail!("Invalid constant pool")
     }
 
     Ok(ConstPool { items })
@@ -149,7 +155,7 @@ fn read_interfaces<'a, 'b>(
     let length = read_u16(input)?;
     let mut vec = Vec::with_capacity(length as usize);
     for _ in 0..length {
-        vec.push(const_pool.get_class(read_u16(input)?)?);
+        vec.push(const_pool.get_unresolved_class(read_u16(input)?)?);
     }
     Ok(vec)
 }
@@ -231,8 +237,8 @@ fn read_field<'a, 'b, 'c>(
     for _ in 0..attributes_count {
         let (name, data) = read_attribute(input, constant_pool)?;
         if name.0 == "ConstantValue" {
-            if access_flags.contains(AccessFlags::FINAL | AccessFlags::STATIC) {
-                if const_value_index.is_none() | (data.len() != 2) {
+            if access_flags.contains(AccessFlags::STATIC) {
+                if const_value_index.is_none() & (data.len() == 2) {
                     const_value_index = Some(((data[0] as u16) << 8) + data[1] as u16)
                 } else {
                     bail!("Invalid ConstantValue attribute")
@@ -271,7 +277,7 @@ fn read_fields<'a, 'b, 'c>(
     // Decide layout
     fields.sort_by_key(|field| field.descriptor.layout().align());
     let mut static_layout = Layout::new::<()>();
-    let mut object_layout = Layout::from_size_align(min_object_size(), 8).unwrap();
+    let mut object_layout = Layout::from_size_align(header_size(), 8).unwrap();
     let fields = fields
         .into_iter()
         .map(|mut field| {
@@ -297,7 +303,10 @@ fn read_fields<'a, 'b, 'c>(
     Ok((fields, static_layout.size(), object_layout.size()))
 }
 
-fn read_verification_type(input: &mut &[u8]) -> Result<VerificationType> {
+fn read_verification_type<'c, 'b, 'a>(
+    input: &'b mut &'c [u8],
+    const_pool: &'b ConstPool<'a>,
+) -> Result<VerificationType<'a>> {
     Ok(match read_u8(input)? {
         0 => VerificationType::Top,
         1 => VerificationType::Integer,
@@ -306,9 +315,7 @@ fn read_verification_type(input: &mut &[u8]) -> Result<VerificationType> {
         4 => VerificationType::Long,
         5 => VerificationType::Null,
         6 => VerificationType::UninitializedThis,
-        7 => VerificationType::ObjectVariable {
-            index: read_u16(input)?,
-        },
+        7 => VerificationType::ObjectVariable(const_pool.get_class(read_u16(input)?)?),
         8 => VerificationType::UninitializedVariable {
             offset: read_u16(input)?,
         },
@@ -316,85 +323,113 @@ fn read_verification_type(input: &mut &[u8]) -> Result<VerificationType> {
     })
 }
 
-fn read_stack_map_table(mut input: &[u8]) -> Result<Vec<StackMapFrame>> {
+/// This is called during varification, both because it allows
+pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
+    mut input: &'c [u8],
+    const_pool: &'b ConstPool<'a>,
+    initial_locals: Vec<VerificationType<'a>>,
+    max_stack: u16,
+    max_locals: u16,
+) -> Result<BTreeMap<u32, StackMapFrame<'a>>> {
     let input = &mut input;
     let length = read_u16(input)?;
-    let mut vec = Vec::with_capacity(length as usize);
+    let mut frames = BTreeMap::new();
+    let mut pc = 0;
+    frames.insert(
+        pc,
+        StackMapFrame {
+            stack: [].into(),
+            locals: initial_locals,
+        },
+    );
     for _ in 0..length {
+        let prev_frame = frames.iter().rev().next().unwrap().1;
         let frame_type = read_u8(input)?;
-        vec.push(if frame_type < 64 {
-            StackMapFrame {
-                offset_delta: frame_type as u16,
-                info: StackMapFrameInfo::SameFrame,
-            }
+        let (offset, current_frame) = if frame_type < 64 {
+            (frame_type as u16, prev_frame.clone())
         } else if frame_type < 128 {
-            StackMapFrame {
-                offset_delta: frame_type as u16 - 64,
-                info: StackMapFrameInfo::SameLocals1StackItem(read_verification_type(input)?),
-            }
+            (
+                frame_type as u16 - 64,
+                StackMapFrame {
+                    locals: prev_frame.locals.clone(),
+                    stack: vec![read_verification_type(input, const_pool)?],
+                },
+            )
         } else if frame_type == 247 {
-            StackMapFrame {
-                offset_delta: read_u16(input)?,
-                info: StackMapFrameInfo::SameLocals1StackItem(read_verification_type(input)?),
-            }
+            (
+                read_u16(input)?,
+                StackMapFrame {
+                    locals: prev_frame.locals.clone(),
+                    stack: vec![read_verification_type(input, const_pool)?],
+                },
+            )
         } else if (frame_type > 247) & (frame_type < 251) {
-            StackMapFrame {
-                offset_delta: read_u16(input)?,
-                info: StackMapFrameInfo::ChopFrame(251 - frame_type),
-            }
+            let k = 251 - frame_type;
+            (
+                read_u16(input)?,
+                StackMapFrame {
+                    locals: if prev_frame.locals.len() < k as usize {
+                        bail!("invalid stack frame")
+                    } else {
+                        prev_frame.locals[0..prev_frame.locals.len() - k as usize].into()
+                    },
+                    stack: [].into(),
+                },
+            )
         } else if frame_type == 251 {
-            StackMapFrame {
-                offset_delta: read_u16(input)?,
-                info: StackMapFrameInfo::SameFrame,
-            }
+            (read_u16(input)?, prev_frame.clone())
         } else if (frame_type > 251) & (frame_type < 255) {
             let k = frame_type - 251;
-            StackMapFrame {
-                offset_delta: read_u16(input)?,
-                info: StackMapFrameInfo::AppendFrame([
-                    Some(read_verification_type(input)?),
-                    if k > 1 {
-                        Some(read_verification_type(input)?)
-                    } else {
-                        None
+            (
+                read_u16(input)?,
+                StackMapFrame {
+                    locals: {
+                        let mut locals = prev_frame.locals.clone();
+                        for _ in 0..k {
+                            locals.push(read_verification_type(input, const_pool)?);
+                        }
+                        locals
                     },
-                    if k > 2 {
-                        Some(read_verification_type(input)?)
-                    } else {
-                        None
-                    },
-                ]),
-            }
+                    stack: [].into(),
+                },
+            )
         } else if frame_type == 255 {
             let offset_delta = read_u16(input)?;
             let num_locals = read_u16(input)?;
             let mut locals = Vec::with_capacity(num_locals as usize);
             for _ in 0..num_locals {
-                locals.push(read_verification_type(input)?)
+                locals.push(read_verification_type(input, const_pool)?)
             }
             let num_stack = read_u16(input)?;
             let mut stack = Vec::with_capacity(num_stack as usize);
             for _ in 0..num_stack {
-                stack.push(read_verification_type(input)?)
+                stack.push(read_verification_type(input, const_pool)?)
             }
-            StackMapFrame {
+            (
                 offset_delta,
-                info: StackMapFrameInfo::FullFrame {
+                StackMapFrame {
                     locals: locals.into(),
                     stack: stack.into(),
                 },
-            }
+            )
         } else {
             bail!("invalid verification type: {}", frame_type)
-        })
+        };
+        pc += offset as u32 + 1;
+        frames.insert(pc, current_frame);
     }
     if input.len() > 0 {
         bail!("invalid stack map table: {:?}", input)
     }
-    Ok(vec)
+    for (_, frame) in &frames {
+        if (frame.locals.len() > max_locals as usize) | (frame.stack.len() > max_stack as usize) {
+            bail!("invalid stack map table")
+        }
+    }
+    Ok(frames)
 }
 
-fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
+fn read_code<'a>(mut input: &[u8], constant_pool: &ConstPool<'a>) -> Result<Code> {
     let input = &mut input;
     let max_stack = read_u16(input)?;
     let max_locals = read_u16(input)?;
@@ -412,12 +447,16 @@ fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
     }
 
     let attributes_count = read_u16(input)?;
+    let mut stack_map_table = None;
     for _ in 0..attributes_count {
         // Ignore attributes for now
         let (name, bytes) = read_attribute(input, constant_pool).context("Reading attributes")?;
         if name.0 == "StackMapTable" {
-            // TODO: supply for verification
-            let _ = read_stack_map_table(bytes)?;
+            if stack_map_table.is_none() {
+                stack_map_table = Some(bytes.into());
+            } else {
+                bail!("Duplicate StackMapTable")
+            }
         }
     }
 
@@ -429,6 +468,11 @@ fn read_code(mut input: &[u8], constant_pool: &ConstPool) -> Result<Code> {
         max_stack,
         max_locals,
         bytes,
+        stack_map_table: StackMapTable {
+            bytes: stack_map_table.unwrap_or_default(),
+            max_locals,
+            max_stack,
+        },
     })
 }
 
@@ -476,7 +520,7 @@ fn read_method<'a, 'b, 'c>(
     let attributes_count = read_u16(input)?;
     for _ in 0..attributes_count {
         let (attr_name, bytes) = read_attribute(input, constant_pool)?;
-        if attr_name == jvm.intern_str("Code") {
+        if attr_name.0 == "Code" {
             if code.is_none() {
                 code = Some(read_code(bytes, constant_pool).context("Reading bytecode")?);
             } else {
@@ -525,7 +569,7 @@ fn read_methods<'a, 'b, 'c>(
 pub(crate) fn read_class_file<'a, 'b, 'c>(
     mut input: &'c [u8],
     jvm: &'b JVM<'a>,
-) -> Result<(Class<'a>, Option<IntStr<'a>>)> {
+) -> Result<ClassDescriptor<'a>> {
     let input = &mut input;
 
     read_magic(input)?;
@@ -539,17 +583,24 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
             minor_version
         )
     }
-    // Maybe only allow classes >= 51? Would remove some cruft
+    if major_version < 50 {
+        // Verification by type inference not implemented yet
+        bail!(
+            "Class version {}.{} < 50 not supported yet",
+            major_version,
+            minor_version
+        )
+    }
 
     let const_pool = read_const_pool(input, jvm)?;
 
     let access_flags = AccessFlags::from_bits_truncate(read_u16(input)?);
 
-    let this_class = const_pool.get_class(read_u16(input)?)?;
+    let this_class = const_pool.get_unresolved_class(read_u16(input)?)?;
     let super_class = {
         let index = read_u16(input)?;
         if index > 0 {
-            Some(const_pool.get_class(index)?)
+            Some(const_pool.get_unresolved_class(index)?)
         } else {
             None
         }
@@ -572,21 +623,28 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
         bail!("Malformed class file: Expected EOF")
     }
 
-    Ok((
-        Class {
-            version: (major_version, minor_version),
-            const_pool,
-            access_flags,
-            name: this_class,
-            super_class: None,
-            interfaces,
-            static_storage,
-            object_size,
-            fields,
-            methods,
-            init: ClassInitState::Uninit.into(),
-            init_waiter: Default::default(),
-        },
+    Ok(ClassDescriptor {
+        const_pool,
+        access_flags,
+        name: this_class,
         super_class,
-    ))
+        interfaces,
+        static_storage,
+        object_size,
+        fields,
+        methods,
+    })
+}
+
+/// Represents a class with not yet resolved superclass & interfaces
+pub(crate) struct ClassDescriptor<'a> {
+    pub(crate) const_pool: ConstPool<'a>,
+    pub(crate) access_flags: AccessFlags,
+    pub(crate) name: IntStr<'a>,
+    pub(crate) super_class: Option<IntStr<'a>>,
+    pub(crate) interfaces: Vec<IntStr<'a>>,
+    pub(crate) fields: HashMap<FieldNaT<'a>, Field<'a>>,
+    pub(crate) methods: HashMap<MethodNaT<'a>, &'a Method<'a>>,
+    pub(crate) static_storage: FieldStorage,
+    pub(crate) object_size: usize,
 }
