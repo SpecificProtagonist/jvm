@@ -1,4 +1,7 @@
-use std::{marker::PhantomData, mem::size_of};
+use std::{
+    marker::PhantomData,
+    mem::{align_of, size_of},
+};
 
 use crate::{field_storage::FieldStorage, AccessFlags, RefType, Typ};
 
@@ -8,11 +11,15 @@ impl<'a> PartialEq for Object<'a> {
     }
 }
 
-/// contains the ClassOrArray, followed by the fields/items
+/// Object layout:
+/// size (u64, handled by FieldStorage)
+/// pointer to RefType
+/// fields (sorted by alignment) | array elements
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Object<'a> {
     pub(crate) data: FieldStorage,
+    /// The object may only live as long as the JVM
     pub(crate) _marker: PhantomData<&'a ()>,
 }
 
@@ -74,6 +81,9 @@ impl<'a> std::fmt::Debug for Object<'a> {
     }
 }
 
-pub fn min_object_size() -> usize {
-    size_of::<&RefType>()
+/// Size of an object with no fields/an empty array, not counting FieldData's length header
+pub fn header_size() -> usize {
+    // Afaik the alignment of 64-bit ints is usize even on 32-bit systems,
+    // but better make sure of this (as there would be unaligned accesses elsewise):
+    size_of::<usize>().max(align_of::<u64>())
 }

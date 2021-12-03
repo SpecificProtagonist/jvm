@@ -1,4 +1,5 @@
-This is a toy JVM in writen in Rust. It is very much WIP and aims to eventually implement the Java 8 JVM specification.
+This is a toy embeddable JVM in writen in Rust. It is very much WIP and aims to eventually 
+implement the Java 8 JVM specification (except for the loading of classes with version <50.0).
 
 It currently allows
 - class loading/initialization
@@ -18,6 +19,4 @@ Rough overview:
 
 Unsafe is currently used in the following ways:
 - when accessing fields (in `fields_storage.rs` and when dereferencing pointers to objects)
-- to cast the lifetime of Classes, Strings, … to the lifetime of the JVM,
-  as they are never reallocated and are allocated in `TypedArena`s 
-  which are only dropped when the JVM is dropped
+- to drop Classes, Strings, … when the JVM is dropped

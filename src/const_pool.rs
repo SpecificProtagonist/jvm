@@ -16,7 +16,7 @@ pub(crate) enum ConstPoolItem<'a> {
     Float(f32),
     Long(i64),
     Double(f64),
-    Class(u16),
+    Class(&'a RefType<'a>),
     Field(&'a Field<'a>),
     StaticMethod(&'a Method<'a>),
     // Class is neccessary for invoke_special
@@ -26,21 +26,26 @@ pub(crate) enum ConstPoolItem<'a> {
     FieldRef { class: u16, nat: u16 },
     MethodRef { class: u16, nat: u16 },
     RawString(u16),
+    RawClass(u16),
     // Accoring to the spec, long and doubles taking two entries was a design mistake
     PlaceholderAfterLongOrDoubleEntryOrForEntryZero,
 }
 
 impl<'a> ConstPool<'a> {
+    /// Must be called prior to initialization
     pub fn resolve(&self, jvm: &JVM<'a>) -> Result<()> {
+        for item in &self.items {
+            if let ConstPoolItem::RawClass(index) = item.get() {
+                item.set(ConstPoolItem::Class(
+                    jvm.resolve_class(self.get_utf8(index)?)?,
+                ));
+            }
+        }
         for item in &self.items {
             match item.get() {
                 ConstPoolItem::MethodRef { class, nat } => {
-                    let mut class = self.get_class(class)?;
                     // Arrays inherit methods from Object
-                    if class.0.starts_with('[') {
-                        class = jvm.intern_str("java/lang/Object");
-                    }
-                    let class = jvm.resolve_class(class)?;
+                    let class = self.get_class(class)?;
                     let (name, descriptor) = self.get_raw_nat(nat)?;
                     let typ = crate::parse::parse_method_descriptor(jvm, descriptor)?;
                     let typ = jvm.method_descriptor_storage.lock().unwrap().alloc(typ);
@@ -55,7 +60,7 @@ impl<'a> ConstPool<'a> {
                     }
                 }
                 ConstPoolItem::FieldRef { class, nat } => {
-                    let class = match jvm.resolve_class(self.get_class(class)?)? {
+                    let class = match self.get_class(class)? {
                         RefType::Class(class) => class,
                         RefType::Array { .. } => bail!("Tried to get field of array"),
                     };
@@ -112,14 +117,24 @@ impl<'a> ConstPool<'a> {
         }
     }
 
-    pub fn get_class(&self, index: u16) -> Result<IntStr<'a>> {
+    /// Cannot be called after resolution
+    pub fn get_unresolved_class(&self, index: u16) -> Result<IntStr<'a>> {
         match self.items.get(index as usize).map(Cell::get) {
-            Some(ConstPoolItem::Class(index)) => self.get_utf8(index),
+            Some(ConstPoolItem::RawClass(index)) => self.get_utf8(index),
             _ => bail!("Constant pool index {} not Class", index),
         }
     }
 
-    pub fn get_static_method<'b>(&'b self, jvm: &'b JVM<'a>, index: u16) -> Result<&'a Method<'a>> {
+    /// Requires resolution first
+    pub fn get_class(&self, index: u16) -> Result<&'a RefType<'a>> {
+        match self.items.get(index as usize).map(Cell::get) {
+            Some(ConstPoolItem::Class(class)) => Ok(class),
+            _ => bail!("Constant pool index {} not Class", index),
+        }
+    }
+
+    /// Requires resolution first
+    pub fn get_static_method<'b>(&'b self, index: u16) -> Result<&'a Method<'a>> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::StaticMethod(method)) => Ok(method),
             other => bail!(
@@ -130,35 +145,16 @@ impl<'a> ConstPool<'a> {
         }
     }
 
-    pub fn get_virtual_method<'b>(
-        &'b self,
-        jvm: &'b JVM<'a>,
-        index: u16,
-    ) -> Result<(&'a RefType<'a>, MethodNaT<'a>)> {
+    /// Requires resolution first
+    pub fn get_virtual_method(&self, index: u16) -> Result<(&'a RefType<'a>, MethodNaT<'a>)> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, nat)),
-            Some(ConstPoolItem::MethodRef { class, nat }) => {
-                let class = jvm.resolve_class(self.get_class(class)?)?;
-
-                let (name, descriptor) = self.get_raw_nat(nat)?;
-                let typ = crate::parse::parse_method_descriptor(jvm, descriptor)?;
-                let typ = jvm.method_descriptor_storage.lock().unwrap().alloc(typ);
-                let nat = MethodNaT { name, typ };
-                let method = class
-                    .method(name, typ)
-                    .ok_or_else(|| anyhow!("Method not found"))?;
-                if method.access_flags.contains(AccessFlags::STATIC) {
-                    bail!("Method {} is static", nat)
-                }
-                // TODO: check if returning java/lang/Object for arrays is correct for invokespecial
-                self.items[index as usize].set(ConstPoolItem::VirtualMethod(class, nat));
-                Ok((class, nat))
-            }
-            _ => bail!("Constant pool index {} not a method", index,),
+            _ => bail!("Constant pool index {} not a virtual method", index,),
         }
     }
 
-    pub fn get_field(&self, jvm: &JVM<'a>, index: u16) -> Result<&'a Field<'a>> {
+    /// Requires resolution first
+    pub fn get_field(&self, index: u16) -> Result<&'a Field<'a>> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::Field(field)) => Ok(field),
             other => bail!(

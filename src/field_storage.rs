@@ -4,6 +4,16 @@ use std::{
     sync::atomic::{AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicUsize, Ordering},
 };
 
+// TODO: Consider using 32-bit (and compressed) pointers.
+// That would make all size 1 types 4 bytes long and simplify things.
+// Requires target-specific allocation though: No extra work if 32-bit target,
+// but allocator on top of NtAllocateVirtualMemory or mmap
+// TODO: use usize instead of u64 for size (consider alignment of Long/Double)
+/// Contains pointer to heap allocation containing allocation size followed by space for fields/array items
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct FieldStorage(*const u8);
+
 macro_rules! access {
     ($read:ident,$write:ident,$atomic:ident,$size:expr,$typ:ident) => {
         pub fn $read(&self, offset: u32) -> Option<$typ> {
@@ -32,11 +42,6 @@ macro_rules! access {
     };
 }
 
-/// Contains pointer to heap allocation containing allocation size followed by space for fields/array items
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub struct FieldStorage(*const u8);
-
 impl FieldStorage {
     pub fn new(size: usize) -> Self {
         Self(unsafe {
@@ -60,7 +65,7 @@ impl FieldStorage {
         unsafe { *(self.0 as *const u64).offset(-1) as usize }
     }
 
-    /// Safety: Must only be called once, and called with the layout used to create this
+    /// Safety: Must only be called once
     pub unsafe fn delete(self) {
         dealloc(
             (self.0 as *const u64).offset(-1) as *mut u8,

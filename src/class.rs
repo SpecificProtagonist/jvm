@@ -7,8 +7,12 @@ use std::{
     thread::ThreadId,
 };
 
-use crate::{const_pool::ConstPool, field_storage::FieldStorage, AccessFlags, IntStr, Typ, JVM};
+use crate::{
+    const_pool::ConstPool, field_storage::FieldStorage, verification::verify, AccessFlags, IntStr,
+    Typ, JVM,
+};
 
+/// Classloaders do not yet exist
 #[derive(Debug)]
 pub enum RefType<'a> {
     Class(Class<'a>),
@@ -16,6 +20,83 @@ pub enum RefType<'a> {
         base: Typ<'a>,
         super_class: &'a RefType<'a>,
     },
+}
+
+pub struct Class<'a> {
+    pub(crate) name: IntStr<'a>,
+    pub(crate) super_class: Option<&'a RefType<'a>>,
+    pub(crate) const_pool: ConstPool<'a>,
+    pub(crate) access_flags: AccessFlags,
+    #[allow(unused)]
+    pub(crate) interfaces: Vec<&'a RefType<'a>>,
+    /// As far as I can tell, JVM supports field overloading
+    pub(crate) fields: HashMap<FieldNaT<'a>, Field<'a>>,
+    // At the moment, this includes any inherited methods. Change this?
+    pub(crate) methods: HashMap<MethodNaT<'a>, &'a Method<'a>>,
+    pub(crate) static_storage: FieldStorage,
+    pub(crate) object_size: usize,
+    pub(crate) init: Mutex<ClassInitState>,
+    pub(crate) init_waiter: Condvar,
+}
+
+pub(crate) enum ClassInitState {
+    Uninit,
+    InProgress(ThreadId),
+    Done,
+    Error,
+}
+
+#[derive(Debug)]
+pub struct Field<'a> {
+    pub(crate) name: IntStr<'a>,
+    /// Class is behind a Cell to enable circular references
+    pub(crate) class: Cell<&'a Class<'a>>,
+    pub(crate) access_flags: AccessFlags,
+    pub(crate) descriptor: Typ<'a>,
+    /// Offset into the FieldData of the class (static field) / instance (non-static) where this is stored
+    /// Java has no multiple inheritance for fields, therefore each field can be at a set position
+    pub(crate) byte_offset: u32,
+    /// Only set for static fields
+    pub(crate) const_value_index: Option<u16>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FieldNaT<'a> {
+    pub(crate) name: IntStr<'a>,
+    pub(crate) typ: Typ<'a>,
+}
+
+pub struct Method<'a> {
+    pub(crate) nat: MethodNaT<'a>,
+    pub(crate) access_flags: AccessFlags,
+    /// Class is behind a Cell to enable circular references
+    pub(crate) class: Cell<&'a Class<'a>>,
+    pub(crate) code: Option<Code>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct MethodNaT<'a> {
+    pub(crate) name: IntStr<'a>,
+    pub(crate) typ: &'a MethodDescriptor<'a>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct MethodDescriptor<'a>(pub Vec<Typ<'a>>, pub Option<Typ<'a>>);
+
+// TODO: use verification data to construct a more efficient bytecode
+pub(crate) struct Code {
+    pub max_stack: u16,
+    pub max_locals: u16,
+    pub bytes: Vec<u8>,
+    pub stack_map_table: StackMapTable,
+    // This includes the initial (implicit) stack map frame
+    //pub stack_map_table: BTreeMap<u32, StackMapFrame<'a>>,
+}
+
+pub(crate) struct StackMapTable {
+    pub bytes: Vec<u8>,
+    pub max_locals: u16,
+    pub max_stack: u16,
 }
 
 impl<'a> RefType<'a> {
@@ -52,7 +133,7 @@ impl<'a> RefType<'a> {
         }
     }
 
-    pub(crate) fn resolve_field(&'a self, field: FieldNaT<'a>) -> Result<&'a Field<'a>> {
+    pub fn resolve_field(&'a self, field: FieldNaT<'a>) -> Result<&'a Field<'a>> {
         if let RefType::Class(class) = self {
             if let Some(field) = class.fields.get(&field) {
                 Ok(field)
@@ -66,38 +147,20 @@ impl<'a> RefType<'a> {
             bail!("Tried to resolve field of array")
         }
     }
-}
 
-impl<'a> Eq for &'a RefType<'a> {}
-impl<'a> PartialEq for &'a RefType<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        *self as *const RefType == *other as *const RefType
+    pub fn as_class(&'a self) -> Option<&'a Class<'a>> {
+        match self {
+            RefType::Class(class) => Some(class),
+            RefType::Array { .. } => None,
+        }
     }
 }
 
-pub struct Class<'a> {
-    pub(crate) name: IntStr<'a>,
-    pub(crate) super_class: Option<&'a RefType<'a>>,
-    #[allow(unused)]
-    pub(crate) version: (u16, u16),
-    pub(crate) const_pool: ConstPool<'a>,
-    pub(crate) access_flags: AccessFlags,
-    #[allow(unused)]
-    pub(crate) interfaces: Vec<IntStr<'a>>,
-    /// As far as I can tell, JVM supports field overloading
-    pub(crate) fields: HashMap<FieldNaT<'a>, Field<'a>>,
-    pub(crate) methods: HashMap<MethodNaT<'a>, &'a Method<'a>>,
-    pub(crate) static_storage: FieldStorage,
-    pub(crate) object_size: usize,
-    pub(crate) init: Mutex<ClassInitState>,
-    pub(crate) init_waiter: Condvar,
-}
-
-pub(crate) enum ClassInitState {
-    Uninit,
-    InProgress(ThreadId),
-    Done,
-    Error,
+impl<'a, 'b> Eq for &'b RefType<'a> {}
+impl<'a, 'b> PartialEq for &'b RefType<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        *self as *const RefType == *other as *const RefType
+    }
 }
 
 impl<'a> Class<'a> {
@@ -113,7 +176,6 @@ impl<'a> Class<'a> {
 
     pub(crate) fn dummy_class() -> Self {
         Class {
-            version: (0, 0),
             const_pool: ConstPool { items: Vec::new() },
             access_flags: AccessFlags::empty(),
             name: IntStr(""),
@@ -130,7 +192,7 @@ impl<'a> Class<'a> {
 
     /// Ensures this class is initialized. This includes linking, verification, preparation & resolution
     /// May only be called by the instuctions new, getstatic, putstatic or invokestatic or by being the initial class
-    pub(crate) fn ensure_init(&self, jvm: &JVM<'a>) -> Result<()> {
+    pub(crate) fn ensure_init<'b>(&'b self, jvm: &'b JVM<'a>) -> Result<()> {
         let mut guard = self.init.lock().unwrap();
         match *guard {
             ClassInitState::Done => Ok(()),
@@ -144,7 +206,8 @@ impl<'a> Class<'a> {
                         match *guard {
                             ClassInitState::Done => return Ok(()),
                             ClassInitState::Error => return Err(anyhow!("NoClassDefFoundError")),
-                            _ => (),
+                            ClassInitState::InProgress(_) => continue,
+                            ClassInitState::Uninit => unreachable!(),
                         }
                     }
                 }
@@ -153,6 +216,9 @@ impl<'a> Class<'a> {
                 *guard = ClassInitState::InProgress(std::thread::current().id());
                 drop(guard);
 
+                if let Some(RefType::Class(super_class)) = self.super_class {
+                    super_class.ensure_init(jvm)?;
+                }
                 let init_result = self.init(jvm);
 
                 *self.init.lock().unwrap() = if init_result.is_ok() {
@@ -169,7 +235,10 @@ impl<'a> Class<'a> {
     }
 
     /// This may only be called from self.ensure_init
-    fn init(&self, jvm: &JVM<'a>) -> Result<()> {
+    fn init<'b>(&'b self, jvm: &'b JVM<'a>) -> Result<()>
+    where
+        'a: 'b,
+    {
         // Preparation
         for field in self.fields.values() {
             if let Some(index) = field.const_value_index {
@@ -209,12 +278,18 @@ impl<'a> Class<'a> {
             }
         }
 
+        // Resolution
+        self.const_pool.resolve(jvm)?;
+
+        // Verification
+        verify(jvm, self)?;
+
         // Initialization
         if let Some(method) = self.methods.get(&MethodNaT {
             name: jvm.intern_str("<clinit>"),
             typ: &MethodDescriptor(vec![], None),
         }) {
-            crate::interp::run(jvm, method, &[])?;
+            crate::interp::invoke_initialized(jvm, method, &[])?;
         }
 
         Ok(())
@@ -228,28 +303,24 @@ impl<'a> Drop for Class<'a> {
     }
 }
 
+impl<'a, 'b> Eq for &'b Class<'a> {}
+impl<'a, 'b> PartialEq for &'b Class<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        *self as *const Class == *other as *const Class
+    }
+}
+
 impl<'a> std::fmt::Debug for Class<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name)
     }
 }
 
-impl<'a> Eq for &'a Field<'a> {}
-impl<'a> PartialEq for &'a Field<'a> {
+impl<'a, 'b> Eq for &'b Field<'a> {}
+impl<'a, 'b> PartialEq for &'b Field<'a> {
     fn eq(&self, other: &Self) -> bool {
         *self as *const Field == *other as *const Field
     }
-}
-
-#[derive(Debug)]
-pub struct Field<'a> {
-    pub(crate) name: IntStr<'a>,
-    pub(crate) class: Cell<&'a Class<'a>>,
-    pub(crate) access_flags: AccessFlags,
-    pub(crate) descriptor: Typ<'a>,
-    // Java has no multiple inheritance for fields, therefore each field can be at a set position
-    pub(crate) byte_offset: u32,
-    pub(crate) const_value_index: Option<u16>,
 }
 
 impl<'a> Eq for &'a Method<'a> {}
@@ -259,29 +330,10 @@ impl<'a> PartialEq for &'a Method<'a> {
     }
 }
 
-pub struct Method<'a> {
-    pub(crate) nat: MethodNaT<'a>,
-    pub(crate) access_flags: AccessFlags,
-    pub(crate) class: Cell<&'a Class<'a>>,
-    pub(crate) code: Option<Code>,
-}
-
 impl<'a> Debug for Method<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.nat)
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FieldNaT<'a> {
-    pub(crate) name: IntStr<'a>,
-    pub(crate) typ: Typ<'a>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct MethodNaT<'a> {
-    pub(crate) name: IntStr<'a>,
-    pub(crate) typ: &'a MethodDescriptor<'a>,
 }
 
 impl<'a> std::fmt::Display for MethodNaT<'a> {
@@ -298,13 +350,4 @@ impl<'a> std::fmt::Display for MethodNaT<'a> {
         write!(f, ")")?;
         Ok(())
     }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct MethodDescriptor<'a>(pub Vec<Typ<'a>>, pub Option<Typ<'a>>);
-
-pub(crate) struct Code {
-    pub max_stack: u16,
-    pub max_locals: u16,
-    pub bytes: Vec<u8>,
 }
