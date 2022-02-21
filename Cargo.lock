@@ -21,17 +21,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
+name = "fixed-typed-arena"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e36dd7a841124a86a78aeb9a83b6cc5ea6fd1b2d4c541ac9bf265f997369266"
+
+[[package]]
 name = "jvm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "bimap",
  "bitflags",
- "typed-arena",
+ "fixed-typed-arena",
 ]
-
-[[package]]
-name = "typed-arena"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0685c84d5d54d1c26f7d3eb96cd41550adb97baed141a761cf335d3d33bcd0ae"

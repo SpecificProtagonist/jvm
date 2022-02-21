@@ -4,10 +4,8 @@ version = "0.1.0"
 authors = ["Vincent Junge <vincentjunge@posteo.net>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 anyhow = "1"
 bimap = "0.6"
 bitflags = "1.3"
-typed-arena = "2"
+fixed-typed-arena = "0.2"

@@ -1,7 +1,4 @@
-use crate::{
-    class::{Field, MethodDescriptor},
-    AccessFlags, IntStr, Method, MethodNaT, RefType, JVM,
-};
+use crate::{class::Field, AccessFlags, IntStr, Method, MethodNaT, RefType, JVM};
 use anyhow::{anyhow, bail, Result};
 use std::cell::Cell;
 
@@ -34,6 +31,52 @@ pub(crate) enum ConstPoolItem<'a> {
 }
 
 impl<'a> ConstPool<'a> {
+    pub fn resolve(&self, jvm: &JVM<'a>) -> Result<()> {
+        for item in &self.items {
+            match item.get() {
+                ConstPoolItem::MethodRef { class, nat } => {
+                    let mut class = self.get_class(class)?;
+                    // Arrays inherit methods from Object
+                    if class.0.starts_with('[') {
+                        class = jvm.intern_str("java/lang/Object");
+                    }
+                    let class = jvm.resolve_class(class)?;
+                    let (name, descriptor) = self.get_raw_nat(nat)?;
+                    let typ = crate::parse::parse_method_descriptor(jvm, descriptor)?;
+                    let typ = jvm.method_descriptor_storage.lock().unwrap().alloc(typ);
+                    let method = class
+                        .method(name, typ)
+                        .ok_or_else(|| anyhow!("Method not found"))?;
+                    if method.access_flags.contains(AccessFlags::STATIC) {
+                        item.set(ConstPoolItem::StaticMethod(method));
+                    } else {
+                        // TODO: check if returning java/lang/Object for arrays is correct for invokespecial
+                        item.set(ConstPoolItem::VirtualMethod(class, MethodNaT { name, typ }));
+                    }
+                }
+                ConstPoolItem::FieldRef { class, nat } => {
+                    let class = match jvm.resolve_class(self.get_class(class)?)? {
+                        RefType::Class(class) => class,
+                        RefType::Array { .. } => bail!("Tried to get field of array"),
+                    };
+                    let (name, typ) = self.get_raw_nat(nat)?;
+                    let (typ, _) = crate::parse::parse_field_descriptor(jvm, typ, 0)?;
+                    if let Some(field) = class.field(name, typ) {
+                        item.set(ConstPoolItem::Field(field));
+                    } else {
+                        bail!(
+                            "Class {} does not have field {} of correct type",
+                            class.name,
+                            name
+                        );
+                    }
+                }
+                _ => (),
+            }
+        }
+        Ok(())
+    }
+
     pub fn get_int(&self, index: u16) -> Result<i32> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::Integer(int)) => Ok(int),
@@ -79,29 +122,11 @@ impl<'a> ConstPool<'a> {
     pub fn get_static_method<'b>(&'b self, jvm: &'b JVM<'a>, index: u16) -> Result<&'a Method<'a>> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::StaticMethod(method)) => Ok(method),
-            Some(ConstPoolItem::MethodRef { class, nat }) => {
-                let mut class = self.get_class(class)?;
-                // Arrays inherit methods from Object
-                if class.0.starts_with('[') {
-                    class = jvm.intern_str("java/lang/Object");
-                }
-                let class = jvm.resolve_class(class)?;
-                let (name, descriptor) = self.get_raw_nat(nat)?;
-                let typ = crate::parse::parse_method_descriptor(jvm, descriptor)?;
-                // SAFETY: elements of the arena are at the same pos as long as the arena exists
-                let typ = unsafe {
-                    &*(jvm.method_descriptor_storage.alloc(typ) as *const MethodDescriptor)
-                };
-                let method = class
-                    .method(name, typ)
-                    .ok_or_else(|| anyhow!("Method not found"))?;
-                if !method.access_flags.contains(AccessFlags::STATIC) {
-                    bail!("Method {} not static", &method.nat)
-                }
-                self.items[index as usize].set(ConstPoolItem::StaticMethod(method));
-                Ok(method)
-            }
-            _ => bail!("Constant pool index {} not a method", index,),
+            other => bail!(
+                "Constant pool index {} not a static method (found {:?})",
+                index,
+                other
+            ),
         }
     }
 
@@ -117,10 +142,7 @@ impl<'a> ConstPool<'a> {
 
                 let (name, descriptor) = self.get_raw_nat(nat)?;
                 let typ = crate::parse::parse_method_descriptor(jvm, descriptor)?;
-                // SAFETY: elements of the arena are at the same pos as long as the arena exists
-                let typ = unsafe {
-                    &*(jvm.method_descriptor_storage.alloc(typ) as *const MethodDescriptor)
-                };
+                let typ = jvm.method_descriptor_storage.lock().unwrap().alloc(typ);
                 let nat = MethodNaT { name, typ };
                 let method = class
                     .method(name, typ)
@@ -139,25 +161,10 @@ impl<'a> ConstPool<'a> {
     pub fn get_field(&self, jvm: &JVM<'a>, index: u16) -> Result<&'a Field<'a>> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::Field(field)) => Ok(field),
-            Some(ConstPoolItem::FieldRef { class, nat }) => {
-                let class = match jvm.resolve_class(self.get_class(class)?)? {
-                    RefType::Class(class) => class,
-                    RefType::Array { .. } => bail!("Tried to get field of array"),
-                };
-                let (name, typ) = self.get_raw_nat(nat)?;
-                let (typ, _) = crate::parse::parse_field_descriptor(jvm, typ, 0)?;
-                if let Some(field) = class.field(name, typ) {
-                    self.items[index as usize].set(ConstPoolItem::Field(field));
-                    Ok(field)
-                } else {
-                    bail!(
-                        "Class {} does not have field {} of correct type",
-                        class.name,
-                        name
-                    );
-                }
-            }
-            _ => bail!("Constant pool index {} not a field", index,),
+            other => bail!(
+                "Constant pool index {index} not a field (found {:?})",
+                other
+            ),
         }
     }
 
