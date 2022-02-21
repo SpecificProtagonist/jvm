@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
+use fixed_typed_arena::ManuallyDropArena;
 use object::Object;
 use std::{
     alloc::Layout,
@@ -8,9 +9,8 @@ use std::{
     hash::Hash,
     io::Read,
     path::PathBuf,
-    sync::RwLock,
+    sync::{Mutex, RwLock},
 };
-use typed_arena::Arena;
 
 mod class;
 mod const_pool;
@@ -29,11 +29,11 @@ use crate::object::min_object_size;
 // TODO: figure out if I need to keep safety in mind when dropping
 /// JVM instance. This cannot be moved because it borrows from itself.
 pub struct JVM<'a> {
-    string_storage: Arena<String>,
-    class_storage: Arena<RefType<'a>>,
-    method_storage: Arena<Method<'a>>,
+    string_storage: Mutex<ManuallyDropArena<String, 256>>,
+    class_storage: Mutex<ManuallyDropArena<RefType<'a>, 128>>,
+    method_storage: Mutex<ManuallyDropArena<Method<'a>, 128>>,
     // Implementation detail of const_pool, maybe remove in the future
-    method_descriptor_storage: Arena<MethodDescriptor<'a>>,
+    method_descriptor_storage: Mutex<ManuallyDropArena<MethodDescriptor<'a>, 128>>,
     class_path: Vec<PathBuf>,
     // TODO: intern string objects instead
     strings: RwLock<HashSet<&'a str>>,
@@ -124,10 +124,12 @@ impl<'a> std::fmt::Display for IntStr<'a> {
 
 impl<'a> JVM<'a> {
     pub fn new(class_path: Vec<PathBuf>) -> Self {
-        let class_storage = Default::default();
+        let class_storage = Mutex::<ManuallyDropArena<_, 128>>::default();
         // SAFETY: Classes inserted into the arena are valid as long as the arena exists,
         // even if the reference to it is invalidated
-        let dummy_class = unsafe { &*(&class_storage as *const Arena<RefType>) }
+        let dummy_class = class_storage
+            .lock()
+            .unwrap()
             .alloc(RefType::Class(Class::dummy_class()));
         let dummy_class = if let RefType::Class(class) = dummy_class {
             class
@@ -154,10 +156,7 @@ impl<'a> JVM<'a> {
         } else {
             drop(guard);
             let mut guard = self.strings.write().unwrap();
-            let storage = &self.string_storage as *const Arena<String>;
-            // SAFETY: Strings inserted into the arena are valid as long as the arena exists,
-            // even if the reference to it is invalidated
-            let str = unsafe { &*storage }.alloc(str.into());
+            let str = self.string_storage.lock().unwrap().alloc(str.into());
             guard.insert(str);
             str
         })
@@ -176,8 +175,6 @@ impl<'a> JVM<'a> {
         if let Some(class) = self.classes.read().unwrap().get(&name) {
             return Ok(*class);
         }
-
-        let class_storage = &self.class_storage as *const Arena<RefType>;
 
         if name.0.starts_with('[') {
             let (base, end) = parse::parse_field_descriptor(self, name, 1)?;
@@ -199,7 +196,7 @@ impl<'a> JVM<'a> {
             let array = RefType::Array { base, super_class };
             // SAFETY: Classes inserted into the arena are valid as long as the arena exists,
             // even if the reference to it is invalidated
-            let array = unsafe { &*class_storage }.alloc(array);
+            let array = self.class_storage.lock().unwrap().alloc(array);
             let mut guard = self.classes.write().unwrap();
             // Check if loaded by another thread in the meantime
             if let Some(array) = guard.get(&name) {
@@ -231,7 +228,11 @@ impl<'a> JVM<'a> {
 
         // SAFETY: Classes inserted into the arena are valid as long as the arena exists,
         // even if the reference to it is invalidated
-        let class_or_array = unsafe { &*class_storage }.alloc(RefType::Class(class));
+        let class_or_array = self
+            .class_storage
+            .lock()
+            .unwrap()
+            .alloc(RefType::Class(class));
         let class = if let RefType::Class(class) = class_or_array {
             class
         } else {
@@ -323,6 +324,18 @@ impl<'a> JVM<'a> {
         Object {
             data,
             _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a> Drop for JVM<'a> {
+    fn drop(&mut self) {
+        // SAFETY: All references have lifetime 'a and no member of JVM has a drop impl that dereferences these
+        unsafe {
+            ManuallyDropArena::drop(&mut self.string_storage.lock().unwrap());
+            ManuallyDropArena::drop(&mut self.class_storage.lock().unwrap());
+            ManuallyDropArena::drop(&mut self.method_storage.lock().unwrap());
+            ManuallyDropArena::drop(&mut self.method_descriptor_storage.lock().unwrap());
         }
     }
 }

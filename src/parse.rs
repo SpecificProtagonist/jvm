@@ -8,7 +8,6 @@ use crate::{
     AccessFlags, ClassInitState, Code, FieldStorage, IntStr, MethodDescriptor, Typ, JVM,
 };
 use anyhow::{bail, Context, Result};
-use typed_arena::Arena;
 
 fn read_u8(input: &mut &[u8]) -> Result<u8> {
     if let Some(u8) = input.get(0) {
@@ -486,9 +485,11 @@ fn read_method<'a, 'b, 'c>(
         }
     }
 
-    // SAFETY: elements of the arena are at the same pos as long as the arena exists
-    let typ =
-        unsafe { &*(jvm.method_descriptor_storage.alloc(descriptor) as *const MethodDescriptor) };
+    let typ = jvm
+        .method_descriptor_storage
+        .lock()
+        .unwrap()
+        .alloc(descriptor);
 
     Ok(Method {
         nat: MethodNaT { name, typ },
@@ -512,10 +513,7 @@ fn read_methods<'a, 'b, 'c>(
                 bail!("Duplicate method in same class")
             }
         }
-        let storage = &jvm.method_storage as *const Arena<Method>;
-        // SAFETY: Strings inserted into the arena are valid as long as the arena exists,
-        // even if the reference to it is invalidated
-        let method = unsafe { &*storage }.alloc(method);
+        let method = jvm.method_storage.lock().unwrap().alloc(method);
         methods.insert(method.nat.clone(), &*method);
     }
     Ok(methods)
