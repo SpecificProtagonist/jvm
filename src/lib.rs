@@ -34,13 +34,13 @@ pub struct JVM<'a> {
     class_path: Vec<PathBuf>,
     // Classes (including arrays), methods, method descriptors and interned strings live as long as the JVM
     string_storage: Mutex<ManuallyDropArena<String, 256>>,
-    class_storage: Mutex<ManuallyDropArena<RefType<'a>, 128>>,
+    class_storage: Mutex<ManuallyDropArena<Class<'a>, 128>>,
     method_storage: Mutex<ManuallyDropArena<Method<'a>, 128>>,
     // Implementation detail of const_pool, maybe remove in the future
     method_descriptor_storage: Mutex<ManuallyDropArena<MethodDescriptor<'a>, 128>>,
     // TODO: intern string objects instead
     strings: RwLock<HashSet<&'a str>>,
-    classes: RwLock<HashMap<IntStr<'a>, &'a RefType<'a>>>,
+    classes: RwLock<HashMap<IntStr<'a>, &'a Class<'a>>>,
     /// Placeholder for Method.class/Field.class. Somehow removing this would be nice.
     /// I had a static Class in parse.rs, but apparently I can't use a &'a Class<'static> as a &'a Class<'a>
     dummy_class: &'a Class<'a>,
@@ -53,15 +53,7 @@ impl<'a> JVM<'a> {
         let class_storage = Mutex::<ManuallyDropArena<_, 128>>::default();
         // SAFETY: Classes inserted into the arena are valid as long as the arena exists,
         // even if the reference to it is invalidated
-        let dummy_class = class_storage
-            .lock()
-            .unwrap()
-            .alloc(RefType::Class(Class::dummy_class()));
-        let dummy_class = if let RefType::Class(class) = dummy_class {
-            class
-        } else {
-            unreachable!()
-        };
+        let dummy_class = class_storage.lock().unwrap().alloc(Class::dummy_class());
         Self {
             string_storage: Default::default(),
             class_storage,
@@ -93,7 +85,7 @@ impl<'a> JVM<'a> {
     pub fn resolve_class<'b>(
         &'b self,
         name: impl Into<MaybeInteredString<'a, 'b>>,
-    ) -> Result<&'a RefType<'a>> {
+    ) -> Result<&'a Class<'a>> {
         self.resolve_class_impl(name.into().get(self), Vec::new())
     }
 
@@ -102,7 +94,7 @@ impl<'a> JVM<'a> {
         &'b self,
         name: IntStr<'a>,
         mut check_circular: Vec<IntStr<'a>>,
-    ) -> Result<&'a RefType<'a>> {
+    ) -> Result<&'a Class<'a>> {
         if let Some(class) = self.classes.read().unwrap().get(&name) {
             return Ok(*class);
         }
@@ -118,8 +110,8 @@ impl<'a> JVM<'a> {
             // other arrays inherit from arrays of the superclass of their component type
             let super_class = if let Typ::Ref(component) = base {
                 let component = self.resolve_class(component)?;
-                if let Some(comp_super) = component.super_class() {
-                    self.resolve_class(format!("[{}", comp_super.name(&self)))?
+                if let Some(comp_super) = component.super_class {
+                    self.resolve_class(format!("[{}", comp_super.name))?
                 } else {
                     self.resolve_class("java/lang/Object")?
                 }
@@ -127,9 +119,29 @@ impl<'a> JVM<'a> {
                 self.resolve_class("java/lang/Object")?
             };
 
-            let array = RefType::Array { base, super_class };
-            // SAFETY: Classes inserted into the arena are valid as long as the arena exists,
-            // even if the reference to it is invalidated
+            //let array = RefType::Array { base, super_class };
+            let array = Class {
+                name,
+                super_class: Some(super_class),
+                is_array: Some(base),
+                const_pool: const_pool::ConstPool {
+                    items: Default::default(),
+                },
+                // TODO: correct access flags
+                access_flags: AccessFlags::empty(),
+                interfaces: vec![],
+                // TODO: implement interfaces
+                /*vec![
+                    self.resolve_class("Clonable")?,
+                    self.resolve_class("java/io/Serializable")?,
+                ]*/
+                fields: Default::default(),
+                methods: super_class.methods.clone(),
+                static_storage: FieldStorage::new(0),
+                object_size: 0,
+                init: ClassInitState::Uninit.into(),
+                init_waiter: Default::default(),
+            };
             let array = self.class_storage.lock().unwrap().alloc(array);
             let mut guard = self.classes.write().unwrap();
             // Check if loaded by another thread in the meantime
@@ -174,12 +186,11 @@ impl<'a> JVM<'a> {
                 bail!("Circular class inheritance for {}", super_class_name);
             }
             check_circular.push(super_class_name);
-            let super_ref_type = self.resolve_class_impl(super_class_name, check_circular)?;
+            let super_class = self.resolve_class_impl(super_class_name, check_circular)?;
 
-            let super_class = match super_ref_type {
-                RefType::Class(class) => class,
-                RefType::Array { .. } => bail!("Can't subclass array!"),
-            };
+            if super_class.is_array.is_some() {
+                bail!("Can't subclass array!")
+            }
 
             if super_class.access_flags.contains(AccessFlags::FINAL) {
                 bail!("Tried to subclass final class {}", super_class.name)
@@ -189,30 +200,27 @@ impl<'a> JVM<'a> {
             for (nat, method) in &super_class.methods {
                 class_desc.methods.entry(*nat).or_insert(*method);
             }
-            Some(super_ref_type)
+            Some(super_class)
         } else {
             None
         };
 
         let interfaces = class_desc.interfaces.into_iter().map(|_| todo!()).collect();
 
-        let ref_type = self
-            .class_storage
-            .lock()
-            .unwrap()
-            .alloc(RefType::Class(Class {
-                name: class_desc.name,
-                super_class,
-                const_pool: class_desc.const_pool,
-                access_flags: class_desc.access_flags,
-                interfaces,
-                fields: class_desc.fields,
-                methods: class_desc.methods,
-                static_storage: class_desc.static_storage,
-                object_size: class_desc.object_size,
-                init: ClassInitState::Uninit.into(),
-                init_waiter: Default::default(),
-            }));
+        let ref_type = self.class_storage.lock().unwrap().alloc(Class {
+            name: class_desc.name,
+            super_class,
+            is_array: None,
+            const_pool: class_desc.const_pool,
+            access_flags: class_desc.access_flags,
+            interfaces,
+            fields: class_desc.fields,
+            methods: class_desc.methods,
+            static_storage: class_desc.static_storage,
+            object_size: class_desc.object_size,
+            init: ClassInitState::Uninit.into(),
+            init_waiter: Default::default(),
+        });
 
         let mut guard = self.classes.write().unwrap();
         // Check if loaded by another thread in the meantime
@@ -220,11 +228,7 @@ impl<'a> JVM<'a> {
             return Ok(*class);
         }
         guard.insert(name, ref_type);
-        let class = if let Some(RefType::Class(class)) = guard.get(&name) {
-            class
-        } else {
-            unreachable!()
-        };
+        let class = guard.get(&name).unwrap();
 
         // While parsing, each method has their class field set to a dummy
         // We can't use class.methods directly because that also includes parent classes
@@ -247,18 +251,22 @@ impl<'a> JVM<'a> {
         returns: Option<Typ<'a>>,
     ) -> Result<&'a Method<'a>> {
         self.resolve_class(class)?
-            .method(method.into().get(self), &MethodDescriptor(args, returns))
+            .methods
+            .get(&MethodNaT {
+                name: method.into().get(self),
+                typ: &MethodDescriptor(args, returns),
+            })
             .ok_or(anyhow!("Method not found"))
+            .map(|m| *m)
     }
 
     /// Creates an instance of a non-array class on the heap
-    fn create_object(&self, typ: &'a RefType) -> Object<'a> {
-        let class = match typ {
-            RefType::Class(class) => class,
-            _ => panic!("Called create_object with an array"),
-        };
+    fn create_object(&self, class: &'a Class) -> Object<'a> {
+        if class.is_array.is_some() {
+            panic!("Called create_object with an array")
+        }
         let data = FieldStorage::new(class.object_size);
-        data.write_usize(0, typ as *const RefType as usize);
+        data.write_usize(0, class as *const Class as usize);
         Object {
             data,
             _marker: std::marker::PhantomData,
@@ -266,13 +274,12 @@ impl<'a> JVM<'a> {
     }
 
     /// Creates an instance of an array class on the heap
-    fn create_array(&self, typ: &'a RefType, length: usize) -> Object<'a> {
-        let component = match typ {
-            RefType::Array { base, .. } => *base,
-            _ => panic!("Called create_array with a non-array class"),
-        };
+    fn create_array(&self, class: &'a Class, length: usize) -> Object<'a> {
+        let component = class
+            .is_array
+            .expect("Called create_array with a non-array class");
         let data = FieldStorage::new(object::header_size() + component.layout().size() * length);
-        data.write_usize(0, typ as *const RefType as usize);
+        data.write_usize(0, class as *const Class as usize);
         Object {
             data,
             _marker: std::marker::PhantomData,

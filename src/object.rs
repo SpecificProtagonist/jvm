@@ -3,7 +3,7 @@ use std::{
     mem::{align_of, size_of},
 };
 
-use crate::{field_storage::FieldStorage, AccessFlags, RefType, Typ};
+use crate::{field_storage::FieldStorage, AccessFlags, Class, Typ};
 
 impl<'a> PartialEq for Object<'a> {
     fn eq(&self, other: &Self) -> bool {
@@ -28,18 +28,19 @@ impl<'a> Object<'a> {
         self.data.addr() == 0
     }
 
-    pub fn class(self) -> &'a RefType<'a> {
+    pub fn class(self) -> &'a Class<'a> {
         unsafe { std::mem::transmute(self.data.read_usize(0).unwrap()) }
     }
 }
 
 impl<'a> std::fmt::Debug for Object<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.class() {
-            RefType::Array { base, .. } => {
+        let class = self.class();
+        match class.is_array {
+            Some(base) => {
                 write!(f, "{}[]{{…}}", base)?;
             }
-            RefType::Class(class) => {
+            None => {
                 write!(f, "{}{{", class.name)?;
                 let mut first = true;
                 for field in class.fields.values() {

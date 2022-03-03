@@ -1,4 +1,4 @@
-use crate::{class::Field, AccessFlags, IntStr, Method, MethodNaT, RefType, JVM};
+use crate::{class::Field, AccessFlags, Class, IntStr, Method, MethodNaT, JVM};
 use anyhow::{anyhow, bail, Result};
 use std::cell::Cell;
 
@@ -16,11 +16,11 @@ pub(crate) enum ConstPoolItem<'a> {
     Float(f32),
     Long(i64),
     Double(f64),
-    Class(&'a RefType<'a>),
+    Class(&'a Class<'a>),
     Field(&'a Field<'a>),
     StaticMethod(&'a Method<'a>),
     // Class is neccessary for invoke_special
-    VirtualMethod(&'a RefType<'a>, MethodNaT<'a>),
+    VirtualMethod(&'a Class<'a>, MethodNaT<'a>),
     InterfaceMethodRef { class: u16, nat: u16 },
     NameAndType { name: u16, descriptor: u16 },
     FieldRef { class: u16, nat: u16 },
@@ -50,7 +50,8 @@ impl<'a> ConstPool<'a> {
                     let typ = crate::parse::parse_method_descriptor(jvm, descriptor)?;
                     let typ = jvm.method_descriptor_storage.lock().unwrap().alloc(typ);
                     let method = class
-                        .method(name, typ)
+                        .methods
+                        .get(&MethodNaT { name, typ })
                         .ok_or_else(|| anyhow!("Method not found"))?;
                     if method.access_flags.contains(AccessFlags::STATIC) {
                         item.set(ConstPoolItem::StaticMethod(method));
@@ -60,10 +61,7 @@ impl<'a> ConstPool<'a> {
                     }
                 }
                 ConstPoolItem::FieldRef { class, nat } => {
-                    let class = match self.get_class(class)? {
-                        RefType::Class(class) => class,
-                        RefType::Array { .. } => bail!("Tried to get field of array"),
-                    };
+                    let class = self.get_class(class)?;
                     let (name, typ) = self.get_raw_nat(nat)?;
                     let (typ, _) = crate::parse::parse_field_descriptor(jvm, typ, 0)?;
                     if let Some(field) = class.field(name, typ) {
@@ -126,7 +124,7 @@ impl<'a> ConstPool<'a> {
     }
 
     /// Requires resolution first
-    pub fn get_class(&self, index: u16) -> Result<&'a RefType<'a>> {
+    pub fn get_class(&self, index: u16) -> Result<&'a Class<'a>> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::Class(class)) => Ok(class),
             _ => bail!("Constant pool index {} not Class", index),
@@ -146,7 +144,7 @@ impl<'a> ConstPool<'a> {
     }
 
     /// Requires resolution first
-    pub fn get_virtual_method(&self, index: u16) -> Result<(&'a RefType<'a>, MethodNaT<'a>)> {
+    pub fn get_virtual_method(&self, index: u16) -> Result<(&'a Class<'a>, MethodNaT<'a>)> {
         match self.items.get(index as usize).map(Cell::get) {
             Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, nat)),
             _ => bail!("Constant pool index {} not a virtual method", index,),
