@@ -12,28 +12,21 @@ use crate::{
     Typ, JVM,
 };
 
-/// Classloaders do not yet exist
-#[derive(Debug)]
-pub enum RefType<'a> {
-    Class(Class<'a>),
-    Array {
-        base: Typ<'a>,
-        super_class: &'a RefType<'a>,
-    },
-}
-
+/// Includes both regular classes and arrays
 pub struct Class<'a> {
     pub(crate) name: IntStr<'a>,
-    pub(crate) super_class: Option<&'a RefType<'a>>,
+    pub(crate) super_class: Option<&'a Class<'a>>,
+    pub(crate) is_array: Option<Typ<'a>>,
     pub(crate) const_pool: ConstPool<'a>,
     pub(crate) access_flags: AccessFlags,
     #[allow(unused)]
-    pub(crate) interfaces: Vec<&'a RefType<'a>>,
+    pub(crate) interfaces: Vec<&'a Class<'a>>,
     /// As far as I can tell, JVM supports field overloading
     pub(crate) fields: HashMap<FieldNaT<'a>, Field<'a>>,
-    // At the moment, this includes any inherited methods. Change this?
+    /// At the moment, this includes any inherited methods. Change this?
     pub(crate) methods: HashMap<MethodNaT<'a>, &'a Method<'a>>,
     pub(crate) static_storage: FieldStorage,
+    /// Combined size of instance fields in normal class, 0 if array
     pub(crate) object_size: usize,
     pub(crate) init: Mutex<ClassInitState>,
     pub(crate) init_waiter: Condvar,
@@ -99,67 +92,10 @@ pub(crate) struct StackMapTable {
     pub max_stack: u16,
 }
 
-impl<'a> RefType<'a> {
-    pub fn super_class(&self) -> Option<&'a RefType<'a>> {
-        match self {
-            Self::Class(class) => class.super_class,
-            Self::Array { super_class, .. } => Some(super_class),
-        }
-    }
-
-    pub fn assignable_to(&'a self, other: &'a RefType<'a>) -> bool {
-        (self == other)
-            || self
-                .super_class()
-                .map(|sc| (sc == other) || sc.assignable_to(other))
-                .unwrap_or(false)
-    }
-
-    pub(crate) fn name(&'a self, jvm: &JVM<'a>) -> IntStr<'a> {
-        match self {
-            Self::Array { base, .. } => jvm.intern_str(&format!("[{}", base)),
-            Self::Class(class) => class.name,
-        }
-    }
-
-    pub fn method<'b>(
-        &'a self,
-        name: IntStr<'a>,
-        typ: &'b MethodDescriptor<'a>,
-    ) -> Option<&'a Method<'a>> {
-        match self {
-            Self::Class(class) => class.methods.get(&MethodNaT { name, typ }).map(|m| *m),
-            Self::Array { super_class, .. } => super_class.method(name, typ),
-        }
-    }
-
-    pub fn resolve_field(&'a self, field: FieldNaT<'a>) -> Result<&'a Field<'a>> {
-        if let RefType::Class(class) = self {
-            if let Some(field) = class.fields.get(&field) {
-                Ok(field)
-            } else {
-                let super_class = self
-                    .super_class()
-                    .ok_or_else(|| anyhow!("Failed to resolve field {}", field.name))?;
-                super_class.resolve_field(field)
-            }
-        } else {
-            bail!("Tried to resolve field of array")
-        }
-    }
-
-    pub fn as_class(&'a self) -> Option<&'a Class<'a>> {
-        match self {
-            RefType::Class(class) => Some(class),
-            RefType::Array { .. } => None,
-        }
-    }
-}
-
-impl<'a, 'b> Eq for &'b RefType<'a> {}
-impl<'a, 'b> PartialEq for &'b RefType<'a> {
+impl<'a, 'b> Eq for &'b Class<'a> {}
+impl<'a, 'b> PartialEq for &'b Class<'a> {
     fn eq(&self, other: &Self) -> bool {
-        *self as *const RefType == *other as *const RefType
+        *self as *const Class == *other as *const Class
     }
 }
 
@@ -167,15 +103,27 @@ impl<'a> Class<'a> {
     pub fn field(&'a self, name: IntStr<'a>, typ: Typ<'a>) -> Option<&'a Field<'a>> {
         self.fields.get(&FieldNaT { name, typ })
     }
+    pub fn method<'b>(
+        &'b self,
+        name: IntStr<'a>,
+        typ: &MethodDescriptor<'a>,
+    ) -> Option<&'a Method<'a>> {
+        self.methods.get(&MethodNaT { name, typ }).map(|m| *m)
+    }
 
-    pub fn subclass_of(&'a self, other: &'a RefType<'a>) -> bool {
+    pub fn subclass_of(&'a self, other: &'a Class<'a>) -> bool {
         self.super_class
             .map(|sc| (sc == other) || sc.assignable_to(other))
             .unwrap_or(false)
     }
 
+    pub fn assignable_to(&'a self, other: &'a Class<'a>) -> bool {
+        (self == other) || self.subclass_of(other)
+    }
+
     pub(crate) fn dummy_class() -> Self {
         Class {
+            is_array: None,
             const_pool: ConstPool { items: Vec::new() },
             access_flags: AccessFlags::empty(),
             name: IntStr(""),
@@ -187,6 +135,17 @@ impl<'a> Class<'a> {
             methods: Default::default(),
             init: ClassInitState::Uninit.into(),
             init_waiter: Condvar::new(),
+        }
+    }
+
+    pub fn resolve_field(&'a self, field: FieldNaT<'a>) -> Result<&'a Field<'a>> {
+        if let Some(field) = self.fields.get(&field) {
+            Ok(field)
+        } else {
+            match self.super_class {
+                Some(super_class) => super_class.resolve_field(field),
+                None => Err(anyhow!("Failed to resolve field {}", field.name)),
+            }
         }
     }
 
@@ -216,7 +175,7 @@ impl<'a> Class<'a> {
                 *guard = ClassInitState::InProgress(std::thread::current().id());
                 drop(guard);
 
-                if let Some(RefType::Class(super_class)) = self.super_class {
+                if let Some(super_class) = self.super_class {
                     super_class.ensure_init(jvm)?;
                 }
                 let init_result = self.init(jvm);
@@ -300,13 +259,6 @@ impl<'a> Drop for Class<'a> {
     fn drop(&mut self) {
         // Safety: This is the only reference to this storage
         unsafe { self.static_storage.delete() };
-    }
-}
-
-impl<'a, 'b> Eq for &'b Class<'a> {}
-impl<'a, 'b> PartialEq for &'b Class<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        *self as *const Class == *other as *const Class
     }
 }
 

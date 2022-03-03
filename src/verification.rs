@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::{instructions::*, parse, AccessFlags, Class, Method, RefType, Typ, JVM};
+use crate::{instructions::*, parse, AccessFlags, Class, Method, Typ, JVM};
 
 #[derive(Clone, Default)]
 pub(crate) struct StackMapFrame<'a> {
@@ -32,7 +32,7 @@ pub(crate) enum VerificationType<'a> {
     Integer,
     Float,
     Null,
-    ObjectVariable(&'a RefType<'a>),
+    ObjectVariable(&'a Class<'a>),
     UninitializedThis,
     UninitializedVariable { offset: u16 },
     Long,
@@ -84,9 +84,9 @@ pub(crate) fn push_type<'a, 'b>(
 /// Verification by type checking
 /// (Verification by type inference is not planned)
 pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b JVM<'a>, class: &'b Class<'a>) -> Result<()> {
-    if let Some(RefType::Class(super_class)) = class.super_class {
+    if let Some(super_class) = class.super_class {
         verify(jvm, super_class)?;
-        // Check whether the super class is final is redundant (has to already be checked during loading)
+        // Check whether the super class is final (as described in spec) is redundant (has to already be checked during loading)
     } else if class.name.0 != "java/lang/Object" {
         bail!("Class has no superclass")
     }
@@ -106,7 +106,7 @@ fn verify_method<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<()>
         method.access_flags.contains(AccessFlags::STATIC),
         method.class.get().super_class,
     ) {
-        if let Some(super_method) = super_class.method(method.nat.name, method.nat.typ) {
+        if let Some(super_method) = super_class.methods.get(&method.nat) {
             if super_method.access_flags.contains(AccessFlags::FINAL) {
                 bail!("Tried to overwrite final method {}", method.nat);
             }
@@ -133,7 +133,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
                 if (method.nat.name.0 != "<init>")
                     || (method.class.get().name.0 == "java/lang/Object")
                 {
-                    VerificationType::ObjectVariable(todo!() /*method.class.get()*/)
+                    VerificationType::ObjectVariable(method.class.get())
                 } else {
                     VerificationType::UninitializedThis
                 },
