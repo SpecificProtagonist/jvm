@@ -10,30 +10,34 @@ use std::{
 // but allocator on top of NtAllocateVirtualMemory or mmap
 // TODO: use usize instead of u64 for size (consider alignment of Long/Double)
 /// Contains pointer to heap allocation containing allocation size followed by space for fields/array items
+/// Stored as usize instead of pointer because pointers don't impl Send+Sync
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct FieldStorage(*const u8);
+pub struct FieldStorage(usize);
 
 macro_rules! access {
     ($read:ident,$write:ident,$atomic:ident,$size:expr,$typ:ident) => {
+        #[allow(clippy::modulo_one)]
         pub fn $read(&self, offset: u32) -> Option<$typ> {
-            if self.0.is_null() || (offset as usize > self.size()) | (offset % $size > 0) {
+            if self.0 == 0 || (offset as usize > self.size()) | (offset % $size > 0) {
                 None
             } else {
                 unsafe {
                     Some(
-                        (&*(self.0.offset(offset as isize) as *const $atomic))
+                        (&*((self.0 as *const u8).offset(offset as isize) as *const $atomic))
                             .load(Ordering::Relaxed),
                     )
                 }
             }
         }
+
+        #[allow(clippy::modulo_one)]
         pub fn $write(&self, offset: u32, value: $typ) -> Option<()> {
-            if self.0.is_null() || (offset as usize > self.size()) | (offset % $size > 0) {
+            if self.0 == 0 || (offset as usize > self.size()) | (offset % $size > 0) {
                 None
             } else {
                 unsafe {
-                    (&*(self.0.offset(offset as isize) as *const $atomic))
+                    (&*((self.0 as *const u8).offset(offset as isize) as *const $atomic))
                         .store(value, Ordering::Relaxed)
                 }
                 Some(())
@@ -47,12 +51,12 @@ impl FieldStorage {
         Self(unsafe {
             let layout = layout(size);
             let ptr = alloc_zeroed(layout) as *const u8;
-            if ptr == std::ptr::null() {
+            if ptr.is_null() {
                 handle_alloc_error(layout)
             }
             // Store allocation size for safety checks
             *(ptr as *mut u64) = size as u64;
-            ptr.offset(size_of::<u64>() as isize)
+            ptr as usize + size_of::<u64>()
         })
     }
 
@@ -65,7 +69,7 @@ impl FieldStorage {
         unsafe { *(self.0 as *const u64).offset(-1) as usize }
     }
 
-    /// Safety: Must only be called once
+    /// Safety: No method must be called on this afterwards
     pub unsafe fn delete(self) {
         dealloc(
             (self.0 as *const u64).offset(-1) as *mut u8,

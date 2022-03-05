@@ -1,4 +1,5 @@
 #![feature(hash_set_entry)]
+#![feature(map_first_last)]
 
 use anyhow::{anyhow, bail, Context, Result};
 use fixed_typed_arena::ManuallyDropArena;
@@ -29,6 +30,9 @@ use field_storage::FieldStorage;
 pub use typ::Typ;
 
 // TODO: Garbage collection for objects
+// TODO: allow multithreading
+//fn assert_send_sync<T: Send + Sync>() {}
+//assert_send_sync::<Self>();
 pub struct JVM<'a> {
     // TODO: provide ClassLoader trait instead
     class_path: Vec<PathBuf>,
@@ -51,8 +55,6 @@ impl<'a> JVM<'a> {
     /// `class_path` are searched in order.
     pub fn new(class_path: Vec<PathBuf>) -> Self {
         let class_storage = Mutex::<ManuallyDropArena<_, 128>>::default();
-        // SAFETY: Classes inserted into the arena are valid as long as the arena exists,
-        // even if the reference to it is invalidated
         let dummy_class = class_storage.lock().unwrap().alloc(Class::dummy_class());
         Self {
             string_storage: Default::default(),
@@ -64,7 +66,6 @@ impl<'a> JVM<'a> {
             classes: Default::default(),
             dummy_class,
         }
-        .into()
     }
 
     pub fn intern_str<'b>(&'b self, str: impl Into<Cow<'b, str>>) -> IntStr<'a> {
@@ -171,7 +172,7 @@ impl<'a> JVM<'a> {
         }
         let bytes = bytes.ok_or_else(|| anyhow!("No class def found for {}", name))?;
 
-        let mut class_desc = parse::read_class_file(&bytes, &self)
+        let mut class_desc = parse::read_class_file(&bytes, self)
             .with_context(|| format!("Failed to parse class {}", name))?;
 
         if name != class_desc.name {
@@ -256,7 +257,7 @@ impl<'a> JVM<'a> {
                 name: method.into().get(self),
                 typ: &MethodDescriptor(args, returns),
             })
-            .ok_or(anyhow!("Method not found"))
+            .ok_or_else(|| anyhow!("Method not found"))
             .map(|m| *m)
     }
 
@@ -314,7 +315,7 @@ pub struct IntStr<'a>(&'a str);
 
 impl<'a> PartialEq for IntStr<'a> {
     fn eq(&self, other: &Self) -> bool {
-        self.0 as *const str == other.0 as *const str
+        std::ptr::eq(self.0, other.0)
     }
 }
 

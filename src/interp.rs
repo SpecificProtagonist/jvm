@@ -596,7 +596,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                     IADD => a + b,
                     ISUB => a - b,
                     IMUL => a * b,
-                    IDIV => a.checked_div(b).ok_or(anyhow!("idiv by 0"))?,
+                    IDIV => a.checked_div(b).ok_or_else(|| anyhow!("idiv by 0"))?,
                     IREM => {
                         if b != 0 {
                             a % b
@@ -621,7 +621,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                     LADD => a + b,
                     LSUB => a - b,
                     LMUL => a * b,
-                    LDIV => a.checked_div(b).ok_or(anyhow!("idiv by 0"))?,
+                    LDIV => a.checked_div(b).ok_or_else(|| anyhow!("idiv by 0"))?,
                     LREM => {
                         if b != 0 {
                             a % b
@@ -749,12 +749,10 @@ pub(crate) fn invoke_initialized<'a, 'b>(
             LCMP => {
                 let b = frame.pop_long()?;
                 let a = frame.pop_long()?;
-                frame.push(LocalValue::Int(if a > b {
-                    1
-                } else if a == b {
-                    0
-                } else {
-                    -1
+                frame.push(LocalValue::Int(match a - b {
+                    x if x > 0 => 1,
+                    0 => 0,
+                    _ => -1,
                 }))?
             }
             FCMPL | FCMPG => {
@@ -936,12 +934,11 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if nat.name.0.starts_with('<') {
                     bail!("Must not invokevirtual class or instance initialization method")
                 }
-                let obj =
-                    *if let Some(LocalValue::Ref(obj)) = frame.stack.get(frame.stack.len() - 1) {
-                        obj
-                    } else {
-                        bail!("Failed invoke_special")
-                    };
+                let obj = *if let Some(LocalValue::Ref(obj)) = frame.stack.last() {
+                    obj
+                } else {
+                    bail!("Failed invoke_special")
+                };
                 if obj.null() {
                     bail!("NullPointerException")
                 }
@@ -1208,7 +1205,6 @@ struct Frame<'jvm> {
 
 impl<'jvm> Frame<'jvm> {
     fn jump_relative(&mut self, base: u16, target_offset: i32) {
-        // TODO: verify the target is an op boundary
         self.pc = (base as i32 + target_offset as i32) as u16;
     }
 
@@ -1216,7 +1212,7 @@ impl<'jvm> Frame<'jvm> {
         self.locals
             .get(index as usize)
             .copied()
-            .ok_or(anyhow!("Invalid local index"))
+            .ok_or_else(|| anyhow!("Invalid local index"))
     }
 
     // I would have made get generic but type interference doesn't like its uses
@@ -1228,7 +1224,7 @@ impl<'jvm> Frame<'jvm> {
         *self
             .locals
             .get_mut(index as usize)
-            .ok_or(anyhow!("Invalid locals index"))? = value;
+            .ok_or_else(|| anyhow!("Invalid locals index"))? = value;
         Ok(())
     }
 
@@ -1277,7 +1273,7 @@ impl<'jvm> Frame<'jvm> {
     }
 
     fn pop(&mut self) -> Result<LocalValue<'jvm>> {
-        self.stack.pop().ok_or(anyhow!("Pop empty stack"))
+        self.stack.pop().ok_or_else(|| anyhow!("Pop empty stack"))
     }
 
     fn pop_int(&mut self) -> Result<i32> {

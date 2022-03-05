@@ -13,10 +13,21 @@ fn circular_loading() {
 }
 
 #[test]
-fn init() -> Result<()> {
+fn initialization() -> Result<()> {
     let jvm = JVM::new(vec!["classes".into(), "tests/pass".into()]);
     let method = jvm.resolve_method("Initialization", "check_init", vec![], Some(Typ::Bool))?;
     assert_eq!(interp::invoke(&jvm, method, &[])?, ReturnValue::Int(1));
+    Ok(())
+}
+
+#[test]
+fn control_flow() -> Result<()> {
+    let jvm = JVM::new(vec!["classes".into(), "tests/pass".into()]);
+    let method = jvm.resolve_method("ControlFlow", "test", vec![Typ::Int], Some(Typ::Bool))?;
+    let even = interp::invoke(&jvm, method, &[LocalValue::Int(10)])?;
+    let odd = interp::invoke(&jvm, method, &[LocalValue::Int(13)])?;
+    assert_eq!(even, ReturnValue::Int(0));
+    assert_eq!(odd, ReturnValue::Int(1));
     Ok(())
 }
 
