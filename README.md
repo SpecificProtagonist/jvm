@@ -17,6 +17,6 @@ Rough overview:
 - objects contain a pointer to their class, followed by their fields
 - objects are currently are `Box::leak`ed
 
-Unsafe is currently used in the following ways:
+This uses quite a bit of unsafe, namely
 - when accessing fields (in `fields_storage.rs` and when dereferencing pointers to objects)
 - to drop Classes, Strings, … when the JVM is dropped

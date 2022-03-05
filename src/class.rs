@@ -81,21 +81,23 @@ pub(crate) struct Code {
     pub max_stack: u16,
     pub max_locals: u16,
     pub bytes: Vec<u8>,
-    pub stack_map_table: StackMapTable,
+    pub stack_map_table: Option<Vec<u8>>,
     // This includes the initial (implicit) stack map frame
     //pub stack_map_table: BTreeMap<u32, StackMapFrame<'a>>,
 }
 
-pub(crate) struct StackMapTable {
-    pub bytes: Vec<u8>,
+//pub type StackMapTable<'a> = BTreeMap<u16, StackMapFrame<'a>>;
+
+/*pub(crate) struct StackMapTable {
+    pub bytes: Option<Vec<u8>>,
     pub max_locals: u16,
     pub max_stack: u16,
-}
+}*/
 
 impl<'a, 'b> Eq for &'b Class<'a> {}
 impl<'a, 'b> PartialEq for &'b Class<'a> {
     fn eq(&self, other: &Self) -> bool {
-        *self as *const Class == *other as *const Class
+        std::ptr::eq(*self, *other)
     }
 }
 
@@ -108,7 +110,7 @@ impl<'a> Class<'a> {
         name: IntStr<'a>,
         typ: &MethodDescriptor<'a>,
     ) -> Option<&'a Method<'a>> {
-        self.methods.get(&MethodNaT { name, typ }).map(|m| *m)
+        self.methods.get(&MethodNaT { name, typ }).copied()
     }
 
     pub fn subclass_of(&'a self, other: &'a Class<'a>) -> bool {
@@ -155,7 +157,7 @@ impl<'a> Class<'a> {
         let mut guard = self.init.lock().unwrap();
         match *guard {
             ClassInitState::Done => Ok(()),
-            ClassInitState::Error => Err(anyhow!("NoClassDefFoundError")),
+            ClassInitState::Error => Err(anyhow!("NoClassDefFoundError (initialization failed)")),
             ClassInitState::InProgress(thread) => {
                 if thread == std::thread::current().id() {
                     Ok(())
@@ -164,7 +166,9 @@ impl<'a> Class<'a> {
                         guard = self.init_waiter.wait(guard).unwrap();
                         match *guard {
                             ClassInitState::Done => return Ok(()),
-                            ClassInitState::Error => return Err(anyhow!("NoClassDefFoundError")),
+                            ClassInitState::Error => {
+                                return Err(anyhow!("NoClassDefFoundError (initialization)"))
+                            }
                             ClassInitState::InProgress(_) => continue,
                             ClassInitState::Uninit => unreachable!(),
                         }
@@ -183,6 +187,12 @@ impl<'a> Class<'a> {
                 *self.init.lock().unwrap() = if init_result.is_ok() {
                     ClassInitState::Done
                 } else {
+                    // TMP
+                    println!(
+                        "Initializatin error for {}: {:?}",
+                        self.name,
+                        init_result.unwrap_err()
+                    );
                     ClassInitState::Error
                 };
 
@@ -271,14 +281,14 @@ impl<'a> std::fmt::Debug for Class<'a> {
 impl<'a, 'b> Eq for &'b Field<'a> {}
 impl<'a, 'b> PartialEq for &'b Field<'a> {
     fn eq(&self, other: &Self) -> bool {
-        *self as *const Field == *other as *const Field
+        std::ptr::eq(*self, *other)
     }
 }
 
 impl<'a> Eq for &'a Method<'a> {}
 impl<'a> PartialEq for &'a Method<'a> {
     fn eq(&self, other: &Self) -> bool {
-        *self as *const Method == *other as *const Method
+        std::ptr::eq(*self, *other)
     }
 }
 
@@ -296,8 +306,13 @@ impl<'a> std::fmt::Display for MethodNaT<'a> {
             write!(f, "void")?;
         }
         write!(f, " {}(", self.name)?;
+        let mut first = true;
         for arg in &self.typ.0 {
-            write!(f, "{},", arg)?;
+            if !first {
+                write!(f, ", ")?;
+            }
+            first = false;
+            write!(f, "{}", arg)?;
         }
         write!(f, ")")?;
         Ok(())

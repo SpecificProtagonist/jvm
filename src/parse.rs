@@ -9,7 +9,7 @@ use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     object::header_size,
     verification::{StackMapFrame, VerificationType},
-    AccessFlags, Code, FieldStorage, IntStr, MethodDescriptor, StackMapTable, Typ, JVM,
+    AccessFlags, Code, FieldStorage, IntStr, MethodDescriptor, Typ, JVM,
 };
 use anyhow::{bail, Context, Result};
 
@@ -148,10 +148,7 @@ fn read_const_pool<'a, 'b, 'c>(input: &'b mut &'c [u8], jvm: &'b JVM<'a>) -> Res
     Ok(ConstPool { items })
 }
 
-fn read_interfaces<'a, 'b>(
-    input: &mut &[u8],
-    const_pool: &ConstPool<'a>,
-) -> Result<Vec<IntStr<'a>>> {
+fn read_interfaces<'a>(input: &mut &[u8], const_pool: &ConstPool<'a>) -> Result<Vec<IntStr<'a>>> {
     let length = read_u16(input)?;
     let mut vec = Vec::with_capacity(length as usize);
     for _ in 0..length {
@@ -194,8 +191,8 @@ pub(crate) fn parse_field_descriptor<'a, 'b>(
         return Ok((typ, start + 1));
     }
 
-    if str.starts_with('L') {
-        if let Some((class_name, _)) = str[1..].split_once(';') {
+    if let Some(stripped) = str.strip_prefix('L') {
+        if let Some((class_name, _)) = stripped.split_once(';') {
             let start = start + 1 + class_name.len() + 1;
             let class_name = String::from(class_name);
             let typ = Typ::Ref(jvm.intern_str(&class_name));
@@ -236,13 +233,11 @@ fn read_field<'a, 'b, 'c>(
     let attributes_count = read_u16(input)?;
     for _ in 0..attributes_count {
         let (name, data) = read_attribute(input, constant_pool)?;
-        if name.0 == "ConstantValue" {
-            if access_flags.contains(AccessFlags::STATIC) {
-                if const_value_index.is_none() & (data.len() == 2) {
-                    const_value_index = Some(((data[0] as u16) << 8) + data[1] as u16)
-                } else {
-                    bail!("Invalid ConstantValue attribute")
-                }
+        if access_flags.contains(AccessFlags::STATIC) && (name.0 == "ConstantValue") {
+            if const_value_index.is_none() & (data.len() == 2) {
+                const_value_index = Some(((data[0] as u16) << 8) + data[1] as u16)
+            } else {
+                bail!("Invalid ConstantValue attribute")
             }
         }
     }
@@ -254,7 +249,7 @@ fn read_field<'a, 'b, 'c>(
         // The correct layout is set in read_fields after field disordering
         byte_offset: 0,
         const_value_index,
-        class: Cell::new(&jvm.dummy_class),
+        class: Cell::new(jvm.dummy_class),
     })
 }
 
@@ -323,16 +318,13 @@ fn read_verification_type<'c, 'b, 'a>(
     })
 }
 
-/// This is called during varification, both because it allows
+// TODO: check how inefficient this is
+/// This is called during varification, as it is only needed then and because the const pool has been resolved by then.
 pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
-    mut input: &'c [u8],
+    input: Option<&'c [u8]>,
     const_pool: &'b ConstPool<'a>,
     initial_locals: Vec<VerificationType<'a>>,
-    max_stack: u16,
-    max_locals: u16,
-) -> Result<BTreeMap<u32, StackMapFrame<'a>>> {
-    let input = &mut input;
-    let length = read_u16(input)?;
+) -> Result<BTreeMap<u16, StackMapFrame<'a>>> {
     let mut frames = BTreeMap::new();
     let mut pc = 0;
     frames.insert(
@@ -342,12 +334,21 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
             locals: initial_locals,
         },
     );
+    let mut input = if let Some(input) = input {
+        input
+    } else {
+        return Ok(frames);
+    };
+    let input = &mut input;
+    let length = read_u16(input)?;
     for _ in 0..length {
         let prev_frame = frames.iter().rev().next().unwrap().1;
         let frame_type = read_u8(input)?;
         let (offset, current_frame) = if frame_type < 64 {
+            // same
             (frame_type as u16, prev_frame.clone())
         } else if frame_type < 128 {
+            // same locals 1 stack item
             (
                 frame_type as u16 - 64,
                 StackMapFrame {
@@ -356,6 +357,7 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
                 },
             )
         } else if frame_type == 247 {
+            // same locals 1 stack item extended
             (
                 read_u16(input)?,
                 StackMapFrame {
@@ -364,6 +366,7 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
                 },
             )
         } else if (frame_type > 247) & (frame_type < 251) {
+            // chop
             let k = 251 - frame_type;
             (
                 read_u16(input)?,
@@ -377,8 +380,10 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
                 },
             )
         } else if frame_type == 251 {
+            // same extended
             (read_u16(input)?, prev_frame.clone())
         } else if (frame_type > 251) & (frame_type < 255) {
+            // append
             let k = frame_type - 251;
             (
                 read_u16(input)?,
@@ -386,7 +391,11 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
                     locals: {
                         let mut locals = prev_frame.locals.clone();
                         for _ in 0..k {
-                            locals.push(read_verification_type(input, const_pool)?);
+                            let typ = read_verification_type(input, const_pool)?;
+                            locals.push(typ);
+                            if typ.category_2() {
+                                locals.push(VerificationType::Top)
+                            }
                         }
                         locals
                     },
@@ -394,6 +403,7 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
                 },
             )
         } else if frame_type == 255 {
+            // full
             let offset_delta = read_u16(input)?;
             let num_locals = read_u16(input)?;
             let mut locals = Vec::with_capacity(num_locals as usize);
@@ -405,26 +415,17 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
             for _ in 0..num_stack {
                 stack.push(read_verification_type(input, const_pool)?)
             }
-            (
-                offset_delta,
-                StackMapFrame {
-                    locals: locals.into(),
-                    stack: stack.into(),
-                },
-            )
+            (offset_delta, StackMapFrame { locals, stack })
         } else {
             bail!("invalid verification type: {}", frame_type)
         };
-        pc += offset as u32 + 1;
+        pc += offset as u16;
         frames.insert(pc, current_frame);
+        // This is not applied if the previous frame was the initial (implicit) frame
+        pc += 1;
     }
-    if input.len() > 0 {
+    if !input.is_empty() {
         bail!("invalid stack map table: {:?}", input)
-    }
-    for (_, frame) in &frames {
-        if (frame.locals.len() > max_locals as usize) | (frame.stack.len() > max_stack as usize) {
-            bail!("invalid stack map table")
-        }
     }
     Ok(frames)
 }
@@ -460,7 +461,7 @@ fn read_code<'a>(mut input: &[u8], constant_pool: &ConstPool<'a>) -> Result<Code
         }
     }
 
-    if input.len() > 0 {
+    if !input.is_empty() {
         bail!("End of code attribute not reached")
     }
 
@@ -468,11 +469,7 @@ fn read_code<'a>(mut input: &[u8], constant_pool: &ConstPool<'a>) -> Result<Code
         max_stack,
         max_locals,
         bytes,
-        stack_map_table: StackMapTable {
-            bytes: stack_map_table.unwrap_or_default(),
-            max_locals,
-            max_stack,
-        },
+        stack_map_table,
     })
 }
 
@@ -538,7 +535,7 @@ fn read_method<'a, 'b, 'c>(
     Ok(Method {
         nat: MethodNaT { name, typ },
         access_flags,
-        class: Cell::new(&jvm.dummy_class),
+        class: Cell::new(jvm.dummy_class),
         code,
     })
 }
@@ -558,7 +555,7 @@ fn read_methods<'a, 'b, 'c>(
             }
         }
         let method = jvm.method_storage.lock().unwrap().alloc(method);
-        methods.insert(method.nat.clone(), &*method);
+        methods.insert(method.nat, &*method);
     }
     Ok(methods)
 }
@@ -619,7 +616,7 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
         read_attribute(input, &const_pool)?;
     }
 
-    if input.len() > 0 {
+    if !input.is_empty() {
         bail!("Malformed class file: Expected EOF")
     }
 
