@@ -138,7 +138,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if obj.class().is_array == Some(Typ::Int) {
+                if obj.class().element_type == Some(Typ::Int) {
                     frame.push(LocalValue::Int(
                         obj.data
                             .read_i32((object::header_size() as isize + 4 * index as isize) as u32)
@@ -154,7 +154,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if obj.class().is_array == Some(Typ::Long) {
+                if obj.class().element_type == Some(Typ::Long) {
                     frame.push_long(
                         obj.data
                             .read_i64((object::header_size() as isize + 8 * index as isize) as u32)
@@ -170,7 +170,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if obj.class().is_array == Some(Typ::Float) {
+                if obj.class().element_type == Some(Typ::Float) {
                     frame.push(LocalValue::Float(
                         obj.data
                             .read_f32((object::header_size() as isize + 4 * index as isize) as u32)
@@ -186,7 +186,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if obj.class().is_array == Some(Typ::Double) {
+                if obj.class().element_type == Some(Typ::Double) {
                     frame.push_double(
                         obj.data
                             .read_f64((object::header_size() as isize + 8 * index as isize) as u32)
@@ -202,7 +202,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if matches!(obj.class().is_array, Some(Typ::Ref(_))) {
+                if matches!(obj.class().element_type, Some(Typ::Ref(_))) {
                     frame.push(LocalValue::Ref(unsafe {
                         std::mem::transmute(
                             obj.data
@@ -224,7 +224,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if matches!(obj.class().is_array, Some(Typ::Byte | Typ::Bool)) {
+                if matches!(obj.class().element_type, Some(Typ::Byte | Typ::Bool)) {
                     frame.push(LocalValue::Int(
                         obj.data
                             .read_i8((object::header_size() as isize + index as isize) as u32)
@@ -241,7 +241,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if obj.class().is_array == Some(Typ::Char) {
+                if obj.class().element_type == Some(Typ::Char) {
                     frame.push(LocalValue::Int(
                         obj.data
                             .read_i16((object::header_size() as isize + 2 * index as isize) as u32)
@@ -258,7 +258,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if obj.class().is_array == Some(Typ::Short) {
+                if obj.class().element_type == Some(Typ::Short) {
                     frame.push(LocalValue::Int(
                         obj.data
                             .read_i16((object::header_size() as isize + 2 * index as isize) as u32)
@@ -381,7 +381,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if obj.class().is_array == Some(Typ::Int) {
+                if obj.class().element_type == Some(Typ::Int) {
                     obj.data
                         .write_i32(
                             (object::header_size() as isize + 4 * index as isize) as u32,
@@ -399,7 +399,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if obj.class().is_array == Some(Typ::Long) {
+                if obj.class().element_type == Some(Typ::Long) {
                     obj.data
                         .write_i64(
                             (object::header_size() as isize + 8 * index as isize) as u32,
@@ -417,7 +417,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if obj.class().is_array == Some(Typ::Float) {
+                if obj.class().element_type == Some(Typ::Float) {
                     obj.data
                         .write_f32(
                             (object::header_size() as isize + 4 * index as isize) as u32,
@@ -435,7 +435,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if obj.class().is_array == Some(Typ::Double) {
+                if obj.class().element_type == Some(Typ::Double) {
                     obj.data
                         .write_f64(
                             (object::header_size() as isize + 8 * index as isize) as u32,
@@ -453,7 +453,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if let Some(Typ::Ref(component)) = obj.class().is_array {
+                if let Some(Typ::Ref(component)) = obj.class().element_type {
                     if !obj.class().assignable_to(jvm.resolve_class(component)?) {
                         bail!("ArrayStoreException")
                     }
@@ -476,7 +476,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if matches!(obj.class().is_array, Some(Typ::Bool | Typ::Byte)) {
+                if matches!(obj.class().element_type, Some(Typ::Bool | Typ::Byte)) {
                     obj.data
                         .write_i8(
                             (object::header_size() as isize + index as isize) as u32,
@@ -494,7 +494,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if obj.class().is_array == Some(Typ::Char) {
+                if obj.class().element_type == Some(Typ::Char) {
                     obj.data
                         .write_i16(
                             (object::header_size() as isize + 2 * index as isize) as u32,
@@ -512,7 +512,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if obj.class().is_array == Some(Typ::Short) {
+                if obj.class().element_type == Some(Typ::Short) {
                     obj.data
                         .write_i16(
                             (object::header_size() as isize + 2 * index as isize) as u32,
@@ -982,9 +982,6 @@ pub(crate) fn invoke_initialized<'a, 'b>(
             NEW => {
                 let index = frame.read_code_u16();
                 let class = method.class.get().const_pool.get_class(index)?;
-                if class.is_array.is_some() {
-                    bail!("must not use new for arrays")
-                }
                 class.ensure_init(jvm)?;
                 frame.push(LocalValue::Ref(jvm.create_object(class)))?
             }
@@ -1023,7 +1020,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if obj.null() {
                     bail!("NullPointerException");
                 }
-                if let Some(base) = obj.class().is_array {
+                if let Some(base) = obj.class().element_type {
                     let length =
                         ((obj.data.size() - object::header_size()) / base.layout().size()) as i32;
                     frame.push(LocalValue::Int(length))?;

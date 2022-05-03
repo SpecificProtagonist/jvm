@@ -36,7 +36,7 @@ impl<'a> Object<'a> {
 impl<'a> std::fmt::Debug for Object<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let class = self.class();
-        match class.is_array {
+        match class.element_type {
             Some(base) => {
                 write!(f, "{}[]{{…}}", base)?;
             }

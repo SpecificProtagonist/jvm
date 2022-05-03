@@ -4,7 +4,7 @@ use jvm::*;
 
 #[test]
 fn circular_loading() {
-    let jvm = JVM::new(vec!["classes".into(), "tests/fail".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     assert!(jvm
         .resolve_class("CircularA")
         .unwrap_err()
@@ -14,7 +14,7 @@ fn circular_loading() {
 
 #[test]
 fn initialization() -> Result<()> {
-    let jvm = JVM::new(vec!["classes".into(), "tests/pass".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method("Initialization", "check_init", vec![], Some(Typ::Bool))?;
     assert_eq!(interp::invoke(&jvm, method, &[])?, ReturnValue::Int(1));
     Ok(())
@@ -22,7 +22,7 @@ fn initialization() -> Result<()> {
 
 #[test]
 fn control_flow() -> Result<()> {
-    let jvm = JVM::new(vec!["classes".into(), "tests/pass".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method("ControlFlow", "test", vec![Typ::Int], Some(Typ::Bool))?;
     let even = interp::invoke(&jvm, method, &[LocalValue::Int(10)])?;
     let odd = interp::invoke(&jvm, method, &[LocalValue::Int(13)])?;
@@ -33,7 +33,7 @@ fn control_flow() -> Result<()> {
 
 #[test]
 fn field_access() -> Result<()> {
-    let jvm = JVM::new(vec!["classes".into(), "tests/pass".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let class = jvm.resolve_class("FieldAccess")?;
     let set_method = class
         .method(
@@ -57,7 +57,7 @@ fn field_access() -> Result<()> {
 
 #[test]
 fn invoke_static() -> Result<()> {
-    let jvm = JVM::new(vec!["classes".into(), "tests/pass".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method(
         "InvokeStatic",
         "test",
@@ -74,7 +74,7 @@ fn invoke_static() -> Result<()> {
 
 #[test]
 fn invoke_virtual() -> Result<()> {
-    let jvm = JVM::new(vec!["classes".into(), "tests/pass".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method("InvokeVirtual", "test", vec![], Some(Typ::Bool))?;
     assert_eq!(interp::invoke(&jvm, method, &[])?, ReturnValue::Int(1));
     Ok(())
@@ -82,7 +82,7 @@ fn invoke_virtual() -> Result<()> {
 
 #[test]
 fn arrays() -> Result<()> {
-    let jvm = JVM::new(vec!["classes".into(), "tests/pass".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method("Arrays", "test", vec![], Some(Typ::Bool))?;
     assert_eq!(interp::invoke(&jvm, method, &[])?, ReturnValue::Int(1));
     Ok(())
@@ -91,21 +91,21 @@ fn arrays() -> Result<()> {
 /// Lazy resolution isn't mandatory for the spec, but I still want it
 #[test]
 fn lazy_resolve() -> Result<()> {
-    let jvm = JVM::new(vec!["classes".into(), "tests/pass".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     jvm.resolve_class("LazyResolve")?;
     Ok(())
 }
 
 #[test]
 fn lazy_init() -> Result<()> {
-    let jvm = JVM::new(vec!["classes".into(), "tests/pass".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))?;
     assert_eq!(
         interp::invoke(&jvm, method, &[LocalValue::Int(0)])?,
         ReturnValue::Int(1)
     );
 
-    let jvm = JVM::new(vec!["classes".into(), "tests/pass".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))?;
     assert_eq!(
         interp::invoke(&jvm, method, &[LocalValue::Int(1)])?,

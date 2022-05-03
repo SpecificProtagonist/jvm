@@ -124,7 +124,7 @@ impl<'a> JVM<'a> {
             let array = Class {
                 name,
                 super_class: Some(super_class),
-                is_array: Some(base),
+                element_type: Some(base),
                 const_pool: const_pool::ConstPool {
                     items: Default::default(),
                 },
@@ -189,7 +189,7 @@ impl<'a> JVM<'a> {
             check_circular.push(super_class_name);
             let super_class = self.resolve_class_impl(super_class_name, check_circular)?;
 
-            if super_class.is_array.is_some() {
+            if super_class.element_type.is_some() {
                 bail!("Can't subclass array!")
             }
 
@@ -211,7 +211,7 @@ impl<'a> JVM<'a> {
         let ref_type = self.class_storage.lock().unwrap().alloc(Class {
             name: class_desc.name,
             super_class,
-            is_array: None,
+            element_type: None,
             const_pool: class_desc.const_pool,
             access_flags: class_desc.access_flags,
             interfaces,
@@ -263,7 +263,7 @@ impl<'a> JVM<'a> {
 
     /// Creates an instance of a non-array class on the heap
     fn create_object(&self, class: &'a Class) -> Object<'a> {
-        if class.is_array.is_some() {
+        if class.element_type.is_some() {
             panic!("Called create_object with an array")
         }
         let data = FieldStorage::new(class.object_size);
@@ -277,7 +277,7 @@ impl<'a> JVM<'a> {
     /// Creates an instance of an array class on the heap
     fn create_array(&self, class: &'a Class, length: usize) -> Object<'a> {
         let component = class
-            .is_array
+            .element_type
             .expect("Called create_array with a non-array class");
         let data = FieldStorage::new(object::header_size() + component.layout().size() * length);
         data.write_usize(0, class as *const Class as usize);

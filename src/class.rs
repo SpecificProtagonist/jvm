@@ -16,7 +16,7 @@ use crate::{
 pub struct Class<'a> {
     pub(crate) name: IntStr<'a>,
     pub(crate) super_class: Option<&'a Class<'a>>,
-    pub(crate) is_array: Option<Typ<'a>>,
+    pub(crate) element_type: Option<Typ<'a>>,
     pub(crate) const_pool: ConstPool<'a>,
     pub(crate) access_flags: AccessFlags,
     #[allow(unused)]
@@ -125,7 +125,7 @@ impl<'a> Class<'a> {
 
     pub(crate) fn dummy_class() -> Self {
         Class {
-            is_array: None,
+            element_type: None,
             const_pool: ConstPool { items: Vec::new() },
             access_flags: AccessFlags::empty(),
             name: IntStr(""),
