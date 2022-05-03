@@ -1,4 +1,4 @@
-use std::{cell::Cell, collections::BTreeMap};
+use std::{cell::Cell, cmp::Ordering, collections::BTreeMap};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -28,6 +28,7 @@ impl<'a> StackMapFrame<'a> {
                 .all(|(s, o)| s.is_assignable_to(*o))
     }
 
+    /// In case of category 2 type, pops both the top type and the actual type
     fn pop(&mut self) -> Result<VerificationType<'a>> {
         let typ = self
             .stack
@@ -155,6 +156,7 @@ fn verify_method<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<()>
 }
 
 fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<()> {
+    println!("Verifying {}", method.nat);
     ///// for testing /////
     if method.nat.name.0 == "<init>" {
         return Ok(());
@@ -225,6 +227,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
     // Iterate over all instructions
     // TODO: switch result to bool
     while (*pc as usize) < code.bytes.len() {
+        println!("pc: {}", pc);
         match read_code_u8(bytes, pc)? {
             NOP => {}
             ICONST_0 | ICONST_1 | ICONST_2 | ICONST_3 | ICONST_4 | ICONST_5 | ICONST_M1 => {
@@ -380,6 +383,9 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
             ALOAD_1 => load(&mut type_state, 1, any_object)?,
             ALOAD_2 => load(&mut type_state, 2, any_object)?,
             ALOAD_3 => load(&mut type_state, 3, any_object)?,
+            BALOAD => {
+                todo!()
+            }
             ISTORE => {
                 let index = read_code_u8(bytes, pc)? as u16;
                 store(&mut type_state, index, VerificationType::Integer)?
@@ -420,6 +426,136 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
             ASTORE_1 => store(&mut type_state, 1, any_object)?,
             ASTORE_2 => store(&mut type_state, 2, any_object)?,
             ASTORE_3 => store(&mut type_state, 3, any_object)?,
+            AASTORE => {
+                if !matches!(
+                    (
+                        type_state.stack.pop(),
+                        type_state.stack.pop(),
+                        type_state.stack.pop()
+                    ),
+                    (
+                        Some(VerificationType::ObjectVariable(_)),
+                        Some(VerificationType::Integer),
+                        Some(VerificationType::ObjectVariable(Class {
+                            element_type: Some(Typ::Ref(_)),
+                            ..
+                        }))
+                    )
+                ) {
+                    bail!("invalid aastore")
+                }
+            }
+            BASTORE => {
+                if !((type_state.stack.pop() == Some(VerificationType::Integer))
+                    & (type_state.stack.pop() == Some(VerificationType::Integer))
+                    & small_array_type(type_state.pop()?))
+                {
+                    bail!("invalid bastore")
+                }
+            }
+            POP => {
+                if type_state.pop()?.category_2() {
+                    bail!("invalid pop")
+                }
+            }
+            POP2 => {
+                if !type_state.pop()?.category_2() && type_state.pop()?.category_2() {
+                    bail!("invalid pop2")
+                }
+            }
+            DUP => {
+                let typ = type_state.pop()?;
+                if typ.category_2() {
+                    bail!("invalid dup")
+                }
+                type_state.stack.push(typ);
+                type_state.stack.push(typ);
+            }
+            DUP_X1 => {
+                let first = type_state.pop()?;
+                let second = type_state.pop()?;
+                if first.category_2() | second.category_2() {
+                    bail!("invalid dup_x1")
+                }
+                type_state.stack.push(first);
+                type_state.stack.push(second);
+                type_state.stack.push(first);
+            }
+            DUP_X2 => {
+                let first = type_state.pop()?;
+                if let (Some(second), Some(third)) =
+                    (type_state.stack.pop(), type_state.stack.pop())
+                {
+                    type_state.stack.push(first);
+                    type_state.stack.push(third);
+                    type_state.stack.push(second);
+                    type_state.stack.push(first);
+                } else {
+                    bail!("invalid dup_x2")
+                }
+            }
+            DUP2 => {
+                if let (Some(first), Some(second)) =
+                    (type_state.stack.pop(), type_state.stack.pop())
+                {
+                    if second == VerificationType::Top {
+                        bail!("invalid dup2")
+                    }
+                    type_state.stack.push(second);
+                    type_state.stack.push(first);
+                    type_state.stack.push(second);
+                    type_state.stack.push(first);
+                } else {
+                    bail!("invalid dup2")
+                }
+            }
+            DUP2_X1 => {
+                if let (Some(first), Some(second), Some(third)) = (
+                    type_state.stack.pop(),
+                    type_state.stack.pop(),
+                    type_state.stack.pop(),
+                ) {
+                    if (second == VerificationType::Top) | (third == VerificationType::Top) {
+                        bail!("invalid dup2_x1")
+                    }
+                    type_state.stack.push(second);
+                    type_state.stack.push(first);
+                    type_state.stack.push(third);
+                    type_state.stack.push(second);
+                    type_state.stack.push(first);
+                } else {
+                    bail!("invalid dup2_x1")
+                }
+            }
+            DUP2_X2 => {
+                if let (Some(first), Some(second), Some(third), Some(fourth)) = (
+                    type_state.stack.pop(),
+                    type_state.stack.pop(),
+                    type_state.stack.pop(),
+                    type_state.stack.pop(),
+                ) {
+                    if (second == VerificationType::Top) | (fourth == VerificationType::Top) {
+                        bail!("invalid dup2_x2")
+                    }
+                    type_state.stack.push(second);
+                    type_state.stack.push(first);
+                    type_state.stack.push(fourth);
+                    type_state.stack.push(third);
+                    type_state.stack.push(second);
+                    type_state.stack.push(first);
+                } else {
+                    bail!("invalid dup2_x2")
+                }
+            }
+            SWAP => {
+                let first = type_state.pop()?;
+                let second = type_state.pop()?;
+                if first.category_2() | second.category_2() {
+                    bail!("invalid swap")
+                }
+                type_state.stack.push(first);
+                type_state.stack.push(second);
+            }
             IADD | ISUB | IMUL | IDIV | IREM | ISHL | ISHR | IUSHR | IAND | IOR | IXOR => {
                 if let (Some(VerificationType::Integer), Some(VerificationType::Integer)) =
                     (type_state.stack.pop(), type_state.stack.pop())
@@ -498,11 +634,36 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
                 connected_to_previous_block = false;
             }
             IRETURN => {
-                if !matches!(
+                if !(matches!(
                     method.nat.typ.1,
                     Some(Typ::Bool | Typ::Byte | Typ::Char | Typ::Short | Typ::Int)
-                ) {
+                ) & (type_state.stack.pop() == Some(VerificationType::Integer)))
+                {
                     bail!("invalid ireturn")
+                }
+                connected_to_previous_block = false
+            }
+            LRETURN => {
+                if !((method.nat.typ.1 == Some(Typ::Long))
+                    & (type_state.pop()? == VerificationType::Long))
+                {
+                    bail!("invalid lreturn")
+                }
+                connected_to_previous_block = false
+            }
+            FRETURN => {
+                if !((method.nat.typ.1 == Some(Typ::Float))
+                    & (type_state.pop()? == VerificationType::Float))
+                {
+                    bail!("invalid freturn")
+                }
+                connected_to_previous_block = false
+            }
+            DRETURN => {
+                if !((method.nat.typ.1 == Some(Typ::Double))
+                    & (type_state.pop()? == VerificationType::Double))
+                {
+                    bail!("invalid dreturn")
                 }
                 connected_to_previous_block = false
             }
@@ -525,6 +686,53 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
                 let typ = method.class.get().const_pool.get_field(index)?.descriptor;
                 pop_type(jvm, &mut type_state.stack, typ)?;
             }
+            NEW => {
+                let uninit = VerificationType::UninitializedVariable { offset: *pc - 1 };
+                let index = read_code_u16(bytes, pc)?;
+                let class = method.class.get().const_pool.get_class(index)?;
+                if class.element_type.is_some() | type_state.stack.contains(&uninit) {
+                    bail!("invalid new")
+                }
+                type_state.stack.push(uninit);
+            }
+            NEWARRAY => {
+                pop_type(jvm, &mut type_state.stack, Typ::Int)?;
+                let typ = match read_code_u8(bytes, pc)? {
+                    4 => "[Z",
+                    5 => "[C",
+                    6 => "[F",
+                    7 => "[D",
+                    8 => "[B",
+                    9 => "[S",
+                    10 => "[I",
+                    11 => "[J",
+                    _ => bail!("invalid array type"),
+                };
+                type_state
+                    .stack
+                    .push(VerificationType::ObjectVariable(jvm.resolve_class(typ)?));
+            }
+            ANEWARRAY => {
+                if type_state.stack.pop() != Some(VerificationType::Integer) {
+                    bail!("invalid anewarray")
+                }
+                let index = read_code_u16(bytes, pc)?;
+                let component = method.class.get().const_pool.get_class(index)?;
+                let typ = jvm.resolve_class(format!("[L{};", component.name))?;
+                type_state.stack.push(VerificationType::ObjectVariable(typ));
+            }
+            ARRAYLENGTH => {
+                if !matches!(
+                    type_state.stack.pop(),
+                    Some(VerificationType::ObjectVariable(Class {
+                        element_type: Some(_),
+                        ..
+                    })),
+                ) {
+                    bail!("invalid arraylength")
+                }
+                type_state.stack.push(VerificationType::Integer);
+            }
             _ => todo!(),
         }
 
@@ -533,23 +741,27 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
         }
         // If the next specified stack map frame is reached, check if it matches the inferred one
         if let Some((type_state_pc, explicit_type_state)) = next_explicit_type_state {
-            if *pc == *type_state_pc {
-                if !connected_to_previous_block | type_state.is_assignable_to(explicit_type_state) {
-                    type_state = explicit_type_state.clone();
-                    next_explicit_type_state = type_states.next();
-                } else {
-                    bail!(
-                        "Typestates not assignable: {:?} to {:?}",
-                        type_state,
-                        explicit_type_state
-                    )
+            match (*pc).cmp(type_state_pc) {
+                Ordering::Less => {} // Not at frame yet
+                Ordering::Equal => {
+                    if !connected_to_previous_block
+                        | type_state.is_assignable_to(explicit_type_state)
+                    {
+                        type_state = explicit_type_state.clone();
+                        next_explicit_type_state = type_states.next();
+                    } else {
+                        bail!(
+                            "Typestates not assignable: {:?} to {:?}",
+                            type_state,
+                            explicit_type_state
+                        )
+                    }
                 }
-            } else if *pc > *type_state_pc {
-                bail!(
+                Ordering::Greater => bail!(
                     "Stack map frame within instruction (pc: {}, frame at {})",
                     pc,
                     type_state_pc
-                )
+                ),
             }
         }
         connected_to_previous_block = true;
@@ -671,13 +883,24 @@ fn relative_jump<'a, 'b>(
     }
 }
 
-fn read_code_u8(code: &[u8], pc: &mut u16) -> Result<u8> {
+fn small_array_type(typ: VerificationType) -> bool {
+    match typ {
+        VerificationType::ObjectVariable(class) => {
+            matches!(class.element_type, Some(Typ::Byte | Typ::Bool))
+        }
+        VerificationType::Null => true,
+        _ => false,
+    }
+}
+
+fn read_code_u8(bytes: &[u8], pc: &mut u16) -> Result<u8> {
     *pc += 1;
-    code.get(*pc as usize - 1)
+    bytes
+        .get(*pc as usize - 1)
         .copied()
         .ok_or_else(|| anyhow!("Incomplete Instruction"))
 }
 
-fn read_code_u16(code: &[u8], pc: &mut u16) -> Result<u16> {
-    Ok(((read_code_u8(code, pc)? as u16) << 8) + read_code_u8(code, pc)? as u16)
+fn read_code_u16(bytes: &[u8], pc: &mut u16) -> Result<u16> {
+    Ok(((read_code_u8(bytes, pc)? as u16) << 8) + read_code_u8(bytes, pc)? as u16)
 }

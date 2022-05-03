@@ -3,6 +3,7 @@ implement the Java 8 JVM specification (except for the loading of classes with v
 
 It currently allows
 - class loading/initialization
+- verification by type checking
 - operations on primitives
 - intra-function control flow (except exceptions)
 - calling functions (except via interfaces)
@@ -11,8 +12,8 @@ It currently allows
 
 Rough overview:
 - a `JVM` contains classes as well as interned strings
-- methods are executed using a simple interpreter loop in `interp.rs`
 - classes are resolved lazily by `JVM::resolve_class` and parsed in `parse.rs`
+- methods are executed using a simple interpreter loop in `interp.rs`
 - one `FieldStorage` per class/object stores the static/instance fields 
 - objects contain a pointer to their class, followed by their fields
 - objects are currently are `Box::leak`ed
