@@ -7,5 +7,11 @@ edition = "2018"
 [dependencies]
 anyhow = "1"
 bimap = "0.6"
+# AccessFlags
 bitflags = "1.3"
+# Storage with JVM lifetime
 fixed-typed-arena = "0.2"
+# poison-free api; theoretically performance but not tested
+parking_lot = "0.12"
+# AtomicCell for class ref in Field and Method
+crossbeam-utils = "0.8.8"

@@ -9,4 +9,16 @@ public class LazyInit {
         }
         return foo;
     }
+
+    static class LazyInitHelper1 {
+        static {
+            LazyInit.foo = 1;
+        }
+    }
+
+    static class LazyInitHelper2 {
+        static {
+            LazyInit.foo = 2;
+        }
+    }
 }

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use jvm::interp::{LocalValue, ReturnValue};
 use jvm::*;
@@ -17,6 +19,34 @@ fn initialization() -> Result<()> {
     let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method("Initialization", "check_init", vec![], Some(Typ::Bool))?;
     assert_eq!(interp::invoke(&jvm, method, &[])?, ReturnValue::Int(1));
+    Ok(())
+}
+
+#[test]
+fn init_lock() -> Result<()> {
+    let jvm = Arc::new(JVM::new(vec!["classes".into(), "tests".into()]));
+    let class = Arc::new(JVM::resolve_class(&jvm, "InitLock")?);
+    let threads = (0..50)
+        .map(|_| {
+            let jvm = jvm.clone();
+            let class = class.clone();
+            std::thread::spawn(move || {
+                let method = class
+                    .method(
+                        jvm.intern_str("check"),
+                        &MethodDescriptor(vec![], Some(Typ::Bool)),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    interp::invoke(&jvm, method, &[]).unwrap(),
+                    ReturnValue::Int(1)
+                );
+            })
+        })
+        .collect::<Vec<_>>();
+    for thread in threads {
+        thread.join().unwrap()
+    }
     Ok(())
 }
 

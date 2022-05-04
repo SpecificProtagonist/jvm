@@ -1,6 +1,5 @@
 use std::{
     alloc::Layout,
-    cell::Cell,
     collections::{BTreeMap, HashMap},
 };
 
@@ -12,6 +11,7 @@ use crate::{
     AccessFlags, Code, FieldStorage, IntStr, MethodDescriptor, Typ, JVM,
 };
 use anyhow::{bail, Context, Result};
+use crossbeam_utils::atomic::AtomicCell;
 
 fn read_u8(input: &mut &[u8]) -> Result<u8> {
     if let Some(u8) = input.get(0) {
@@ -93,55 +93,41 @@ fn read_const_pool_item<'a, 'b, 'c>(
 fn read_const_pool<'a, 'b, 'c>(input: &'b mut &'c [u8], jvm: &'b JVM<'a>) -> Result<ConstPool<'a>> {
     let length = read_u16(input)? as usize;
     let mut items = Vec::with_capacity(length);
-    items.push(Cell::new(
-        ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero,
-    ));
+    items.push(ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero);
     while items.len() < length {
-        items.push(Cell::new(read_const_pool_item(input, jvm)?));
+        items.push(read_const_pool_item(input, jvm)?);
         if matches!(
-            items.last().unwrap().get(),
+            items.last().unwrap(),
             ConstPoolItem::Long(_) | ConstPoolItem::Double(_)
         ) {
-            items.push(Cell::new(
-                ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero,
-            ))
+            items.push(ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero)
         }
     }
     // Const pool validity is part of format checking
-    for item in items.iter() {
-        if !match item.get() {
-            ConstPoolItem::RawClass(index) => matches!(
-                items.get(index as usize).map(Cell::get),
-                Some(ConstPoolItem::Utf8(..))
-            ),
+    for &item in items.iter() {
+        if !match item {
+            ConstPoolItem::RawClass(index) => {
+                matches!(items.get(index as usize), Some(ConstPoolItem::Utf8(..)))
+            }
             ConstPoolItem::FieldRef { class, nat }
             | ConstPoolItem::MethodRef { class, nat }
             | ConstPoolItem::InterfaceMethodRef { class, nat } => matches!(
-                (
-                    items.get(class as usize).map(Cell::get),
-                    items.get(nat as usize).map(Cell::get)
-                ),
+                (items.get(class as usize), items.get(nat as usize)),
                 (
                     Some(ConstPoolItem::RawClass(..)),
                     Some(ConstPoolItem::NameAndType { .. })
                 )
             ),
             ConstPoolItem::NameAndType { name, descriptor } => matches!(
-                (
-                    items.get(name as usize).map(Cell::get),
-                    items.get(descriptor as usize).map(Cell::get)
-                ),
+                (items.get(name as usize), items.get(descriptor as usize)),
                 (Some(ConstPoolItem::Utf8(..)), Some(ConstPoolItem::Utf8(..)))
             ),
             ConstPoolItem::RawString(index) => {
-                matches!(
-                    items.get(index as usize).map(Cell::get),
-                    Some(ConstPoolItem::Utf8(..))
-                )
+                matches!(items.get(index as usize), Some(ConstPoolItem::Utf8(..)))
             }
             _ => true,
         } {
-            bail!("Invalid constant pool item: {:?}", item.get())
+            bail!("Invalid constant pool item: {:?}", item)
         }
     }
 
@@ -249,7 +235,7 @@ fn read_field<'a, 'b, 'c>(
         // The correct layout is set in read_fields after field disordering
         byte_offset: 0,
         const_value_index,
-        class: Cell::new(jvm.dummy_class),
+        class: AtomicCell::new(jvm.dummy_class),
     })
 }
 
@@ -526,16 +512,12 @@ fn read_method<'a, 'b, 'c>(
         }
     }
 
-    let typ = jvm
-        .method_descriptor_storage
-        .lock()
-        .unwrap()
-        .alloc(descriptor);
+    let typ = jvm.method_descriptor_storage.lock().alloc(descriptor);
 
     Ok(Method {
         nat: MethodNaT { name, typ },
         access_flags,
-        class: Cell::new(jvm.dummy_class),
+        class: AtomicCell::new(jvm.dummy_class),
         code,
     })
 }
@@ -554,7 +536,7 @@ fn read_methods<'a, 'b, 'c>(
                 bail!("Duplicate method in same class")
             }
         }
-        let method = jvm.method_storage.lock().unwrap().alloc(method);
+        let method = jvm.method_storage.lock().alloc(method);
         methods.insert(method.nat, &*method);
     }
     Ok(methods)
