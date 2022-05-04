@@ -266,7 +266,7 @@ impl<'a> JVM<'a> {
         let data = FieldStorage::new(class.object_size);
         data.write_usize(0, class as *const Class as usize);
         Object {
-            data,
+            ptr: data,
             _marker: std::marker::PhantomData,
         }
     }
@@ -279,7 +279,7 @@ impl<'a> JVM<'a> {
         let data = FieldStorage::new(object::header_size() + component.layout().size() * length);
         data.write_usize(0, class as *const Class as usize);
         Object {
-            data,
+            ptr: data,
             _marker: std::marker::PhantomData,
         }
     }

@@ -13,7 +13,7 @@ use std::{
 /// Stored as usize instead of pointer because pointers don't impl Send+Sync
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct FieldStorage(usize);
+pub(crate) struct FieldStorage(pub usize);
 
 macro_rules! access {
     ($read:ident,$write:ident,$atomic:ident,$size:expr,$typ:ident) => {

@@ -19,5 +19,6 @@ Rough overview:
 - objects are currently are `Box::leak`ed
 
 This uses quite a bit of unsafe, namely
+- when casting type-erased local/stack values to objects
 - when accessing fields (in `fields_storage.rs` and when dereferencing pointers to objects)
 - to drop Classes, Strings, … when the JVM is dropped
