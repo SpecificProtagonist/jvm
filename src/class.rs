@@ -249,7 +249,7 @@ impl<'a> Class<'a> {
             name: jvm.intern_str("<clinit>"),
             typ: &MethodDescriptor(vec![], None),
         }) {
-            crate::interp::invoke_initialized(jvm, method, &[])?;
+            crate::interp::invoke_initializer(jvm, method)?;
         }
 
         Ok(())

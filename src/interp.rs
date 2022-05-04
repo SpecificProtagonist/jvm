@@ -9,26 +9,10 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Context, Result};
 
-/// A value on the stack or in the local variables
+// User-facing type
+// TODO: rename
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LocalValue<'jvm> {
-    Uninitialized,
-    Ref(Object<'jvm>),
-    // Only in class version < 50.0:
-    // ReturnAddress(u16),
-    Int(i32),
-    /// Both on stack & locals, the low half is stored first
-    LowHalfOfLong(u32),
-    HighHalfOfLong(u32),
-    Float(f32),
-    /// Both on stack & locals, the low half is stored first
-    LowHalfOfDouble(u32),
-    HighHalfOfDouble(u32),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ReturnValue<'jvm> {
-    Void,
+pub enum JVMValue<'jvm> {
     Ref(Object<'jvm>),
     Int(i32),
     Long(i64),
@@ -40,18 +24,41 @@ pub enum ReturnValue<'jvm> {
 pub fn invoke<'a, 'b>(
     jvm: &'b JVM<'a>,
     method: &'a Method<'a>,
-    args: &'b [LocalValue<'a>],
-) -> Result<ReturnValue<'a>> {
+    args: &'b [JVMValue<'a>],
+) -> Result<Option<JVMValue<'a>>> {
     method.class.load().ensure_init(jvm)?;
-    invoke_initialized(jvm, method, args).with_context(|| format!("Trying to call {}", method.nat))
+    let mut arg_values = Vec::new();
+    for arg in args {
+        match *arg {
+            JVMValue::Ref(object) => arg_values.push(Value::from_ref(object)),
+            JVMValue::Int(value) => arg_values.push(Value::from_int(value)),
+            JVMValue::Long(value) => {
+                let (low, high) = Value::from_long(value);
+                arg_values.push(low);
+                arg_values.push(high);
+            }
+            JVMValue::Float(value) => arg_values.push(Value::from_float(value)),
+            JVMValue::Double(value) => {
+                let (low, high) = Value::from_double(value);
+                arg_values.push(low);
+                arg_values.push(high);
+            }
+        }
+    }
+    invoke_initialized(jvm, method, &arg_values)
+        .with_context(|| format!("Trying to call {}", method.nat))
+}
+
+pub(crate) fn invoke_initializer<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> Result<()> {
+    invoke_initialized(jvm, method, &[]).map(|_| ())
 }
 
 // Requires that the class is already initialized
-pub(crate) fn invoke_initialized<'a, 'b>(
+fn invoke_initialized<'a, 'b>(
     jvm: &'b JVM<'a>,
     method: &'a Method<'a>,
-    args: &'b [LocalValue<'a>],
-) -> Result<ReturnValue<'a>> {
+    args: &'b [Value],
+) -> Result<Option<JVMValue<'a>>> {
     if method.code.is_none() {
         todo!("Methods without code attribute");
     }
@@ -67,7 +74,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
             let mut locals = Vec::with_capacity(max_locals);
             locals.extend_from_slice(args);
             while locals.len() < max_locals {
-                locals.push(LocalValue::Uninitialized);
+                locals.push(Value(0));
             }
             locals
         },
@@ -79,138 +86,138 @@ pub(crate) fn invoke_initialized<'a, 'b>(
     loop {
         match frame.read_code_u8() {
             NOP => {}
-            ICONST_M1 => frame.push(LocalValue::Int(-1))?,
-            ICONST_0 => frame.push(LocalValue::Int(0))?,
-            ICONST_1 => frame.push(LocalValue::Int(1))?,
-            ICONST_2 => frame.push(LocalValue::Int(2))?,
-            ICONST_3 => frame.push(LocalValue::Int(3))?,
-            ICONST_4 => frame.push(LocalValue::Int(4))?,
-            ICONST_5 => frame.push(LocalValue::Int(5))?,
-            LCONST_0 => frame.push_long(0)?,
-            LCONST_1 => frame.push_long(1)?,
-            FCONST_0 => frame.push(LocalValue::Float(0.0))?,
-            FCONST_1 => frame.push(LocalValue::Float(1.0))?,
-            FCONST_2 => frame.push(LocalValue::Float(2.0))?,
-            DCONST_0 => frame.push_double(0.0)?,
-            DCONST_1 => frame.push_double(1.0)?,
+            ICONST_M1 => frame.stack.push(Value::from_int(-1)),
+            ICONST_0 => frame.stack.push(Value::from_int(0)),
+            ICONST_1 => frame.stack.push(Value::from_int(1)),
+            ICONST_2 => frame.stack.push(Value::from_int(2)),
+            ICONST_3 => frame.stack.push(Value::from_int(3)),
+            ICONST_4 => frame.stack.push(Value::from_int(4)),
+            ICONST_5 => frame.stack.push(Value::from_int(5)),
+            LCONST_0 => frame.push_long(0),
+            LCONST_1 => frame.push_long(1),
+            FCONST_0 => frame.stack.push(Value::from_float(0.0)),
+            FCONST_1 => frame.stack.push(Value::from_float(1.0)),
+            FCONST_2 => frame.stack.push(Value::from_float(2.0)),
+            DCONST_0 => frame.push_double(0.0),
+            DCONST_1 => frame.push_double(1.0),
             BIPUSH => {
                 let value = frame.read_code_u8() as i8;
-                frame.push(LocalValue::Int(value as i32))?;
+                frame.stack.push(Value::from_int(value as i32));
             }
             SIPUSH => {
                 let value = frame.read_code_u16() as i16;
-                frame.push(LocalValue::Int(value as i32))?;
+                frame.stack.push(Value::from_int(value as i32));
             }
             LDC => {
                 let index = frame.read_code_u8() as u16;
-                ldc(&mut frame, &const_pool, index)?;
+                ldc(&mut frame, &const_pool, index);
             }
             LDC_W => {
                 let index = frame.read_code_u16();
-                ldc(&mut frame, &const_pool, index)?;
+                ldc(&mut frame, &const_pool, index);
             }
             LDC2_W => {
                 let index = frame.read_code_u16();
-                ldc(&mut frame, &const_pool, index)?;
+                ldc(&mut frame, &const_pool, index);
             }
             ILOAD | FLOAD | ALOAD => {
                 let index = frame.read_code_u8() as u16;
-                frame.push(frame.load(index)?)?;
+                frame.stack.push(frame.locals[index as usize]);
             }
             LLOAD => {
                 let index = frame.read_code_u8() as u16;
-                frame.push_long(frame.load_long(index)?)?;
+                frame.push_long(frame.load_long(index));
             }
             DLOAD => {
                 let index = frame.read_code_u8() as u16;
-                frame.push_double(frame.load_double(index)?)?;
+                frame.push_double(frame.load_double(index));
             }
-            ILOAD_0 | FLOAD_0 | ALOAD_0 => frame.push(frame.load(0)?)?,
-            ILOAD_1 | FLOAD_1 | ALOAD_1 => frame.push(frame.load(1)?)?,
-            ILOAD_2 | FLOAD_2 | ALOAD_2 => frame.push(frame.load(2)?)?,
-            ILOAD_3 | FLOAD_3 | ALOAD_3 => frame.push(frame.load(3)?)?,
-            LLOAD_0 => frame.push_long(frame.load_long(0)?)?,
-            LLOAD_1 => frame.push_long(frame.load_long(1)?)?,
-            LLOAD_2 => frame.push_long(frame.load_long(2)?)?,
-            LLOAD_3 => frame.push_long(frame.load_long(3)?)?,
-            DLOAD_0 => frame.push_double(frame.load_double(0)?)?,
-            DLOAD_1 => frame.push_double(frame.load_double(1)?)?,
-            DLOAD_2 => frame.push_double(frame.load_double(2)?)?,
-            DLOAD_3 => frame.push_double(frame.load_double(3)?)?,
+            ILOAD_0 | FLOAD_0 | ALOAD_0 => frame.stack.push(frame.locals[0]),
+            ILOAD_1 | FLOAD_1 | ALOAD_1 => frame.stack.push(frame.locals[1]),
+            ILOAD_2 | FLOAD_2 | ALOAD_2 => frame.stack.push(frame.locals[2]),
+            ILOAD_3 | FLOAD_3 | ALOAD_3 => frame.stack.push(frame.locals[3]),
+            LLOAD_0 => frame.push_long(frame.load_long(0)),
+            LLOAD_1 => frame.push_long(frame.load_long(1)),
+            LLOAD_2 => frame.push_long(frame.load_long(2)),
+            LLOAD_3 => frame.push_long(frame.load_long(3)),
+            DLOAD_0 => frame.push_double(frame.load_double(0)),
+            DLOAD_1 => frame.push_double(frame.load_double(1)),
+            DLOAD_2 => frame.push_double(frame.load_double(2)),
+            DLOAD_3 => frame.push_double(frame.load_double(3)),
             IALOAD => {
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if obj.class().element_type == Some(Typ::Int) {
-                    frame.push(LocalValue::Int(
-                        obj.data
+                    frame.stack.push(Value::from_int(
+                        obj.ptr
                             .read_i32((object::header_size() as isize + 4 * index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?,
-                    ))?;
+                    ));
                 } else {
                     bail!("expected int array")
                 }
             }
             LALOAD => {
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if obj.class().element_type == Some(Typ::Long) {
                     frame.push_long(
-                        obj.data
+                        obj.ptr
                             .read_i64((object::header_size() as isize + 8 * index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?,
-                    )?;
+                    );
                 } else {
                     bail!("expected long array")
                 }
             }
             FALOAD => {
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if obj.class().element_type == Some(Typ::Float) {
-                    frame.push(LocalValue::Float(
-                        obj.data
+                    frame.stack.push(Value::from_float(
+                        obj.ptr
                             .read_f32((object::header_size() as isize + 4 * index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?,
-                    ))?;
+                    ));
                 } else {
                     bail!("expected float array")
                 }
             }
             DALOAD => {
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if obj.class().element_type == Some(Typ::Double) {
                     frame.push_double(
-                        obj.data
+                        obj.ptr
                             .read_f64((object::header_size() as isize + 8 * index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?,
-                    )?;
+                    );
                 } else {
                     bail!("expected double array")
                 }
             }
             AALOAD => {
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if matches!(obj.class().element_type, Some(Typ::Ref(_))) {
-                    frame.push(LocalValue::Ref(unsafe {
-                        std::mem::transmute(
-                            obj.data
+                    frame.stack.push(Value::from_ref(unsafe {
+                        Object::from_addr(
+                            obj.ptr
                                 .read_usize(
                                     (object::header_size() as isize
                                         + size_of::<usize>() as isize * index as isize)
@@ -218,176 +225,101 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                                 )
                                 .ok_or_else(|| anyhow!("index out of bounds"))?,
                         )
-                    }))?;
+                    }));
                 } else {
                     bail!("expected object array")
                 }
             }
             BALOAD => {
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if matches!(obj.class().element_type, Some(Typ::Byte | Typ::Bool)) {
-                    frame.push(LocalValue::Int(
-                        obj.data
+                    frame.stack.push(Value::from_int(
+                        obj.ptr
                             .read_i8((object::header_size() as isize + index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?
                             as i32,
-                    ))?;
+                    ));
                 } else {
                     bail!("expected bool or byte array")
                 }
             }
             CALOAD => {
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if obj.class().element_type == Some(Typ::Char) {
-                    frame.push(LocalValue::Int(
-                        obj.data
+                    frame.stack.push(Value::from_int(
+                        obj.ptr
                             .read_i16((object::header_size() as isize + 2 * index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?
                             as u16 as i32,
-                    ))?;
+                    ));
                 } else {
                     bail!("expected char array")
                 }
             }
             SALOAD => {
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if obj.class().element_type == Some(Typ::Short) {
-                    frame.push(LocalValue::Int(
-                        obj.data
+                    frame.stack.push(Value::from_int(
+                        obj.ptr
                             .read_i16((object::header_size() as isize + 2 * index as isize) as u32)
                             .ok_or_else(|| anyhow!("index out of bounds"))?
                             as i32,
-                    ))?;
+                    ));
                 } else {
                     bail!("expected short array")
                 }
             }
-            ISTORE => {
+            ISTORE | FSTORE | ASTORE => {
                 let index = frame.read_code_u8() as u16;
-                let value = frame.pop_int()?;
-                frame.store(index, LocalValue::Int(value))?;
+                let value = frame.pop();
+                frame.locals[index as usize] = value;
             }
-            LSTORE => {
+            LSTORE | DSTORE => {
                 let index = frame.read_code_u8() as u16;
-                let value = frame.pop_long()?;
-                frame.store_long(index, value)?;
+                frame.locals[index as usize + 1] = frame.pop();
+                frame.locals[index as usize] = frame.pop();
             }
-            FSTORE => {
-                let index = frame.read_code_u8() as u16;
-                let value = frame.pop_float()?;
-                frame.store(index, LocalValue::Float(value))?;
+            ISTORE_0 | FSTORE_0 | ASTORE_0 => frame.locals[0] = frame.pop(),
+            ISTORE_1 | FSTORE_1 | ASTORE_1 => frame.locals[1] = frame.pop(),
+            ISTORE_2 | FSTORE_2 | ASTORE_2 => frame.locals[2] = frame.pop(),
+            ISTORE_3 | FSTORE_3 | ASTORE_3 => frame.locals[3] = frame.pop(),
+            LSTORE_0 | DSTORE_0 => {
+                frame.locals[1] = frame.pop();
+                frame.locals[0] = frame.pop();
             }
-            DSTORE => {
-                let index = frame.read_code_u8() as u16;
-                let value = frame.pop_double()?;
-                frame.store_double(index, value)?;
+            LSTORE_1 | DSTORE_1 => {
+                frame.locals[2] = frame.pop();
+                frame.locals[1] = frame.pop();
             }
-            ASTORE => {
-                let index = frame.read_code_u8() as u16;
-                let value = frame.pop_ref()?;
-                frame.store(index, LocalValue::Ref(value))?;
+            LSTORE_2 | DSTORE_2 => {
+                frame.locals[3] = frame.pop();
+                frame.locals[2] = frame.pop();
             }
-            ISTORE_0 => {
-                let value = frame.pop_int()?;
-                frame.store(0, LocalValue::Int(value))?;
-            }
-            ISTORE_1 => {
-                let value = frame.pop_int()?;
-                frame.store(1, LocalValue::Int(value))?;
-            }
-            ISTORE_2 => {
-                let value = frame.pop_int()?;
-                frame.store(2, LocalValue::Int(value))?;
-            }
-            ISTORE_3 => {
-                let value = frame.pop_int()?;
-                frame.store(3, LocalValue::Int(value))?;
-            }
-            LSTORE_0 => {
-                let value = frame.pop_long()?;
-                frame.store_long(0, value)?;
-            }
-            LSTORE_1 => {
-                let value = frame.pop_long()?;
-                frame.store_long(1, value)?;
-            }
-            LSTORE_2 => {
-                let value = frame.pop_long()?;
-                frame.store_long(2, value)?;
-            }
-            LSTORE_3 => {
-                let value = frame.pop_long()?;
-                frame.store_long(3, value)?;
-            }
-            FSTORE_0 => {
-                let value = frame.pop_float()?;
-                frame.store(0, LocalValue::Float(value))?;
-            }
-            FSTORE_1 => {
-                let value = frame.pop_float()?;
-                frame.store(1, LocalValue::Float(value))?;
-            }
-            FSTORE_2 => {
-                let value = frame.pop_float()?;
-                frame.store(2, LocalValue::Float(value))?;
-            }
-            FSTORE_3 => {
-                let value = frame.pop_float()?;
-                frame.store(3, LocalValue::Float(value))?;
-            }
-            DSTORE_0 => {
-                let value = frame.pop_double()?;
-                frame.store_double(0, value)?;
-            }
-            DSTORE_1 => {
-                let value = frame.pop_double()?;
-                frame.store_double(1, value)?;
-            }
-            DSTORE_2 => {
-                let value = frame.pop_double()?;
-                frame.store_double(2, value)?;
-            }
-            DSTORE_3 => {
-                let value = frame.pop_double()?;
-                frame.store_double(3, value)?;
-            }
-            ASTORE_0 => {
-                let value = frame.pop_ref()?;
-                frame.store(0, LocalValue::Ref(value))?;
-            }
-            ASTORE_1 => {
-                let value = frame.pop_ref()?;
-                frame.store(1, LocalValue::Ref(value))?;
-            }
-            ASTORE_2 => {
-                let value = frame.pop_ref()?;
-                frame.store(2, LocalValue::Ref(value))?;
-            }
-            ASTORE_3 => {
-                let value = frame.pop_ref()?;
-                frame.store(3, LocalValue::Ref(value))?;
+            LSTORE_3 | DSTORE_3 => {
+                frame.locals[4] = frame.pop();
+                frame.locals[3] = frame.pop();
             }
             IASTORE => {
-                let value = frame.pop_int()?;
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let value = frame.pop().as_int();
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if obj.class().element_type == Some(Typ::Int) {
-                    obj.data
+                    obj.ptr
                         .write_i32(
                             (object::header_size() as isize + 4 * index as isize) as u32,
                             value,
@@ -398,14 +330,14 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 }
             }
             LASTORE => {
-                let value = frame.pop_long()?;
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let value = frame.pop_long();
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if obj.class().element_type == Some(Typ::Long) {
-                    obj.data
+                    obj.ptr
                         .write_i64(
                             (object::header_size() as isize + 8 * index as isize) as u32,
                             value,
@@ -416,14 +348,14 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 }
             }
             FASTORE => {
-                let value = frame.pop_float()?;
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let value = frame.pop().as_float();
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if obj.class().element_type == Some(Typ::Float) {
-                    obj.data
+                    obj.ptr
                         .write_f32(
                             (object::header_size() as isize + 4 * index as isize) as u32,
                             value,
@@ -434,14 +366,14 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 }
             }
             DASTORE => {
-                let value = frame.pop_double()?;
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let value = frame.pop_double();
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if obj.class().element_type == Some(Typ::Double) {
-                    obj.data
+                    obj.ptr
                         .write_f64(
                             (object::header_size() as isize + 8 * index as isize) as u32,
                             value,
@@ -452,9 +384,9 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 }
             }
             AASTORE => {
-                let value = frame.pop_ref()?;
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let value = unsafe { frame.pop().as_ref() };
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
@@ -462,12 +394,12 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                     if !obj.class().assignable_to(jvm.resolve_class(component)?) {
                         bail!("ArrayStoreException")
                     }
-                    obj.data
+                    obj.ptr
                         .write_usize(
                             (object::header_size() as isize
                                 + size_of::<usize>() as isize * index as isize)
                                 as u32,
-                            value.data.addr(),
+                            value.ptr.addr(),
                         )
                         .ok_or_else(|| anyhow!("index out of bounds"))?;
                 } else {
@@ -475,14 +407,14 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 }
             }
             BASTORE => {
-                let value = frame.pop_int()?;
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let value = frame.pop().as_int();
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if matches!(obj.class().element_type, Some(Typ::Bool | Typ::Byte)) {
-                    obj.data
+                    obj.ptr
                         .write_i8(
                             (object::header_size() as isize + index as isize) as u32,
                             value as i8,
@@ -493,14 +425,14 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 }
             }
             CASTORE => {
-                let value = frame.pop_int()?;
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let value = frame.pop().as_int();
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if obj.class().element_type == Some(Typ::Char) {
-                    obj.data
+                    obj.ptr
                         .write_i16(
                             (object::header_size() as isize + 2 * index as isize) as u32,
                             value as u16 as i16,
@@ -511,14 +443,14 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 }
             }
             SASTORE => {
-                let value = frame.pop_int()?;
-                let index = frame.pop_int()?;
-                let obj = frame.pop_ref()?;
+                let value = frame.pop().as_int();
+                let index = frame.pop().as_int();
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if obj.class().element_type == Some(Typ::Short) {
-                    obj.data
+                    obj.ptr
                         .write_i16(
                             (object::header_size() as isize + 2 * index as isize) as u32,
                             value as i16,
@@ -529,74 +461,72 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 }
             }
             POP => {
-                if frame.pop()?.category_2() {
-                    bail!("Tried to pop category 2 value")
-                }
+                frame.pop();
             }
             POP2 => {
-                frame.pop()?;
-                frame.pop()?;
+                frame.pop();
+                frame.pop();
             }
             DUP => {
-                let value = frame.pop()?;
-                frame.push(value)?;
-                frame.push(value)?;
+                let value = frame.pop();
+                frame.stack.push(value);
+                frame.stack.push(value);
             }
             DUP_X1 => {
-                let first = frame.pop()?;
-                let second = frame.pop()?;
-                frame.push(first)?;
-                frame.push(second)?;
-                frame.push(first)?;
+                let first = frame.pop();
+                let second = frame.pop();
+                frame.stack.push(first);
+                frame.stack.push(second);
+                frame.stack.push(first);
             }
             DUP_X2 => {
-                let first = frame.pop()?;
-                let second = frame.pop()?;
-                let third = frame.pop()?;
-                frame.push(first)?;
-                frame.push(third)?;
-                frame.push(second)?;
-                frame.push(first)?;
+                let first = frame.pop();
+                let second = frame.pop();
+                let third = frame.pop();
+                frame.stack.push(first);
+                frame.stack.push(third);
+                frame.stack.push(second);
+                frame.stack.push(first);
             }
             DUP2 => {
-                let first = frame.pop()?;
-                let second = frame.pop()?;
-                frame.push(second)?;
-                frame.push(first)?;
-                frame.push(second)?;
-                frame.push(first)?;
+                let first = frame.pop();
+                let second = frame.pop();
+                frame.stack.push(second);
+                frame.stack.push(first);
+                frame.stack.push(second);
+                frame.stack.push(first);
             }
             DUP2_X1 => {
-                let first = frame.pop()?;
-                let second = frame.pop()?;
-                let third = frame.pop()?;
-                frame.push(second)?;
-                frame.push(first)?;
-                frame.push(third)?;
-                frame.push(second)?;
-                frame.push(first)?;
+                let first = frame.pop();
+                let second = frame.pop();
+                let third = frame.pop();
+                frame.stack.push(second);
+                frame.stack.push(first);
+                frame.stack.push(third);
+                frame.stack.push(second);
+                frame.stack.push(first);
             }
             DUP2_X2 => {
-                let first = frame.pop()?;
-                let second = frame.pop()?;
-                let third = frame.pop()?;
-                let fourth = frame.pop()?;
-                frame.push(second)?;
-                frame.push(first)?;
-                frame.push(fourth)?;
-                frame.push(third)?;
-                frame.push(second)?;
-                frame.push(first)?;
+                let first = frame.pop();
+                let second = frame.pop();
+                let third = frame.pop();
+                let fourth = frame.pop();
+                frame.stack.push(second);
+                frame.stack.push(first);
+                frame.stack.push(fourth);
+                frame.stack.push(third);
+                frame.stack.push(second);
+                frame.stack.push(first);
             }
             SWAP => {
-                let first = frame.pop()?;
-                let second = frame.pop()?;
-                frame.push(first)?;
-                frame.push(second)?;
+                let first = frame.pop();
+                let second = frame.pop();
+                frame.stack.push(first);
+                frame.stack.push(second);
             }
             IADD | ISUB | IMUL | IDIV | IREM | ISHL | ISHR | IUSHR | IAND | IOR | IXOR => {
-                let b = frame.pop_int()?;
-                let a = frame.pop_int()?;
+                let b = frame.pop().as_int();
+                let a = frame.pop().as_int();
                 let result = match frame.read_previous_byte() {
                     IADD => a + b,
                     ISUB => a - b,
@@ -617,11 +547,11 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                     IXOR => a ^ b,
                     _ => unreachable!(),
                 };
-                frame.push(LocalValue::Int(result))?;
+                frame.stack.push(Value::from_int(result));
             }
             LADD | LSUB | LMUL | LDIV | LREM | LSHL | LSHR | LUSHR | LAND | LOR | LXOR => {
-                let b = frame.pop_long()?;
-                let a = frame.pop_long()?;
+                let b = frame.pop_long();
+                let a = frame.pop_long();
                 let result = match frame.read_previous_byte() {
                     LADD => a + b,
                     LSUB => a - b,
@@ -642,11 +572,11 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                     LXOR => a ^ b,
                     _ => unreachable!(),
                 };
-                frame.push_long(result)?;
+                frame.push_long(result);
             }
             FADD | FSUB | FMUL | FDIV | FREM => {
-                let b = frame.pop_float()?;
-                let a = frame.pop_float()?;
+                let b = frame.pop().as_float();
+                let a = frame.pop().as_float();
                 let result = match frame.read_previous_byte() {
                     FADD => a + b,
                     FSUB => a - b,
@@ -655,11 +585,11 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                     FREM => a % b,
                     _ => unreachable!(),
                 };
-                frame.push(LocalValue::Float(result))?;
+                frame.stack.push(Value::from_float(result));
             }
             DADD | DSUB | DMUL | DDIV | DREM => {
-                let b = frame.pop_double()?;
-                let a = frame.pop_double()?;
+                let b = frame.pop_double();
+                let a = frame.pop_double();
                 let result = match frame.read_previous_byte() {
                     DADD => a + b,
                     DSUB => a - b,
@@ -668,101 +598,102 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                     DREM => a % b,
                     _ => unreachable!(),
                 };
-                frame.push_double(result)?;
+                frame.push_double(result);
             }
             INEG => {
-                let result = -frame.pop_int()?;
-                frame.push(LocalValue::Int(result))?;
+                let result = -frame.pop().as_int();
+                frame.stack.push(Value::from_int(result));
             }
             LNEG => {
-                let result = -frame.pop_long()?;
-                frame.push_long(result)?;
+                let result = -frame.pop_long();
+                frame.push_long(result);
             }
             FNEG => {
-                let result = -frame.pop_float()?;
-                frame.push(LocalValue::Float(result))?;
+                let result = -frame.pop().as_float();
+                frame.stack.push(Value::from_float(result));
             }
             DNEG => {
-                let result = -frame.pop_long()?;
-                frame.push_long(result)?;
+                let result = -frame.pop_double();
+                frame.push_double(result);
             }
             IINC => {
                 let index = frame.read_code_u8() as u16;
                 let constant = frame.read_code_u8() as i32;
-                frame.store(index, LocalValue::Int(frame.load_i32(index)? + constant))?;
+                frame.locals[index as usize] =
+                    Value::from_int(frame.locals[index as usize].as_int() + constant);
             }
             I2L => {
-                let value = frame.pop_int()?;
-                frame.push_long(value as i64)?;
+                let value = frame.pop().as_int();
+                frame.push_long(value as i64);
             }
             I2F => {
-                let value = frame.pop_int()?;
-                frame.push(LocalValue::Float(value as f32))?;
+                let value = frame.pop().as_int();
+                frame.stack.push(Value::from_float(value as f32));
             }
             I2D => {
-                let value = frame.pop_int()?;
-                frame.push_double(value as f64)?;
+                let value = frame.pop().as_int();
+                frame.push_double(value as f64);
             }
             L2I => {
-                let value = frame.pop_long()?;
-                frame.push(LocalValue::Int(value as i32))?;
+                let value = frame.pop_long();
+                frame.stack.push(Value::from_int(value as i32));
             }
             L2F => {
-                let value = frame.pop_long()?;
-                frame.push(LocalValue::Float(value as f32))?;
+                let value = frame.pop_long();
+                frame.stack.push(Value::from_float(value as f32));
             }
             L2D => {
-                let value = frame.pop_long()?;
-                frame.push_double(value as f64)?;
+                let value = frame.pop_long();
+                frame.push_double(value as f64);
             }
             F2I => {
-                let value = frame.pop_float()?;
-                frame.push(LocalValue::Int(value as i32))?;
+                let value = frame.pop().as_float();
+                frame.stack.push(Value::from_int(value as i32));
             }
             F2L => {
-                let value = frame.pop_float()?;
-                frame.push_long(value as i64)?;
+                let value = frame.pop().as_float();
+                frame.push_long(value as i64);
             }
             F2D => {
-                let value = frame.pop_float()?;
-                frame.push_double(value as f64)?;
+                let value = frame.pop().as_float();
+                frame.push_double(value as f64);
             }
             D2I => {
-                let value = frame.pop_double()?;
-                frame.push(LocalValue::Int(value as i32))?;
+                let value = frame.pop_double();
+                frame.stack.push(Value::from_int(value as i32));
             }
             D2L => {
-                let value = frame.pop_double()?;
-                frame.push_long(value as i64)?;
+                let value = frame.pop_double();
+                frame.push_long(value as i64);
             }
             D2F => {
-                let value = frame.pop_double()?;
-                frame.push(LocalValue::Float(value as f32))?;
+                let value = frame.pop_double();
+                frame.stack.push(Value::from_float(value as f32));
             }
             I2B => {
-                let value = frame.pop_int()? as i8;
-                frame.push(LocalValue::Int(value as i32))?;
+                let value = frame.pop().as_int() as i8;
+                frame.stack.push(Value::from_int(value as i32));
             }
             I2C => {
-                let value = frame.pop_int()? as u16;
-                frame.push(LocalValue::Int(value as i32))?;
+                let value = frame.pop().as_int() as u16;
+                frame.stack.push(Value::from_int(value as i32));
             }
             I2S => {
-                let value = frame.pop_int()? as i16;
-                frame.push(LocalValue::Int(value as i32))?;
+                let value = frame.pop().as_int() as i16;
+                frame.stack.push(Value::from_int(value as i32));
             }
             LCMP => {
-                let b = frame.pop_long()?;
-                let a = frame.pop_long()?;
-                frame.push(LocalValue::Int(match a - b {
+                let b = frame.pop_long();
+                let a = frame.pop_long();
+                frame.stack.push(Value::from_int(match a - b {
                     x if x > 0 => 1,
                     0 => 0,
                     _ => -1,
-                }))?
+                }))
             }
             FCMPL | FCMPG => {
-                let b = frame.pop_float()?;
-                let a = frame.pop_float()?;
+                let b = frame.pop().as_float();
+                let a = frame.pop().as_float();
                 let result = if b.is_nan() | a.is_nan() {
                     if frame.read_previous_byte() == FCMPL {
                         -1
@@ -776,11 +707,11 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 } else {
                     1
                 };
-                frame.push(LocalValue::Int(result))?
+                frame.stack.push(Value::from_int(result))
             }
             DCMPL | DCMPG => {
-                let b = frame.pop_double()?;
-                let a = frame.pop_double()?;
+                let b = frame.pop_double();
+                let a = frame.pop_double();
                 let result = if b.is_nan() | a.is_nan() {
                     if frame.read_previous_byte() == DCMPL {
                         -1
@@ -794,7 +725,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 } else {
                     1
                 };
-                frame.push(LocalValue::Int(result))?
+                frame.stack.push(Value::from_int(result))
             }
             IFEQ | IFNE | IFLT | IFGE | IFGT | IFLE | IF_ICMPEQ | IF_ICMPNE | IF_ICMPLT
             | IF_ICMPGE | IF_ICMPGT | IF_ICMPLE => {
@@ -807,8 +738,8 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                         (instr, false)
                     }
                 };
-                let b = if two_operand { frame.pop_int()? } else { 0 };
-                let a = frame.pop_int()?;
+                let b = if two_operand { frame.pop().as_int() } else { 0 };
+                let a = frame.pop().as_int();
                 let target_offset = frame.read_code_u16() as i16;
                 if match op {
                     IFEQ => a == b,
@@ -827,21 +758,6 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 let target_offset = frame.read_code_u16() as i16;
                 frame.jump_relative(base, target_offset as i32)
             }
-            // Only supported in class version < 50.0
-            /*JSR => {
-                let base = frame.pc - 1;
-                let target = frame.read_code_u16()? as i16 as i32;
-                frame.push(LocalValue::ReturnAddress(frame.pc))?;
-                frame.jump_relative(base, target)
-            }
-            RET => {
-                let index = frame.read_code_u8()?;
-                if let LocalValue::ReturnAddress(branch_target) = frame.load(index as u16)? {
-                    frame.pc = branch_target;
-                } else {
-                    bail!("Failed to load return address from slot {}", index);
-                }
-            }*/
             TABLESWITCH => {
                 let base = frame.pc - 1;
 
@@ -849,7 +765,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 frame.pc += 3;
                 frame.pc &= 0xfffc;
 
-                let index = frame.pop_int()?;
+                let index = frame.pop().as_int();
                 let default = frame.read_code_u32() as i32;
                 let low = frame.read_code_u32() as i32;
                 let high = frame.read_code_u32() as i32;
@@ -873,7 +789,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 frame.pc += 3;
                 frame.pc &= 0xfffc;
 
-                let key = frame.pop_int()?;
+                let key = frame.pop().as_int();
                 let default = frame.read_code_u32() as i32;
                 let npairs = frame.read_code_u32();
 
@@ -889,29 +805,29 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 }
                 frame.jump_relative(base, target);
             }
-            IRETURN => return Ok(ReturnValue::Int(frame.pop_int()?)),
-            LRETURN => return Ok(ReturnValue::Long(frame.pop_long()?)),
-            FRETURN => return Ok(ReturnValue::Float(frame.pop_float()?)),
-            DRETURN => return Ok(ReturnValue::Double(frame.pop_double()?)),
-            ARETURN => return Ok(ReturnValue::Ref(frame.pop_ref()?)),
-            RETURN => return Ok(ReturnValue::Void),
+            IRETURN => return Ok(Some(JVMValue::Int(frame.pop().as_int()))),
+            LRETURN => return Ok(Some(JVMValue::Long(frame.pop_long()))),
+            FRETURN => return Ok(Some(JVMValue::Float(frame.pop().as_float()))),
+            DRETURN => return Ok(Some(JVMValue::Double(frame.pop_double()))),
+            ARETURN => return Ok(Some(JVMValue::Ref(unsafe { frame.pop().as_ref() }))),
+            RETURN => return Ok(None),
             GETSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field(index).unwrap();
                 field.class.load().ensure_init(jvm)?;
-                get_field(&mut frame, field, &field.class.load().static_storage)?;
+                get_field(&mut frame, field, &field.class.load().static_storage);
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field(index).unwrap();
                 field.class.load().ensure_init(jvm)?;
-                put_field(&mut frame, field, &field.class.load().static_storage)?;
+                put_field(&mut frame, field, &field.class.load().static_storage);
             }
             GETFIELD => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field(index)?;
-                let object = frame.pop_ref()?;
-                get_field(&mut frame, field, &object.data)?;
+                let object = unsafe { frame.pop().as_ref() };
+                get_field(&mut frame, field, &object.ptr);
             }
             PUTFIELD => {
                 let index = frame.read_code_u16();
@@ -919,19 +835,19 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 // Stack has object ref first, then value on top
                 // This is ugly
                 let object = if matches!(field.descriptor, Typ::Long | Typ::Double) {
-                    let high = frame.pop()?;
-                    let low = frame.pop()?;
-                    let obj = frame.pop_ref()?;
-                    frame.push(low)?;
-                    frame.push(high)?;
+                    let high = frame.pop();
+                    let low = frame.pop();
+                    let obj = unsafe { frame.pop().as_ref() };
+                    frame.stack.push(low);
+                    frame.stack.push(high);
                     obj
                 } else {
-                    let value = frame.pop()?;
-                    let obj = frame.pop_ref()?;
-                    frame.push(value)?;
+                    let value = frame.pop();
+                    let obj = unsafe { frame.pop().as_ref() };
+                    frame.stack.push(value);
                     obj
                 };
-                put_field(&mut frame, field, &object.data)?;
+                put_field(&mut frame, field, &object.ptr);
             }
             INVOKEVIRTUAL => {
                 let index = frame.read_code_u16();
@@ -939,8 +855,8 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if nat.name.0.starts_with('<') {
                     bail!("Must not invokevirtual class or instance initialization method")
                 }
-                let obj = *if let Some(LocalValue::Ref(obj)) = frame.stack.last() {
-                    obj
+                let obj = if let Some(obj) = frame.stack.last() {
+                    unsafe { obj.as_ref() }
                 } else {
                     bail!("Failed invoke_special")
                 };
@@ -991,10 +907,10 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 let index = frame.read_code_u16();
                 let class = const_pool.get_class(index)?;
                 class.ensure_init(jvm)?;
-                frame.push(LocalValue::Ref(jvm.create_object(class)))?
+                frame.stack.push(Value::from_ref(jvm.create_object(class)))
             }
             NEWARRAY => {
-                let length = frame.pop_int()?;
+                let length = frame.pop().as_int();
                 if length < 0 {
                     bail!("Negative array length")
                 }
@@ -1010,10 +926,12 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                     _ => bail!("invalid array type"),
                 };
                 let typ = jvm.resolve_class(typ)?;
-                frame.push(LocalValue::Ref(jvm.create_array(typ, length as usize)))?;
+                frame
+                    .stack
+                    .push(Value::from_ref(jvm.create_array(typ, length as usize)));
             }
             ANEWARRAY => {
-                let length = frame.pop_int()?;
+                let length = frame.pop().as_int();
                 let index = frame.read_code_u16();
                 let component = const_pool.get_class(index)?;
                 // TODO: make it easier to refer to array types
@@ -1021,17 +939,19 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 if length < 0 {
                     bail!("Negative array length")
                 }
-                frame.push(LocalValue::Ref(jvm.create_array(typ, length as usize)))?;
+                frame
+                    .stack
+                    .push(Value::from_ref(jvm.create_array(typ, length as usize)));
             }
             ARRAYLENGTH => {
-                let obj = frame.pop_ref()?;
+                let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
                     bail!("NullPointerException");
                 }
                 if let Some(base) = obj.class().element_type {
                     let length =
-                        ((obj.data.size() - object::header_size()) / base.layout().size()) as i32;
-                    frame.push(LocalValue::Int(length))?;
+                        ((obj.ptr.size() - object::header_size()) / base.layout().size()) as i32;
+                    frame.stack.push(Value::from_int(length));
                 } else {
                     bail!("object not array")
                 }
@@ -1042,7 +962,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
             IF_NULL => {
                 let base = frame.pc - 1;
                 let target_offset = frame.read_code_u16() as i16;
-                if frame.pop_ref()?.null() {
+                if frame.pop().0 == 0 {
                     frame.jump_relative(base, target_offset as i32);
                 }
             }
@@ -1051,78 +971,69 @@ pub(crate) fn invoke_initialized<'a, 'b>(
                 let target_offset = frame.read_code_u32() as i32;
                 frame.jump_relative(base, target_offset)
             }
-            // Only supported in class version < 50.0
-            /*JSR_W => {
-                let base = frame.pc - 1;
-                let target = frame.read_code_u32()? as i32;
-                frame.push(LocalValue::ReturnAddress(frame.pc))?;
-                frame.jump_relative(base, target);
-            }*/
             other => todo!("Bytecode: {}", other),
         }
     }
 }
 
-fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) -> Result<()> {
+fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) {
     match const_pool.items.get(index as usize) {
-        Some(ConstPoolItem::Integer(i)) => frame.push(LocalValue::Int(*i)),
-        Some(ConstPoolItem::Float(f)) => frame.push(LocalValue::Float(*f)),
+        Some(ConstPoolItem::Integer(i)) => frame.stack.push(Value::from_int(*i)),
+        Some(ConstPoolItem::Float(f)) => frame.stack.push(Value::from_float(*f)),
         Some(ConstPoolItem::Long(l)) => frame.push_long(*l),
         Some(ConstPoolItem::Double(d)) => frame.push_double(*d),
         Some(ConstPoolItem::RawString(_) | ConstPoolItem::Class(_)) => todo!(),
-        _ => bail!("Invalid ldc/ldc_w/ldc2_w     index: {}", index,),
+        _ => unreachable!("Invalid ldc/ldc_w/ldc2_w     index: {}", index,),
     }
 }
 
-fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) -> Result<()> {
+fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
     // Correct allignment guaranteed because it is used to construct the FieldStorage layout and is stored immutably
     match field.descriptor {
-        Typ::Bool | Typ::Byte => frame.push(LocalValue::Int(
+        Typ::Bool | Typ::Byte => frame.stack.push(Value::from_int(
             storage.read_i8(field.byte_offset).unwrap() as i32,
-        ))?,
-        Typ::Short | Typ::Char => frame.push(LocalValue::Int(
+        )),
+        Typ::Short | Typ::Char => frame.stack.push(Value::from_int(
             storage.read_i16(field.byte_offset).unwrap() as i32,
-        ))?,
-        Typ::Int => frame.push(LocalValue::Int(
+        )),
+        Typ::Int => frame.stack.push(Value::from_int(
             storage.read_i32(field.byte_offset).unwrap(),
-        ))?,
-        Typ::Float => frame.push(LocalValue::Float(
+        )),
+        Typ::Float => frame.stack.push(Value::from_float(
             storage.read_f32(field.byte_offset).unwrap(),
-        ))?,
-        Typ::Long => frame.push_long(storage.read_i64(field.byte_offset).unwrap())?,
-        Typ::Double => frame.push_double(storage.read_f64(field.byte_offset).unwrap())?,
-        Typ::Ref(..) => frame.push(LocalValue::Ref(unsafe {
+        )),
+        Typ::Long => frame.push_long(storage.read_i64(field.byte_offset).unwrap()),
+        Typ::Double => frame.push_double(storage.read_f64(field.byte_offset).unwrap()),
+        Typ::Ref(..) => frame.stack.push(Value::from_ref(unsafe {
             std::mem::transmute(storage.read_usize(field.byte_offset).unwrap())
-        }))?,
+        })),
     }
-    Ok(())
 }
 
-fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) -> Result<()> {
+fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
     match field.descriptor {
         Typ::Bool | Typ::Byte => storage
-            .write_i8(field.byte_offset, frame.pop_int()? as i8)
+            .write_i8(field.byte_offset, frame.pop().as_int() as i8)
             .unwrap(),
         Typ::Short | Typ::Char => storage
-            .write_i16(field.byte_offset, frame.pop_int()? as i16)
+            .write_i16(field.byte_offset, frame.pop().as_int() as i16)
             .unwrap(),
         Typ::Int => storage
-            .write_i32(field.byte_offset, frame.pop_int()?)
+            .write_i32(field.byte_offset, frame.pop().as_int())
             .unwrap(),
         Typ::Float => storage
-            .write_f32(field.byte_offset, frame.pop_float()?)
+            .write_f32(field.byte_offset, frame.pop().as_float())
             .unwrap(),
         Typ::Long => storage
-            .write_i64(field.byte_offset, frame.pop_long()?)
+            .write_i64(field.byte_offset, frame.pop_long())
             .unwrap(),
         Typ::Double => storage
-            .write_f64(field.byte_offset, frame.pop_double()?)
+            .write_f64(field.byte_offset, frame.pop_double())
             .unwrap(),
         Typ::Ref(..) => storage
-            .write_usize(field.byte_offset, frame.pop_ref()?.data.addr())
+            .write_usize(field.byte_offset, frame.pop().0)
             .unwrap(),
     }
-    Ok(())
 }
 
 fn execute_invoke_instr<'jvm, 'b>(
@@ -1150,61 +1061,75 @@ fn execute_invoke_instr<'jvm, 'b>(
         .with_context(|| format!("Trying to call {}", method.nat.name))?;
     frame.stack.truncate(frame.stack.len() - arg_count);
     match result {
-        ReturnValue::Void => Ok(()),
-        ReturnValue::Ref(object) => frame.push(LocalValue::Ref(object)),
-        ReturnValue::Int(value) => frame.push(LocalValue::Int(value)),
-        ReturnValue::Float(value) => frame.push(LocalValue::Float(value)),
-        ReturnValue::Long(value) => frame.push_long(value),
-        ReturnValue::Double(value) => frame.push_double(value),
-    }
+        None => (),
+        Some(JVMValue::Ref(object)) => frame.stack.push(Value::from_ref(object)),
+        Some(JVMValue::Int(value)) => frame.stack.push(Value::from_int(value)),
+        Some(JVMValue::Float(value)) => frame.stack.push(Value::from_float(value)),
+        Some(JVMValue::Long(value)) => frame.push_long(value),
+        Some(JVMValue::Double(value)) => frame.push_double(value),
+    };
+    Ok(())
 }
 
-impl<'jvm> LocalValue<'jvm> {
-    fn category_2(self) -> bool {
-        matches!(
-            self,
-            Self::LowHalfOfLong(_)
-                | Self::HighHalfOfLong(_)
-                | Self::LowHalfOfDouble(_)
-                | Self::HighHalfOfDouble(_)
+// This should be u32.
+// TODO: either use compressed pointers or remap indices to treat ref as category 2 type
+/// Stack or local entry
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+struct Value(usize);
+
+impl Value {
+    fn from_int(value: i32) -> Self {
+        Self(value as u32 as usize)
+    }
+
+    fn from_float(value: f32) -> Self {
+        Self(value.to_bits() as usize)
+    }
+
+    /// Returns (low half, high half)
+    fn from_long(value: i64) -> (Self, Self) {
+        (
+            Self((value as u64 & 0xFFFFFFFF) as usize),
+            Self((value as u64 >> 32) as usize),
         )
     }
-}
 
-impl<'jvm> Default for LocalValue<'jvm> {
-    fn default() -> Self {
-        LocalValue::Uninitialized
+    /// Returns (low half, high half)
+    fn from_double(value: f64) -> (Self, Self) {
+        Self::from_long(value.to_bits() as i64)
     }
-}
 
-impl<'jvm> From<i32> for LocalValue<'jvm> {
-    fn from(i: i32) -> Self {
-        Self::Int(i)
+    fn from_ref(object: Object) -> Self {
+        Self(object.addr())
     }
-}
 
-impl<'jvm> From<f32> for LocalValue<'jvm> {
-    fn from(f: f32) -> Self {
-        Self::Float(f)
+    fn as_int(self) -> i32 {
+        self.0 as u32 as i32
     }
-}
 
-// I'd use TryFrom, but then type interference fails
-impl<'jvm> From<LocalValue<'jvm>> for Result<i32> {
-    fn from(value: LocalValue) -> Self {
-        if let LocalValue::Int(value) = value {
-            Ok(value)
-        } else {
-            bail!("Value not an int")
-        }
+    fn as_float(self) -> f32 {
+        f32::from_bits(self.0 as u32)
+    }
+
+    fn as_long(low: Value, high: Value) -> i64 {
+        (low.0 as u32 as u64 + ((high.0 as u64) << 32)) as i64
+    }
+
+    fn as_double(low: Value, high: Value) -> f64 {
+        f64::from_bits(low.0 as u32 as u64 + ((high.0 as u64) << 32))
+    }
+
+    unsafe fn as_ref<'jvm>(self) -> Object<'jvm> {
+        Object::from_addr(self.0)
     }
 }
 
 struct Frame<'jvm> {
     method: &'jvm Method<'jvm>,
     code_bytes: &'jvm [u8],
-    locals: Vec<LocalValue<'jvm>>,
-    stack: Vec<LocalValue<'jvm>>,
+    locals: Vec<Value>,
+    stack: Vec<Value>,
     pc: u16,
 }
 
@@ -1213,132 +1138,38 @@ impl<'jvm> Frame<'jvm> {
         self.pc = (base as i32 + target_offset as i32) as u16;
     }
 
-    fn load(&self, index: u16) -> Result<LocalValue<'jvm>> {
-        self.locals
-            .get(index as usize)
-            .copied()
-            .ok_or_else(|| anyhow!("Invalid local index"))
+    fn load_long(&self, index: u16) -> i64 {
+        Value::as_long(self.locals[index as usize], self.locals[index as usize + 1])
     }
 
-    // I would have made get generic but type interference doesn't like its uses
-    fn load_i32(&self, index: u16) -> Result<i32> {
-        self.load(index)?.into()
+    fn load_double(&self, index: u16) -> f64 {
+        Value::as_double(self.locals[index as usize], self.locals[index as usize + 1])
     }
 
-    fn store(&mut self, index: u16, value: LocalValue<'jvm>) -> Result<()> {
-        *self
-            .locals
-            .get_mut(index as usize)
-            .ok_or_else(|| anyhow!("Invalid locals index"))? = value;
-        Ok(())
+    fn pop(&mut self) -> Value {
+        self.stack.pop().expect("Popped empty stack")
     }
 
-    fn load_long(&self, index: u16) -> Result<i64> {
-        if let (Some(LocalValue::LowHalfOfLong(low)), Some(LocalValue::HighHalfOfLong(high))) = (
-            self.locals.get(index as usize),
-            self.locals.get(index as usize + 1),
-        ) {
-            Ok((((*high as u64) << 32) + *low as u64) as i64)
-        } else {
-            bail!("Failed to load local long from slot {}", index,)
-        }
+    fn pop_long(&mut self) -> i64 {
+        let (high, low) = (self.pop(), self.pop());
+        Value::as_long(low, high)
     }
 
-    fn load_double(&self, index: u16) -> Result<f64> {
-        if let (Some(LocalValue::LowHalfOfDouble(low)), Some(LocalValue::HighHalfOfDouble(high))) = (
-            self.locals.get(index as usize),
-            self.locals.get(index as usize + 1),
-        ) {
-            Ok(f64::from_bits(((*high as u64) << 32) + *low as u64))
-        } else {
-            bail!("Failed to load local double from slot {}", index)
-        }
+    fn pop_double(&mut self) -> f64 {
+        let (high, low) = (self.pop(), self.pop());
+        Value::as_double(low, high)
     }
 
-    fn store_long(&mut self, index: u16, value: i64) -> Result<()> {
-        if (index as usize) < self.locals.len() - 1 {
-            self.locals[index as usize] = LocalValue::LowHalfOfLong(value as u32);
-            self.locals[index as usize + 1] =
-                LocalValue::HighHalfOfLong(((value as u64) >> 32) as u32);
-            Ok(())
-        } else {
-            bail!("Failed to store long into slot {}", index)
-        }
+    fn push_long(&mut self, value: i64) {
+        let (low, high) = Value::from_long(value);
+        self.stack.push(low);
+        self.stack.push(high);
     }
 
-    fn store_double(&mut self, index: u16, value: f64) -> Result<()> {
-        if (index as usize) < self.locals.len() - 1 {
-            self.locals[index as usize] = LocalValue::LowHalfOfDouble(value.to_bits() as u32);
-            self.locals[index as usize + 1] =
-                LocalValue::HighHalfOfDouble((value.to_bits() >> 32) as u32);
-            Ok(())
-        } else {
-            bail!("Failed to store double into slot {}", index)
-        }
-    }
-
-    fn pop(&mut self) -> Result<LocalValue<'jvm>> {
-        self.stack.pop().ok_or_else(|| anyhow!("Pop empty stack"))
-    }
-
-    fn pop_int(&mut self) -> Result<i32> {
-        match self.pop()? {
-            LocalValue::Int(value) => Ok(value),
-            other => bail!("Stack value mismatch: not an int ({:?})", other),
-        }
-    }
-
-    fn pop_float(&mut self) -> Result<f32> {
-        match self.pop()? {
-            LocalValue::Float(value) => Ok(value),
-            other => bail!("Stack value mismatch: not an float ({:?})", other),
-        }
-    }
-
-    fn pop_long(&mut self) -> Result<i64> {
-        match (self.pop()?, self.pop()?) {
-            (LocalValue::HighHalfOfLong(high), LocalValue::LowHalfOfLong(low)) => {
-                Ok((((high as u64) << 32) + low as u64) as i64)
-            }
-            other => bail!("Failed to pop long {:?}", other),
-        }
-    }
-
-    fn pop_double(&mut self) -> Result<f64> {
-        match (self.pop()?, self.pop()?) {
-            (LocalValue::HighHalfOfDouble(high), LocalValue::LowHalfOfDouble(low)) => {
-                Ok(f64::from_bits(((high as u64) << 32) + low as u64))
-            }
-            other => bail!("Failed to pop double {:?}", other),
-        }
-    }
-
-    fn pop_ref(&mut self) -> Result<Object<'jvm>> {
-        match self.pop()? {
-            LocalValue::Ref(value) => Ok(value),
-            other => bail!("Stack value mismatch: not an object ({:?})", other),
-        }
-    }
-
-    fn push(&mut self, value: LocalValue<'jvm>) -> Result<()> {
-        if self.stack.len() < self.stack.capacity() {
-            self.stack.push(value);
-            Ok(())
-        } else {
-            bail!("Max stack exceeded ({})", self.stack.len(),)
-        }
-    }
-
-    fn push_long(&mut self, value: i64) -> Result<()> {
-        self.push(LocalValue::LowHalfOfLong(value as u32))?;
-        self.push(LocalValue::HighHalfOfLong((value as u64 >> 32) as u32))
-    }
-
-    fn push_double(&mut self, value: f64) -> Result<()> {
-        self.push(LocalValue::LowHalfOfDouble(value.to_bits() as u32))?;
-        self.push(LocalValue::HighHalfOfDouble(
-            (value.to_bits() as u64 >> 32) as u32,
-        ))
+    fn push_double(&mut self, value: f64) {
+        let (low, high) = Value::from_double(value);
+        self.stack.push(low);
+        self.stack.push(high);
     }
 
     /// This always succeeds because bounds were already checked during verification

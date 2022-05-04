@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use jvm::interp::{LocalValue, ReturnValue};
+use jvm::interp::JVMValue;
 use jvm::*;
 
 #[test]
@@ -18,7 +18,7 @@ fn circular_loading() {
 fn initialization() -> Result<()> {
     let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method("Initialization", "check_init", vec![], Some(Typ::Bool))?;
-    assert_eq!(interp::invoke(&jvm, method, &[])?, ReturnValue::Int(1));
+    assert_eq!(interp::invoke(&jvm, method, &[])?, Some(JVMValue::Int(1)));
     Ok(())
 }
 
@@ -26,6 +26,7 @@ fn initialization() -> Result<()> {
 fn init_lock() -> Result<()> {
     let jvm = Arc::new(JVM::new(vec!["classes".into(), "tests".into()]));
     let class = Arc::new(JVM::resolve_class(&jvm, "InitLock")?);
+    // TODO: use scoped threads when stabilized
     let threads = (0..50)
         .map(|_| {
             let jvm = jvm.clone();
@@ -39,7 +40,7 @@ fn init_lock() -> Result<()> {
                     .unwrap();
                 assert_eq!(
                     interp::invoke(&jvm, method, &[]).unwrap(),
-                    ReturnValue::Int(1)
+                    Some(JVMValue::Int(1))
                 );
             })
         })
@@ -53,11 +54,11 @@ fn init_lock() -> Result<()> {
 #[test]
 fn control_flow() -> Result<()> {
     let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
-    let method = jvm.resolve_method("ControlFlow", "test", vec![Typ::Int], Some(Typ::Bool))?;
-    let even = interp::invoke(&jvm, method, &[LocalValue::Int(10)])?;
-    let odd = interp::invoke(&jvm, method, &[LocalValue::Int(13)])?;
-    assert_eq!(even, ReturnValue::Int(0));
-    assert_eq!(odd, ReturnValue::Int(1));
+    let method = jvm.resolve_method("ControlFlow", "is_even", vec![Typ::Int], Some(Typ::Bool))?;
+    let even_10 = interp::invoke(&jvm, method, &[JVMValue::Int(10)])?;
+    assert_eq!(even_10, Some(JVMValue::Int(1)));
+    let even_13 = interp::invoke(&jvm, method, &[JVMValue::Int(13)])?;
+    assert_eq!(even_13, Some(JVMValue::Int(0)));
     Ok(())
 }
 
@@ -78,10 +79,13 @@ fn field_access() -> Result<()> {
         )
         .unwrap();
     assert_eq!(
-        interp::invoke(&jvm, set_method, &[LocalValue::Int(42)])?,
-        ReturnValue::Void
+        interp::invoke(&jvm, set_method, &[JVMValue::Int(42)])?,
+        None
     );
-    assert_eq!(interp::invoke(&jvm, get_method, &[])?, ReturnValue::Int(42));
+    assert_eq!(
+        interp::invoke(&jvm, get_method, &[])?,
+        Some(JVMValue::Int(42))
+    );
     Ok(())
 }
 
@@ -95,8 +99,8 @@ fn invoke_static() -> Result<()> {
         Some(Typ::Bool),
     )?;
     assert_eq!(
-        interp::invoke(&jvm, method, &[LocalValue::Int(1), LocalValue::Int(0)])?,
-        ReturnValue::Int(1)
+        interp::invoke(&jvm, method, &[JVMValue::Int(1), JVMValue::Int(0)])?,
+        Some(JVMValue::Int(1))
     );
 
     Ok(())
@@ -106,7 +110,7 @@ fn invoke_static() -> Result<()> {
 fn invoke_virtual() -> Result<()> {
     let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method("InvokeVirtual", "test", vec![], Some(Typ::Bool))?;
-    assert_eq!(interp::invoke(&jvm, method, &[])?, ReturnValue::Int(1));
+    assert_eq!(interp::invoke(&jvm, method, &[])?, Some(JVMValue::Int(1)));
     Ok(())
 }
 
@@ -114,7 +118,7 @@ fn invoke_virtual() -> Result<()> {
 fn arrays() -> Result<()> {
     let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method("Arrays", "test", vec![], Some(Typ::Bool))?;
-    assert_eq!(interp::invoke(&jvm, method, &[])?, ReturnValue::Int(1));
+    assert_eq!(interp::invoke(&jvm, method, &[])?, Some(JVMValue::Int(1)));
     Ok(())
 }
 
@@ -131,15 +135,15 @@ fn lazy_init() -> Result<()> {
     let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))?;
     assert_eq!(
-        interp::invoke(&jvm, method, &[LocalValue::Int(0)])?,
-        ReturnValue::Int(1)
+        interp::invoke(&jvm, method, &[JVMValue::Int(0)])?,
+        Some(JVMValue::Int(1))
     );
 
     let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
     let method = jvm.resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))?;
     assert_eq!(
-        interp::invoke(&jvm, method, &[LocalValue::Int(1)])?,
-        ReturnValue::Int(2)
+        interp::invoke(&jvm, method, &[JVMValue::Int(1)])?,
+        Some(JVMValue::Int(2))
     );
     Ok(())
 }

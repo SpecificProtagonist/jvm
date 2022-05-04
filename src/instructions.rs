@@ -163,7 +163,7 @@ pub const IF_ICMPGE: u8 = 162;
 pub const IF_ICMPGT: u8 = 163;
 pub const IF_ICMPLE: u8 = 164;
 pub const GOTO: u8 = 167;
-// Forbidden since verifycation type checking
+// Forbidden since verifycation type checking (class version >= 50.0)
 // pub const JSR: u8 = 168;
 // pub const RET: u8 = 169;
 pub const TABLESWITCH: u8 = 170;
