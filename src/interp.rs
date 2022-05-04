@@ -1,4 +1,4 @@
-use std::{cell::Cell, mem::size_of, usize};
+use std::{mem::size_of, usize};
 
 use crate::{
     const_pool::{ConstPool, ConstPoolItem},
@@ -36,15 +36,17 @@ pub enum ReturnValue<'jvm> {
     Double(f64),
 }
 
+// User facing way to invoke methods
 pub fn invoke<'a, 'b>(
     jvm: &'b JVM<'a>,
     method: &'a Method<'a>,
     args: &'b [LocalValue<'a>],
 ) -> Result<ReturnValue<'a>> {
-    method.class.get().ensure_init(jvm)?;
+    method.class.load().ensure_init(jvm)?;
     invoke_initialized(jvm, method, args).with_context(|| format!("Trying to call {}", method.nat))
 }
 
+// Requires that the class is already initialized
 pub(crate) fn invoke_initialized<'a, 'b>(
     jvm: &'b JVM<'a>,
     method: &'a Method<'a>,
@@ -53,6 +55,9 @@ pub(crate) fn invoke_initialized<'a, 'b>(
     if method.code.is_none() {
         todo!("Methods without code attribute");
     }
+
+    // The class is already initialized, so we can hold the read lock for as long as we like
+    let const_pool = method.class.load().const_pool.read();
 
     let mut frame = Frame {
         method,
@@ -98,15 +103,15 @@ pub(crate) fn invoke_initialized<'a, 'b>(
             }
             LDC => {
                 let index = frame.read_code_u8() as u16;
-                ldc(&mut frame, &method.class.get().const_pool, index)?;
+                ldc(&mut frame, &const_pool, index)?;
             }
             LDC_W => {
                 let index = frame.read_code_u16();
-                ldc(&mut frame, &method.class.get().const_pool, index)?;
+                ldc(&mut frame, &const_pool, index)?;
             }
             LDC2_W => {
                 let index = frame.read_code_u16();
-                ldc(&mut frame, &method.class.get().const_pool, index)?;
+                ldc(&mut frame, &const_pool, index)?;
             }
             ILOAD | FLOAD | ALOAD => {
                 let index = frame.read_code_u8() as u16;
@@ -892,25 +897,25 @@ pub(crate) fn invoke_initialized<'a, 'b>(
             RETURN => return Ok(ReturnValue::Void),
             GETSTATIC => {
                 let index = frame.read_code_u16();
-                let field = method.class.get().const_pool.get_field(index).unwrap();
-                field.class.get().ensure_init(jvm)?;
-                get_field(&mut frame, field, &field.class.get().static_storage)?;
+                let field = const_pool.get_field(index).unwrap();
+                field.class.load().ensure_init(jvm)?;
+                get_field(&mut frame, field, &field.class.load().static_storage)?;
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16();
-                let field = method.class.get().const_pool.get_field(index).unwrap();
-                field.class.get().ensure_init(jvm)?;
-                put_field(&mut frame, field, &field.class.get().static_storage)?;
+                let field = const_pool.get_field(index).unwrap();
+                field.class.load().ensure_init(jvm)?;
+                put_field(&mut frame, field, &field.class.load().static_storage)?;
             }
             GETFIELD => {
                 let index = frame.read_code_u16();
-                let field = method.class.get().const_pool.get_field(index)?;
+                let field = const_pool.get_field(index)?;
                 let object = frame.pop_ref()?;
                 get_field(&mut frame, field, &object.data)?;
             }
             PUTFIELD => {
                 let index = frame.read_code_u16();
-                let field = method.class.get().const_pool.get_field(index)?;
+                let field = const_pool.get_field(index)?;
                 // Stack has object ref first, then value on top
                 // This is ugly
                 let object = if matches!(field.descriptor, Typ::Long | Typ::Double) {
@@ -930,7 +935,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
             }
             INVOKEVIRTUAL => {
                 let index = frame.read_code_u16();
-                let (_, nat) = method.class.get().const_pool.get_virtual_method(index)?;
+                let (_, nat) = const_pool.get_virtual_method(index)?;
                 if nat.name.0.starts_with('<') {
                     bail!("Must not invokevirtual class or instance initialization method")
                 }
@@ -951,15 +956,19 @@ pub(crate) fn invoke_initialized<'a, 'b>(
             }
             INVOKESPECIAL => {
                 let index = frame.read_code_u16();
-                let (named_class, nat) = method.class.get().const_pool.get_virtual_method(index)?;
+                let (named_class, nat) = const_pool.get_virtual_method(index)?;
 
                 let class = if (nat.name.0 != "<init>")
-                    & method.class.get().subclass_of(named_class)
-                    & method.class.get().access_flags.contains(AccessFlags::SUPER)
+                    & method.class.load().subclass_of(named_class)
+                    & method
+                        .class
+                        .load()
+                        .access_flags
+                        .contains(AccessFlags::SUPER)
                 {
                     method
                         .class
-                        .get()
+                        .load()
                         .super_class
                         .ok_or_else(|| anyhow!("Invalid invokespecial"))?
                 } else {
@@ -974,14 +983,13 @@ pub(crate) fn invoke_initialized<'a, 'b>(
             }
             INVOKESTATIC => {
                 let index = frame.read_code_u16();
-                let class = method.class.get();
-                class.ensure_init(jvm)?;
-                let invoke_method = class.const_pool.get_static_method(index)?;
+                let invoke_method = const_pool.get_static_method(index)?;
+                invoke_method.class.load().ensure_init(jvm)?;
                 execute_invoke_instr(jvm, &mut frame, invoke_method)?;
             }
             NEW => {
                 let index = frame.read_code_u16();
-                let class = method.class.get().const_pool.get_class(index)?;
+                let class = const_pool.get_class(index)?;
                 class.ensure_init(jvm)?;
                 frame.push(LocalValue::Ref(jvm.create_object(class)))?
             }
@@ -1007,7 +1015,7 @@ pub(crate) fn invoke_initialized<'a, 'b>(
             ANEWARRAY => {
                 let length = frame.pop_int()?;
                 let index = frame.read_code_u16();
-                let component = method.class.get().const_pool.get_class(index)?;
+                let component = const_pool.get_class(index)?;
                 // TODO: make it easier to refer to array types
                 let typ = jvm.resolve_class(format!("[L{};", component.name))?;
                 if length < 0 {
@@ -1056,11 +1064,11 @@ pub(crate) fn invoke_initialized<'a, 'b>(
 }
 
 fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) -> Result<()> {
-    match const_pool.items.get(index as usize).map(Cell::get) {
-        Some(ConstPoolItem::Integer(i)) => frame.push(LocalValue::Int(i)),
-        Some(ConstPoolItem::Float(f)) => frame.push(LocalValue::Float(f)),
-        Some(ConstPoolItem::Long(l)) => frame.push_long(l),
-        Some(ConstPoolItem::Double(d)) => frame.push_double(d),
+    match const_pool.items.get(index as usize) {
+        Some(ConstPoolItem::Integer(i)) => frame.push(LocalValue::Int(*i)),
+        Some(ConstPoolItem::Float(f)) => frame.push(LocalValue::Float(*f)),
+        Some(ConstPoolItem::Long(l)) => frame.push_long(*l),
+        Some(ConstPoolItem::Double(d)) => frame.push_double(*d),
         Some(ConstPoolItem::RawString(_) | ConstPoolItem::Class(_)) => todo!(),
         _ => bail!("Invalid ldc/ldc_w/ldc2_w     index: {}", index,),
     }

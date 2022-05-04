@@ -1,23 +1,22 @@
 use anyhow::{anyhow, bail, Result};
-use std::{
-    cell::Cell,
-    collections::HashMap,
-    fmt::Debug,
-    sync::{Condvar, Mutex},
-    thread::ThreadId,
-};
+use crossbeam_utils::atomic::AtomicCell;
+use parking_lot::{Condvar, Mutex, RwLock};
+use std::{collections::HashMap, fmt::Debug, thread::ThreadId};
 
 use crate::{
     const_pool::ConstPool, field_storage::FieldStorage, verification::verify, AccessFlags, IntStr,
     Typ, JVM,
 };
 
-/// Includes both regular classes and arrays
+/// Represents a regular class, an array class or (in the future) an enum or an interface
 pub struct Class<'a> {
     pub(crate) name: IntStr<'a>,
     pub(crate) super_class: Option<&'a Class<'a>>,
+    /// For array classes, this is the type of the array elements; None for normal classes
     pub(crate) element_type: Option<Typ<'a>>,
-    pub(crate) const_pool: ConstPool<'a>,
+    /// When the class is initialized, write access is required for resolution.
+    /// Afterward (such as when executing a function in this class), only read access is required.
+    pub(crate) const_pool: RwLock<ConstPool<'a>>,
     pub(crate) access_flags: AccessFlags,
     #[allow(unused)]
     pub(crate) interfaces: Vec<&'a Class<'a>>,
@@ -42,8 +41,8 @@ pub(crate) enum ClassInitState {
 #[derive(Debug)]
 pub struct Field<'a> {
     pub(crate) name: IntStr<'a>,
-    /// Class is behind a Cell to enable circular references
-    pub(crate) class: Cell<&'a Class<'a>>,
+    /// Class is behind a AtomicCell to enable circular references
+    pub(crate) class: AtomicCell<&'a Class<'a>>,
     pub(crate) access_flags: AccessFlags,
     pub(crate) descriptor: Typ<'a>,
     /// Offset into the FieldData of the class (static field) / instance (non-static) where this is stored
@@ -62,8 +61,8 @@ pub struct FieldNaT<'a> {
 pub struct Method<'a> {
     pub(crate) nat: MethodNaT<'a>,
     pub(crate) access_flags: AccessFlags,
-    /// Class is behind a Cell to enable circular references
-    pub(crate) class: Cell<&'a Class<'a>>,
+    /// Class is behind a AtomicCell to enable circular references
+    pub(crate) class: AtomicCell<&'a Class<'a>>,
     pub(crate) code: Option<Code>,
 }
 
@@ -82,17 +81,7 @@ pub(crate) struct Code {
     pub max_locals: u16,
     pub bytes: Vec<u8>,
     pub stack_map_table: Option<Vec<u8>>,
-    // This includes the initial (implicit) stack map frame
-    //pub stack_map_table: BTreeMap<u32, StackMapFrame<'a>>,
 }
-
-//pub type StackMapTable<'a> = BTreeMap<u16, StackMapFrame<'a>>;
-
-/*pub(crate) struct StackMapTable {
-    pub bytes: Option<Vec<u8>>,
-    pub max_locals: u16,
-    pub max_stack: u16,
-}*/
 
 impl<'a, 'b> Eq for &'b Class<'a> {}
 impl<'a, 'b> PartialEq for &'b Class<'a> {
@@ -126,7 +115,7 @@ impl<'a> Class<'a> {
     pub(crate) fn dummy_class() -> Self {
         Class {
             element_type: None,
-            const_pool: ConstPool { items: Vec::new() },
+            const_pool: Default::default(),
             access_flags: AccessFlags::empty(),
             name: IntStr(""),
             super_class: None,
@@ -154,7 +143,7 @@ impl<'a> Class<'a> {
     /// Ensures this class is initialized. This includes linking, verification, preparation & resolution
     /// May only be called by the instuctions new, getstatic, putstatic or invokestatic or by being the initial class
     pub(crate) fn ensure_init<'b>(&'b self, jvm: &'b JVM<'a>) -> Result<()> {
-        let mut guard = self.init.lock().unwrap();
+        let mut guard = self.init.lock();
         match *guard {
             ClassInitState::Done => Ok(()),
             ClassInitState::Error => Err(anyhow!("NoClassDefFoundError (initialization failed)")),
@@ -163,7 +152,7 @@ impl<'a> Class<'a> {
                     Ok(())
                 } else {
                     loop {
-                        guard = self.init_waiter.wait(guard).unwrap();
+                        self.init_waiter.wait(&mut guard);
                         match *guard {
                             ClassInitState::Done => return Ok(()),
                             ClassInitState::Error => {
@@ -184,7 +173,7 @@ impl<'a> Class<'a> {
                 }
                 let init_result = self.init(jvm);
 
-                *self.init.lock().unwrap() = if init_result.is_ok() {
+                *self.init.lock() = if init_result.is_ok() {
                     ClassInitState::Done
                 } else {
                     // TMP
@@ -208,33 +197,34 @@ impl<'a> Class<'a> {
     where
         'a: 'b,
     {
+        let mut const_pool = self.const_pool.write();
         // Preparation
         for field in self.fields.values() {
             if let Some(index) = field.const_value_index {
                 match field.descriptor {
                     Typ::Bool | Typ::Byte => self
                         .static_storage
-                        .write_i8(field.byte_offset, self.const_pool.get_int(index)? as i8)
+                        .write_i8(field.byte_offset, const_pool.get_int(index)? as i8)
                         .unwrap(),
                     Typ::Short | Typ::Char => self
                         .static_storage
-                        .write_i16(field.byte_offset, self.const_pool.get_int(index)? as i16)
+                        .write_i16(field.byte_offset, const_pool.get_int(index)? as i16)
                         .unwrap(),
                     Typ::Int => self
                         .static_storage
-                        .write_i32(field.byte_offset, self.const_pool.get_int(index)?)
+                        .write_i32(field.byte_offset, const_pool.get_int(index)?)
                         .unwrap(),
                     Typ::Float => self
                         .static_storage
-                        .write_f32(field.byte_offset, self.const_pool.get_float(index)?)
+                        .write_f32(field.byte_offset, const_pool.get_float(index)?)
                         .unwrap(),
                     Typ::Double => self
                         .static_storage
-                        .write_f64(field.byte_offset, self.const_pool.get_double(index)?)
+                        .write_f64(field.byte_offset, const_pool.get_double(index)?)
                         .unwrap(),
                     Typ::Long => self
                         .static_storage
-                        .write_i64(field.byte_offset, self.const_pool.get_long(index)?)
+                        .write_i64(field.byte_offset, const_pool.get_long(index)?)
                         .unwrap(),
                     Typ::Ref(name) => {
                         if name.0 == "java/lang/String" {
@@ -248,7 +238,8 @@ impl<'a> Class<'a> {
         }
 
         // Resolution
-        self.const_pool.resolve(jvm)?;
+        const_pool.resolve(jvm)?;
+        drop(const_pool);
 
         // Verification
         verify(jvm, self)?;

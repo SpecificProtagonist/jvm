@@ -1,4 +1,4 @@
-use std::{cell::Cell, cmp::Ordering, collections::BTreeMap};
+use std::{cmp::Ordering, collections::BTreeMap};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -122,7 +122,7 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b JVM<'a>, class: &'b Class<'a>) -> Resu
     }
 
     for method in class.methods.values() {
-        if method.class.get() == class {
+        if method.class.load() == class {
             verify_method(jvm, method).with_context(|| format!("in method {}", method.nat))?;
         }
     }
@@ -134,7 +134,7 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b JVM<'a>, class: &'b Class<'a>) -> Resu
 fn verify_method<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<()> {
     if let (false, Some(super_class)) = (
         method.access_flags.contains(AccessFlags::STATIC),
-        method.class.get().super_class,
+        method.class.load().super_class,
     ) {
         if let Some(super_method) = super_class.methods.get(&method.nat) {
             if super_method.access_flags.contains(AccessFlags::FINAL) {
@@ -164,6 +164,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
     ///////////////////////
 
     let code = method.code.as_ref().unwrap();
+    let const_pool = method.class.load().const_pool.read();
 
     // The initial typestate is not stored in the class file but derive from the method signature
     let initial_locals = {
@@ -171,9 +172,9 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
         if !method.access_flags.contains(AccessFlags::STATIC) {
             locals.push(
                 if (method.nat.name.0 != "<init>")
-                    || (method.class.get().name.0 == "java/lang/Object")
+                    || (method.class.load().name.0 == "java/lang/Object")
                 {
-                    VerificationType::ObjectVariable(method.class.get())
+                    VerificationType::ObjectVariable(method.class.load())
                 } else {
                     VerificationType::UninitializedThis
                 },
@@ -189,11 +190,8 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
     };
 
     let bytes = &code.bytes;
-    let mut stack_map_table = parse::read_stack_map_table(
-        code.stack_map_table.as_deref(),
-        &method.class.get().const_pool,
-        initial_locals,
-    )?;
+    let mut stack_map_table =
+        parse::read_stack_map_table(code.stack_map_table.as_deref(), &const_pool, initial_locals)?;
 
     // Verify max locals & stack length
     for frame in stack_map_table.values_mut() {
@@ -252,14 +250,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
             }
             LDC => {
                 let index = read_code_u8(bytes, pc)? as u16;
-                match method
-                    .class
-                    .get()
-                    .const_pool
-                    .items
-                    .get(index as usize)
-                    .map(Cell::get)
-                {
+                match const_pool.items.get(index as usize) {
                     Some(ConstPoolItem::Integer(_)) => {
                         type_state.stack.push(VerificationType::Integer)
                     }
@@ -275,14 +266,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
             }
             LDC_W => {
                 let index = read_code_u16(bytes, pc)?;
-                match method
-                    .class
-                    .get()
-                    .const_pool
-                    .items
-                    .get(index as usize)
-                    .map(Cell::get)
-                {
+                match const_pool.items.get(index as usize) {
                     Some(ConstPoolItem::Integer(_)) => {
                         type_state.stack.push(VerificationType::Integer)
                     }
@@ -298,14 +282,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
             }
             LDC2_W => {
                 let index = read_code_u16(bytes, pc)?;
-                match method
-                    .class
-                    .get()
-                    .const_pool
-                    .items
-                    .get(index as usize)
-                    .map(Cell::get)
-                {
+                match const_pool.items.get(index as usize) {
                     Some(ConstPoolItem::Double(_)) => {
                         type_state.stack.push(VerificationType::Double);
                         type_state.stack.push(VerificationType::Top)
@@ -678,18 +655,18 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
                 push_type(
                     jvm,
                     &mut type_state.stack,
-                    method.class.get().const_pool.get_field(index)?.descriptor,
+                    const_pool.get_field(index)?.descriptor,
                 )?;
             }
             PUTSTATIC => {
                 let index = read_code_u16(bytes, pc)?;
-                let typ = method.class.get().const_pool.get_field(index)?.descriptor;
+                let typ = const_pool.get_field(index)?.descriptor;
                 pop_type(jvm, &mut type_state.stack, typ)?;
             }
             NEW => {
                 let uninit = VerificationType::UninitializedVariable { offset: *pc - 1 };
                 let index = read_code_u16(bytes, pc)?;
-                let class = method.class.get().const_pool.get_class(index)?;
+                let class = const_pool.get_class(index)?;
                 if class.element_type.is_some() | type_state.stack.contains(&uninit) {
                     bail!("invalid new")
                 }
@@ -717,7 +694,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> Result<(
                     bail!("invalid anewarray")
                 }
                 let index = read_code_u16(bytes, pc)?;
-                let component = method.class.get().const_pool.get_class(index)?;
+                let component = const_pool.get_class(index)?;
                 let typ = jvm.resolve_class(format!("[L{};", component.name))?;
                 type_state.stack.push(VerificationType::ObjectVariable(typ));
             }

@@ -4,15 +4,14 @@
 use anyhow::{anyhow, bail, Context, Result};
 use fixed_typed_arena::ManuallyDropArena;
 use object::Object;
+use parking_lot::{Mutex, RwLock};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    fmt::Debug,
     fs::File,
     hash::Hash,
     io::Read,
     path::PathBuf,
-    sync::{Mutex, RwLock},
 };
 
 mod class;
@@ -22,17 +21,17 @@ mod instructions;
 pub mod interp;
 mod object;
 mod parse;
+mod string_interning;
 mod typ;
 mod verification;
 
 pub use class::*;
 use field_storage::FieldStorage;
+pub use string_interning::*;
 pub use typ::Typ;
 
 // TODO: Garbage collection for objects
-// TODO: allow multithreading
-//fn assert_send_sync<T: Send + Sync>() {}
-//assert_send_sync::<Self>();
+
 pub struct JVM<'a> {
     // TODO: provide ClassLoader trait instead
     class_path: Vec<PathBuf>,
@@ -55,7 +54,7 @@ impl<'a> JVM<'a> {
     /// `class_path` are searched in order.
     pub fn new(class_path: Vec<PathBuf>) -> Self {
         let class_storage = Mutex::<ManuallyDropArena<_, 128>>::default();
-        let dummy_class = class_storage.lock().unwrap().alloc(Class::dummy_class());
+        let dummy_class = class_storage.lock().alloc(Class::dummy_class());
         Self {
             string_storage: Default::default(),
             class_storage,
@@ -70,13 +69,13 @@ impl<'a> JVM<'a> {
 
     pub fn intern_str<'b>(&'b self, str: impl Into<Cow<'b, str>>) -> IntStr<'a> {
         let str: Cow<_> = str.into();
-        let guard = self.strings.read().unwrap();
+        let guard = self.strings.read();
         IntStr(if let Some(str) = guard.get(str.as_ref()) {
             *str
         } else {
             drop(guard);
-            let mut guard = self.strings.write().unwrap();
-            guard.get_or_insert(self.string_storage.lock().unwrap().alloc(str.into_owned()))
+            let mut guard = self.strings.write();
+            guard.get_or_insert(self.string_storage.lock().alloc(str.into_owned()))
         })
     }
 
@@ -96,7 +95,7 @@ impl<'a> JVM<'a> {
         name: IntStr<'a>,
         mut check_circular: Vec<IntStr<'a>>,
     ) -> Result<&'a Class<'a>> {
-        if let Some(class) = self.classes.read().unwrap().get(&name) {
+        if let Some(class) = self.classes.read().get(&name) {
             return Ok(*class);
         }
 
@@ -125,9 +124,7 @@ impl<'a> JVM<'a> {
                 name,
                 super_class: Some(super_class),
                 element_type: Some(base),
-                const_pool: const_pool::ConstPool {
-                    items: Default::default(),
-                },
+                const_pool: Default::default(),
                 // TODO: correct access flags
                 access_flags: AccessFlags::empty(),
                 interfaces: vec![],
@@ -143,8 +140,8 @@ impl<'a> JVM<'a> {
                 init: ClassInitState::Uninit.into(),
                 init_waiter: Default::default(),
             };
-            let array = self.class_storage.lock().unwrap().alloc(array);
-            let mut guard = self.classes.write().unwrap();
+            let array = self.class_storage.lock().alloc(array);
+            let mut guard = self.classes.write();
             // Check if loaded by another thread in the meantime
             if let Some(array) = guard.get(&name) {
                 return Ok(*array);
@@ -208,11 +205,11 @@ impl<'a> JVM<'a> {
 
         let interfaces = class_desc.interfaces.into_iter().map(|_| todo!()).collect();
 
-        let ref_type = self.class_storage.lock().unwrap().alloc(Class {
+        let ref_type = self.class_storage.lock().alloc(Class {
             name: class_desc.name,
             super_class,
             element_type: None,
-            const_pool: class_desc.const_pool,
+            const_pool: RwLock::new(class_desc.const_pool),
             access_flags: class_desc.access_flags,
             interfaces,
             fields: class_desc.fields,
@@ -223,7 +220,7 @@ impl<'a> JVM<'a> {
             init_waiter: Default::default(),
         });
 
-        let mut guard = self.classes.write().unwrap();
+        let mut guard = self.classes.write();
         // Check if loaded by another thread in the meantime
         if let Some(class) = guard.get(&name) {
             return Ok(*class);
@@ -234,10 +231,10 @@ impl<'a> JVM<'a> {
         // While parsing, each method has their class field set to a dummy
         // We can't use class.methods directly because that also includes parent classes
         for method in new_methods.values() {
-            method.class.set(class);
+            method.class.store(class);
         }
         for field in class.fields.values() {
-            field.class.set(class);
+            field.class.store(class);
         }
 
         Ok(ref_type)
@@ -292,10 +289,10 @@ impl<'a> Drop for JVM<'a> {
     fn drop(&mut self) {
         // SAFETY: All references have lifetime 'a and no member of JVM has a drop impl that dereferences them
         unsafe {
-            ManuallyDropArena::drop(&mut self.string_storage.lock().unwrap());
-            ManuallyDropArena::drop(&mut self.class_storage.lock().unwrap());
-            ManuallyDropArena::drop(&mut self.method_storage.lock().unwrap());
-            ManuallyDropArena::drop(&mut self.method_descriptor_storage.lock().unwrap());
+            ManuallyDropArena::drop(&mut self.string_storage.lock());
+            ManuallyDropArena::drop(&mut self.class_storage.lock());
+            ManuallyDropArena::drop(&mut self.method_storage.lock());
+            ManuallyDropArena::drop(&mut self.method_descriptor_storage.lock());
         }
     }
 }
@@ -310,57 +307,8 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq)]
-pub struct IntStr<'a>(&'a str);
-
-impl<'a> PartialEq for IntStr<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.0, other.0)
-    }
-}
-
-impl<'a> Hash for IntStr<'a> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.0.as_ptr().hash(state);
-    }
-}
-
-impl<'a> std::fmt::Display for IntStr<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
-    }
-}
-
-pub enum MaybeInteredString<'a, 'b> {
-    Interned(IntStr<'a>),
-    Str(&'b str),
-    String(String),
-}
-
-impl<'a, 'b> From<IntStr<'a>> for MaybeInteredString<'a, 'b> {
-    fn from(str: IntStr<'a>) -> Self {
-        Self::Interned(str)
-    }
-}
-
-impl<'a, 'b> From<&'b str> for MaybeInteredString<'a, 'b> {
-    fn from(str: &'b str) -> Self {
-        Self::Str(str)
-    }
-}
-
-impl<'a, 'b> From<String> for MaybeInteredString<'a, 'b> {
-    fn from(str: String) -> Self {
-        Self::String(str)
-    }
-}
-
-impl<'a, 'b> MaybeInteredString<'a, 'b> {
-    fn get(self, jvm: &JVM<'a>) -> IntStr<'a> {
-        match self {
-            MaybeInteredString::Interned(str) => str,
-            MaybeInteredString::Str(str) => jvm.intern_str(str),
-            MaybeInteredString::String(str) => jvm.intern_str(str),
-        }
+fn _assert_jvm_send_sync<T: Send + Sync>() {
+    if false {
+        _assert_jvm_send_sync::<JVM>()
     }
 }
