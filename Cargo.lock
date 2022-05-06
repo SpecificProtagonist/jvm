@@ -57,6 +57,7 @@ dependencies = [
  "bitflags",
  "crossbeam-utils",
  "fixed-typed-arena",
+ "libc",
  "parking_lot",
 ]
 

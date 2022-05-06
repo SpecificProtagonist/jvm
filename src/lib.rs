@@ -3,6 +3,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use fixed_typed_arena::ManuallyDropArena;
+use heap::Heap;
 use object::Object;
 use parking_lot::{Mutex, RwLock};
 use std::{
@@ -17,6 +18,7 @@ use std::{
 mod class;
 mod const_pool;
 mod field_storage;
+mod heap;
 mod instructions;
 pub mod interp;
 mod object;
@@ -33,13 +35,13 @@ pub use typ::Typ;
 // TODO: Garbage collection for objects
 
 pub struct JVM<'a> {
-    // TODO: provide ClassLoader trait instead
+    /// TODO: provide ClassLoader trait instead
     class_path: Vec<PathBuf>,
+    heap: Heap<'a>,
     // Classes (including arrays), methods, method descriptors and interned strings live as long as the JVM
     string_storage: Mutex<ManuallyDropArena<String, 256>>,
-    class_storage: Mutex<ManuallyDropArena<Class<'a>, 128>>,
     method_storage: Mutex<ManuallyDropArena<Method<'a>, 128>>,
-    // Implementation detail of const_pool, maybe remove in the future
+    /// Implementation detail of const_pool, maybe remove in the future
     method_descriptor_storage: Mutex<ManuallyDropArena<MethodDescriptor<'a>, 128>>,
     // TODO: intern string objects instead
     strings: RwLock<HashSet<&'a str>>,
@@ -53,14 +55,16 @@ impl<'a> JVM<'a> {
     /// Construct a new JVM. When searching for class definitions, the folders specified in
     /// `class_path` are searched in order.
     pub fn new(class_path: Vec<PathBuf>) -> Self {
-        let class_storage = Mutex::<ManuallyDropArena<_, 128>>::default();
-        let dummy_class = class_storage.lock().alloc(Class::dummy_class());
+        //let class_storage = Mutex::<ManuallyDropArena<_, 128>>::default();
+        let heap = Heap::default();
+        let dummy_class = heap.alloc_typed(Class::dummy_class(&heap));
         Self {
+            class_path,
+            heap,
             string_storage: Default::default(),
-            class_storage,
+            //class_storage,
             method_storage: Default::default(),
             method_descriptor_storage: Default::default(),
-            class_path,
             strings: Default::default(),
             classes: Default::default(),
             dummy_class,
@@ -135,12 +139,12 @@ impl<'a> JVM<'a> {
                 ]*/
                 fields: Default::default(),
                 methods: super_class.methods.clone(),
-                static_storage: FieldStorage::new(0),
+                static_storage: FieldStorage::new(&self.heap, 0),
                 object_size: 0,
                 init: ClassInitState::Uninit.into(),
                 init_waiter: Default::default(),
             };
-            let array = self.class_storage.lock().alloc(array);
+            let array = self.heap.alloc_typed(array);
             let mut guard = self.classes.write();
             // Check if loaded by another thread in the meantime
             if let Some(array) = guard.get(&name) {
@@ -205,7 +209,7 @@ impl<'a> JVM<'a> {
 
         let interfaces = class_desc.interfaces.into_iter().map(|_| todo!()).collect();
 
-        let ref_type = self.class_storage.lock().alloc(Class {
+        let ref_type = self.heap.alloc_typed(Class {
             name: class_desc.name,
             super_class,
             element_type: None,
@@ -263,8 +267,8 @@ impl<'a> JVM<'a> {
         if class.element_type.is_some() {
             panic!("Called create_object with an array")
         }
-        let data = FieldStorage::new(class.object_size);
-        data.write_usize(0, class as *const Class as usize);
+        let data = FieldStorage::new(&self.heap, class.object_size);
+        data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8));
         Object {
             ptr: data,
             _marker: std::marker::PhantomData,
@@ -276,8 +280,11 @@ impl<'a> JVM<'a> {
         let component = class
             .element_type
             .expect("Called create_array with a non-array class");
-        let data = FieldStorage::new(object::header_size() + component.layout().size() * length);
-        data.write_usize(0, class as *const Class as usize);
+        let data = FieldStorage::new(
+            &self.heap,
+            object::header_size() + component.layout().size() * length,
+        );
+        data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8));
         Object {
             ptr: data,
             _marker: std::marker::PhantomData,
@@ -290,7 +297,6 @@ impl<'a> Drop for JVM<'a> {
         // SAFETY: All references have lifetime 'a and no member of JVM has a drop impl that dereferences them
         unsafe {
             ManuallyDropArena::drop(&mut self.string_storage.lock());
-            ManuallyDropArena::drop(&mut self.class_storage.lock());
             ManuallyDropArena::drop(&mut self.method_storage.lock());
             ManuallyDropArena::drop(&mut self.method_descriptor_storage.lock());
         }

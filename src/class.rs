@@ -4,8 +4,8 @@ use parking_lot::{Condvar, Mutex, RwLock};
 use std::{collections::HashMap, fmt::Debug, thread::ThreadId};
 
 use crate::{
-    const_pool::ConstPool, field_storage::FieldStorage, verification::verify, AccessFlags, IntStr,
-    Typ, JVM,
+    const_pool::ConstPool, field_storage::FieldStorage, heap::Heap, verification::verify,
+    AccessFlags, IntStr, Typ, JVM,
 };
 
 /// Represents a regular class, an array class or (in the future) an enum or an interface
@@ -112,7 +112,7 @@ impl<'a> Class<'a> {
         (self == other) || self.subclass_of(other)
     }
 
-    pub(crate) fn dummy_class() -> Self {
+    pub(crate) fn dummy_class(heap: &Heap) -> Self {
         Class {
             element_type: None,
             const_pool: Default::default(),
@@ -120,7 +120,7 @@ impl<'a> Class<'a> {
             name: IntStr(""),
             super_class: None,
             interfaces: Default::default(),
-            static_storage: FieldStorage::new(0),
+            static_storage: FieldStorage::new(heap, 0),
             object_size: 0,
             fields: Default::default(),
             methods: Default::default(),
@@ -253,13 +253,6 @@ impl<'a> Class<'a> {
         }
 
         Ok(())
-    }
-}
-
-impl<'a> Drop for Class<'a> {
-    fn drop(&mut self) {
-        // Safety: This is the only reference to this storage
-        unsafe { self.static_storage.delete() };
     }
 }
 
