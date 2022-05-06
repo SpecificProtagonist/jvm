@@ -15,3 +15,4 @@ fixed-typed-arena = "0.2"
 parking_lot = "0.12"
 # AtomicCell for class ref in Field and Method
 crossbeam-utils = "0.8.8"
+libc = "0.2.125"

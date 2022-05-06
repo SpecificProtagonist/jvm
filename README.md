@@ -1,7 +1,9 @@
 This is a toy embeddable JVM in writen in Rust. It is very much WIP and aims to eventually 
 implement the Java 8 JVM specification (except for the loading of classes with version <50.0).
+As this is intended as a learning experience, the choice of which features to implement is
+not determined by practicality but by how interested I'm in doing so.  
 
-It currently allows
+It currently has
 - class loading/initialization
 - verification by type checking
 - operations on primitives
@@ -9,6 +11,7 @@ It currently allows
 - calling functions (except via interfaces)
 - creating objects, including arrays
 - accessing fields & array elements
+- compressed pointers on x86-64 Linux
 
 Rough overview:
 - a `JVM` contains classes as well as interned strings

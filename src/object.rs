@@ -3,18 +3,22 @@ use std::{
     mem::{align_of, size_of},
 };
 
-use crate::{field_storage::FieldStorage, AccessFlags, Class, Typ};
+use crate::{
+    field_storage::FieldStorage,
+    heap::{self, JVMPtrSize},
+    AccessFlags, Class, Typ,
+};
 
 impl<'a> PartialEq for Object<'a> {
     fn eq(&self, other: &Self) -> bool {
-        self.ptr.addr() == other.ptr.addr()
+        self.ptr.ptr() == other.ptr.ptr()
     }
 }
 
 // TODO: Maybe omit size in case of non-array objects
 /// Object layout:
 /// size (u64, handled by FieldStorage)
-/// pointer to RefType
+/// JVMPtrSize to RefType
 /// fields (sorted by alignment) | array elements
 #[derive(Clone, Copy)]
 #[repr(transparent)]
@@ -26,18 +30,18 @@ pub struct Object<'a> {
 
 impl<'a> Object<'a> {
     pub fn null(self) -> bool {
-        self.ptr.addr() == 0
+        self.ptr.ptr() == 0
     }
 
     pub fn class(self) -> &'a Class<'a> {
-        unsafe { std::mem::transmute(self.ptr.read_usize(0).unwrap()) }
+        unsafe { &*(heap::ptr_decode(self.ptr.read_ptr(0).unwrap()) as *const Class) }
     }
 
-    pub fn addr(self) -> usize {
-        self.ptr.addr()
+    pub fn ptr(self) -> JVMPtrSize {
+        self.ptr.ptr()
     }
 
-    pub(crate) unsafe fn from_addr(addr: usize) -> Self {
+    pub(crate) unsafe fn from_ptr(addr: JVMPtrSize) -> Self {
         Self {
             ptr: FieldStorage(addr),
             _marker: Default::default(),
@@ -98,5 +102,5 @@ impl<'a> std::fmt::Debug for Object<'a> {
 pub fn header_size() -> usize {
     // Afaik the alignment of 64-bit ints is usize even on 32-bit systems,
     // but better make sure of this (as there would be unaligned accesses elsewise):
-    size_of::<usize>().max(align_of::<u64>())
+    size_of::<JVMPtrSize>().max(align_of::<u64>())
 }

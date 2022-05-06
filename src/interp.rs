@@ -3,6 +3,7 @@ use std::{mem::size_of, usize};
 use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     field_storage::FieldStorage,
+    heap::JVMPtrSize,
     instructions::*,
     object::{self, Object},
     AccessFlags, Field, Method, Typ, JVM,
@@ -10,7 +11,6 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Result};
 
 // User-facing type
-// TODO: rename
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum JVMValue<'jvm> {
     Ref(Object<'jvm>),
@@ -48,6 +48,19 @@ pub fn invoke<'a, 'b>(
     invoke_initialized(jvm, method, &arg_values)
         .with_context(|| format!("Trying to call {}", method.nat))
 }
+
+/// Stack or local entry.
+/// Doesn't store type information as it was already checked during verification.
+/// Ideally we don't want to use 64 bits if we can avoid this, so
+/// use the size of a possibly compressed pointer (but at least 32 bits).
+#[cfg(not(any(target_pointer_width = "8", target_pointer_width = "16")))]
+type SlotSize = JVMPtrSize;
+#[cfg(any(target_pointer_width = "8", target_pointer_width = "16"))]
+type SlotSize = u32;
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+struct Value(SlotSize);
 
 pub(crate) fn invoke_initializer<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> Result<()> {
     invoke_initialized(jvm, method, &[]).map(|_| ())
@@ -216,9 +229,9 @@ fn invoke_initialized<'a, 'b>(
                 }
                 if matches!(obj.class().element_type, Some(Typ::Ref(_))) {
                     frame.stack.push(Value::from_ref(unsafe {
-                        Object::from_addr(
+                        Object::from_ptr(
                             obj.ptr
-                                .read_usize(
+                                .read_ptr(
                                     (object::header_size() as isize
                                         + size_of::<usize>() as isize * index as isize)
                                         as u32,
@@ -395,11 +408,11 @@ fn invoke_initialized<'a, 'b>(
                         bail!("ArrayStoreException")
                     }
                     obj.ptr
-                        .write_usize(
+                        .write_ptr(
                             (object::header_size() as isize
                                 + size_of::<usize>() as isize * index as isize)
                                 as u32,
-                            value.ptr.addr(),
+                            value.ptr.ptr(),
                         )
                         .ok_or_else(|| anyhow!("index out of bounds"))?;
                 } else {
@@ -1005,7 +1018,7 @@ fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
         Typ::Long => frame.push_long(storage.read_i64(field.byte_offset).unwrap()),
         Typ::Double => frame.push_double(storage.read_f64(field.byte_offset).unwrap()),
         Typ::Ref(..) => frame.stack.push(Value::from_ref(unsafe {
-            std::mem::transmute(storage.read_usize(field.byte_offset).unwrap())
+            std::mem::transmute(storage.read_ptr(field.byte_offset).unwrap())
         })),
     }
 }
@@ -1030,9 +1043,7 @@ fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
         Typ::Double => storage
             .write_f64(field.byte_offset, frame.pop_double())
             .unwrap(),
-        Typ::Ref(..) => storage
-            .write_usize(field.byte_offset, frame.pop().0)
-            .unwrap(),
+        Typ::Ref(..) => storage.write_ptr(field.byte_offset, frame.pop().0).unwrap(),
     }
 }
 
@@ -1071,27 +1082,20 @@ fn execute_invoke_instr<'jvm, 'b>(
     Ok(())
 }
 
-// This should be u32.
-// TODO: either use compressed pointers or remap indices to treat ref as category 2 type
-/// Stack or local entry
-#[derive(Clone, Copy, Debug)]
-#[repr(transparent)]
-struct Value(usize);
-
 impl Value {
     fn from_int(value: i32) -> Self {
-        Self(value as u32 as usize)
+        Self(value as u32 as SlotSize)
     }
 
     fn from_float(value: f32) -> Self {
-        Self(value.to_bits() as usize)
+        Self(value.to_bits() as SlotSize)
     }
 
     /// Returns (low half, high half)
     fn from_long(value: i64) -> (Self, Self) {
         (
-            Self((value as u64 & 0xFFFFFFFF) as usize),
-            Self((value as u64 >> 32) as usize),
+            Self((value as u64 & 0xFFFFFFFF) as SlotSize),
+            Self((value as u64 >> 32) as SlotSize),
         )
     }
 
@@ -1101,7 +1105,7 @@ impl Value {
     }
 
     fn from_ref(object: Object) -> Self {
-        Self(object.addr())
+        Self(object.ptr())
     }
 
     fn as_int(self) -> i32 {
@@ -1121,7 +1125,7 @@ impl Value {
     }
 
     unsafe fn as_ref<'jvm>(self) -> Object<'jvm> {
-        Object::from_addr(self.0)
+        Object::from_ptr(self.0)
     }
 }
 

@@ -591,7 +591,7 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
         read_fields(input, &const_pool, jvm).context("Reading fields")?;
     let methods = read_methods(input, &const_pool, jvm).context("Reading methods")?;
 
-    let static_storage = FieldStorage::new(static_layout);
+    let static_storage = FieldStorage::new(&jvm.heap, static_layout);
 
     let attributes_count = read_u16(input)?;
     for _ in 0..attributes_count {
