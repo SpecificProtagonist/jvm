@@ -147,3 +147,11 @@ fn lazy_init() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn many_allocs() -> Result<()> {
+    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
+    let method = jvm.resolve_method("ManyAllocs", "test", vec![], None)?;
+    assert_eq!(interp::invoke(&jvm, method, &[])?, None);
+    Ok(())
+}
