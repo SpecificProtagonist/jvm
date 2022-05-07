@@ -36,12 +36,10 @@ mod backend {
         ptr as usize as *mut u8
     }
 
-    // TODO: hint addr to try to alloc consecutive blocks
-    // and don't throw away free space at end of previous block if successful
-    pub fn alloc_block(len: usize) -> *mut u8 {
+    pub fn alloc_block(len: usize, addr_hint: *mut u8) -> *mut u8 {
         unsafe {
             let addr = libc::mmap(
-                std::ptr::null_mut(),
+                addr_hint as *mut libc::c_void,
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED | libc::MAP_ANONYMOUS | libc::MAP_32BIT,
@@ -78,11 +76,11 @@ mod backend {
         ptr
     }
 
-    fn alloc_backing(len: usize) -> *mut u8 {
+    fn alloc_block(len: usize) -> *mut u8 {
         todo!()
     }
 
-    fn dealloc_backing(addr: *mut u8, len: usize) {
+    fn dealloc_block(addr: *mut u8, len: usize) {
         todo!()
     }
 }
@@ -144,16 +142,26 @@ impl<'jvm> Heap<'jvm> {
                 // Make sure the new block large enough
                 let block_size =
                     MIN_BLOCK_SIZE.max(round_to_multiple(layout.size(), TYPICAL_PAGE_SIZE));
-                let addr = alloc_block(block_size);
-                blocks.push(Block {
-                    addr: addr.into(),
-                    len: block_size,
-                });
-                self.current_start
-                    .store(addr.wrapping_add(layout.size()), Ordering::SeqCst);
-                self.current_end
-                    .store(addr.wrapping_add(block_size), Ordering::SeqCst);
-                return addr;
+                let addr = alloc_block(block_size, end);
+
+                // Extend the previous block if possible
+                if addr == end {
+                    blocks.last_mut().unwrap().len += block_size;
+                    self.current_start.store(next, Ordering::SeqCst);
+                    self.current_end
+                        .store(end.wrapping_add(block_size), Ordering::SeqCst);
+                    return start;
+                } else {
+                    blocks.push(Block {
+                        addr: addr.into(),
+                        len: block_size,
+                    });
+                    self.current_start
+                        .store(addr.wrapping_add(layout.size()), Ordering::SeqCst);
+                    self.current_end
+                        .store(addr.wrapping_add(block_size), Ordering::SeqCst);
+                    return addr;
+                }
             }
         }
     }
