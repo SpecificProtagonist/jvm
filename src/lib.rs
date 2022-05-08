@@ -1,7 +1,7 @@
 #![feature(hash_set_entry)]
 #![feature(map_first_last)]
+#![feature(never_type)]
 
-use anyhow::{anyhow, bail, Context, Result};
 use fixed_typed_arena::ManuallyDropArena;
 use heap::Heap;
 use object::Object;
@@ -32,7 +32,22 @@ use field_storage::FieldStorage;
 pub use string_interning::*;
 pub use typ::Typ;
 
-// TODO: Garbage collection for objects
+// TODO: what to do if trying to throw an exception retursively throws infinite exceptions?
+/// Err is an object that extends Throwable
+pub type JVMResult<'a, T> = std::result::Result<T, Object<'a>>;
+
+// Should JVMResult use the following?
+/*
+#[derive(Debug, Clone)]
+struct Exception<'a>(Object<'a>);
+
+impl<'a> std::fmt::Display for Exception<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // TODO: also print message if available
+        f.write_str(self.0.class().name.get())
+    }
+}
+*/
 
 pub struct JVM<'a> {
     /// TODO: provide ClassLoader trait instead
@@ -89,7 +104,7 @@ impl<'a> JVM<'a> {
     pub fn resolve_class<'b>(
         &'b self,
         name: impl Into<MaybeInteredString<'a, 'b>>,
-    ) -> Result<&'a Class<'a>> {
+    ) -> JVMResult<'a, &'a Class<'a>> {
         self.resolve_class_impl(name.into().get(self), Vec::new())
     }
 
@@ -98,7 +113,7 @@ impl<'a> JVM<'a> {
         &'b self,
         name: IntStr<'a>,
         mut check_circular: Vec<IntStr<'a>>,
-    ) -> Result<&'a Class<'a>> {
+    ) -> JVMResult<'a, &'a Class<'a>> {
         if let Some(class) = self.classes.read().get(&name) {
             return Ok(*class);
         }
@@ -107,7 +122,7 @@ impl<'a> JVM<'a> {
         if name.0.starts_with('[') {
             let (base, end) = parse::parse_field_descriptor(self, name, 1)?;
             if end != name.0.len() {
-                bail!("Invalid array type descriptor: {}", name)
+                return Err(exception(self, "ClassFormatError"));
             }
 
             // Arrays of primitives inherit from objects,
@@ -164,20 +179,21 @@ impl<'a> JVM<'a> {
 
             if path.exists() {
                 let mut file = Vec::new();
+                let error = "Failed to read class. TODO: What error to throw when the class is found but could not be read?";
                 File::open(path)
-                    .with_context(|| format!("Failed to load class {}", name))?
-                    .read_to_end(&mut file)?;
+                    .expect(error)
+                    .read_to_end(&mut file)
+                    .expect(error);
                 bytes = Some(file);
                 break;
             }
         }
-        let bytes = bytes.ok_or_else(|| anyhow!("No class def found for {}", name))?;
+        let bytes = bytes.ok_or_else(|| exception(self, "NoClassDefFoundError"))?;
 
-        let mut class_desc = parse::read_class_file(&bytes, self)
-            .with_context(|| format!("Failed to parse class {}", name))?;
+        let mut class_desc = parse::read_class_file(&bytes, self)?;
 
         if name != class_desc.name {
-            bail!("Class name did not match requested name")
+            return Err(exception(self, "NoClassDefFoundError"));
         }
 
         let new_methods = class_desc.methods.clone();
@@ -185,17 +201,15 @@ impl<'a> JVM<'a> {
         // Superclasses loading & verification
         let super_class = if let Some(super_class_name) = class_desc.super_class {
             if check_circular.contains(&super_class_name) {
-                bail!("Circular class inheritance for {}", super_class_name);
+                return Err(exception(self, "ClassCircularityError"));
             }
             check_circular.push(super_class_name);
             let super_class = self.resolve_class_impl(super_class_name, check_circular)?;
 
-            if super_class.element_type.is_some() {
-                bail!("Can't subclass array!")
-            }
-
-            if super_class.access_flags.contains(AccessFlags::FINAL) {
-                bail!("Tried to subclass final class {}", super_class.name)
+            if super_class.element_type.is_some()
+                | super_class.access_flags.contains(AccessFlags::FINAL)
+            {
+                return Err(exception(self, "IncompatibleClassChangeError"));
             }
 
             // Method resolution
@@ -251,14 +265,14 @@ impl<'a> JVM<'a> {
         method: impl Into<MaybeInteredString<'a, 'b>>,
         args: Vec<Typ<'a>>,
         returns: Option<Typ<'a>>,
-    ) -> Result<&'a Method<'a>> {
+    ) -> JVMResult<'a, &'a Method<'a>> {
         self.resolve_class(class)?
             .methods
             .get(&MethodNaT {
                 name: method.into().get(self),
                 typ: &MethodDescriptor(args, returns),
             })
-            .ok_or_else(|| anyhow!("Method not found"))
+            .ok_or_else(|| exception(self, "NoSuchMethodError"))
             .map(|m| *m)
     }
 
@@ -300,6 +314,19 @@ impl<'a> Drop for JVM<'a> {
             ManuallyDropArena::drop(&mut self.method_storage.lock());
             ManuallyDropArena::drop(&mut self.method_descriptor_storage.lock());
         }
+    }
+}
+
+fn exception<'b, 'a: 'b>(jvm: &'b JVM<'a>, class: &'static str) -> Object<'a> {
+    match jvm.resolve_class(class) {
+        Ok(class) => {
+            if let Err(thrown) = class.ensure_init(jvm) {
+                thrown
+            } else {
+                jvm.create_object(class)
+            }
+        }
+        Err(thrown) => thrown,
     }
 }
 

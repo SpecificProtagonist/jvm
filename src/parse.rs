@@ -6,92 +6,96 @@ use std::{
 use crate::{
     class::{Field, FieldNaT, Method, MethodNaT},
     const_pool::{ConstPool, ConstPoolItem},
-    object::header_size,
+    exception,
+    object::{header_size, Object},
     verification::{StackMapFrame, VerificationType},
-    AccessFlags, Code, FieldStorage, IntStr, MethodDescriptor, Typ, JVM,
+    AccessFlags, Code, FieldStorage, IntStr, JVMResult, MethodDescriptor, Typ, JVM,
 };
-use anyhow::{bail, Context, Result};
 use crossbeam_utils::atomic::AtomicCell;
 
-fn read_u8(input: &mut &[u8]) -> Result<u8> {
+fn read_u8<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, u8> {
     if let Some(u8) = input.get(0) {
         *input = &input[1..];
         Ok(*u8)
     } else {
-        bail!("EOF")
+        Err(cfe(jvm, "EOF"))
     }
 }
 
-fn read_u16(input: &mut &[u8]) -> Result<u16> {
-    let high = read_u8(input)?;
-    let low = read_u8(input)?;
+fn read_u16<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, u16> {
+    let high = read_u8(jvm, input)?;
+    let low = read_u8(jvm, input)?;
     Ok(((high as u16) << 8) + low as u16)
 }
 
-fn read_u32(input: &mut &[u8]) -> Result<u32> {
-    let high = read_u16(input)?;
-    let low = read_u16(input)?;
+fn read_u32<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, u32> {
+    let high = read_u16(jvm, input)?;
+    let low = read_u16(jvm, input)?;
     Ok(((high as u32) << 16) + low as u32)
 }
 
-fn read_u64(input: &mut &[u8]) -> Result<u64> {
-    let high = read_u32(input)?;
-    let low = read_u32(input)?;
+fn read_u64<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, u64> {
+    let high = read_u32(jvm, input)?;
+    let low = read_u32(jvm, input)?;
     Ok(((high as u64) << 32) + low as u64)
 }
 
-fn read_magic(input: &mut &[u8]) -> Result<()> {
-    if 0xCAFEBABE == read_u32(input)? {
+fn read_magic<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, ()> {
+    if 0xCAFEBABE == read_u32(jvm, input)? {
         Ok(())
     } else {
-        bail!("Not a class file")
+        Err(cfe(jvm, "wrong magic number"))
     }
 }
 
 fn read_const_pool_item<'a, 'b, 'c>(
     input: &'b mut &'c [u8],
     jvm: &'b JVM<'a>,
-) -> Result<ConstPoolItem<'a>> {
+) -> JVMResult<'a, ConstPoolItem<'a>> {
     use ConstPoolItem::*;
-    match read_u8(input)? {
+    match read_u8(jvm, input)? {
         1 => {
-            let length = read_u16(input)?;
+            let length = read_u16(jvm, input)?;
             let mut bytes = Vec::with_capacity(length as usize);
             for _ in 0..length {
-                bytes.push(read_u8(input)?);
+                bytes.push(read_u8(jvm, input)?);
             }
-            // TODO: actually read Modified-UTF8
-            let string = std::string::String::from_utf8(bytes)?;
+            // TODO: actually read Modified-UTF8 (null codepoint is remapped)
+            let string =
+                std::string::String::from_utf8(bytes).map_err(|_| cfe(jvm, "invalid utf8"))?;
             Ok(Utf8(jvm.intern_str(&string)))
         }
-        3 => Ok(Integer(read_u32(input)? as i32)),
-        4 => Ok(Float(f32::from_bits(read_u32(input)?))),
-        5 => Ok(Long(read_u64(input)? as i64)),
-        6 => Ok(Double(f64::from_bits(read_u64(input)?))),
-        7 => Ok(RawClass(read_u16(input)?)),
-        8 => Ok(RawString(read_u16(input)?)),
+        3 => Ok(Integer(read_u32(jvm, input)? as i32)),
+        4 => Ok(Float(f32::from_bits(read_u32(jvm, input)?))),
+        5 => Ok(Long(read_u64(jvm, input)? as i64)),
+        6 => Ok(Double(f64::from_bits(read_u64(jvm, input)?))),
+        7 => Ok(RawClass(read_u16(jvm, input)?)),
+        8 => Ok(RawString(read_u16(jvm, input)?)),
         9 => Ok(FieldRef {
-            class: read_u16(input)?,
-            nat: read_u16(input)?,
+            class: read_u16(jvm, input)?,
+            nat: read_u16(jvm, input)?,
         }),
         10 => Ok(MethodRef {
-            class: read_u16(input)?,
-            nat: read_u16(input)?,
+            class: read_u16(jvm, input)?,
+            nat: read_u16(jvm, input)?,
         }),
         11 => Ok(InterfaceMethodRef {
-            class: read_u16(input)?,
-            nat: read_u16(input)?,
+            class: read_u16(jvm, input)?,
+            nat: read_u16(jvm, input)?,
         }),
         12 => Ok(NameAndType {
-            name: read_u16(input)?,
-            descriptor: read_u16(input)?,
+            name: read_u16(jvm, input)?,
+            descriptor: read_u16(jvm, input)?,
         }),
-        _ => bail!("Unknown constant pool item"),
+        _ => Err(cfe(jvm, "Unknown constant pool item")),
     }
 }
 
-fn read_const_pool<'a, 'b, 'c>(input: &'b mut &'c [u8], jvm: &'b JVM<'a>) -> Result<ConstPool<'a>> {
-    let length = read_u16(input)? as usize;
+fn read_const_pool<'a, 'b, 'c>(
+    input: &'b mut &'c [u8],
+    jvm: &'b JVM<'a>,
+) -> JVMResult<'a, ConstPool<'a>> {
+    let length = read_u16(jvm, input)? as usize;
     let mut items = Vec::with_capacity(length);
     items.push(ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero);
     while items.len() < length {
@@ -127,30 +131,35 @@ fn read_const_pool<'a, 'b, 'c>(input: &'b mut &'c [u8], jvm: &'b JVM<'a>) -> Res
             }
             _ => true,
         } {
-            bail!("Invalid constant pool item: {:?}", item)
+            return Err(cfe(jvm, "Invalid constant pool item"));
         }
     }
 
     Ok(ConstPool { items })
 }
 
-fn read_interfaces<'a>(input: &mut &[u8], const_pool: &ConstPool<'a>) -> Result<Vec<IntStr<'a>>> {
-    let length = read_u16(input)?;
+fn read_interfaces<'a>(
+    jvm: &JVM<'a>,
+    input: &mut &[u8],
+    const_pool: &ConstPool<'a>,
+) -> JVMResult<'a, Vec<IntStr<'a>>> {
+    let length = read_u16(jvm, input)?;
     let mut vec = Vec::with_capacity(length as usize);
     for _ in 0..length {
-        vec.push(const_pool.get_unresolved_class(read_u16(input)?)?);
+        vec.push(const_pool.get_unresolved_class(jvm, read_u16(jvm, input)?)?);
     }
     Ok(vec)
 }
 
 fn read_attribute<'a, 'b, 'c>(
+    jvm: &JVM<'a>,
     input: &mut &'b [u8],
     const_pool: &'c ConstPool<'a>,
-) -> Result<(IntStr<'a>, &'b [u8])> {
-    let name = const_pool.get_utf8(read_u16(input)?)?;
-    let attr_length = read_u32(input)?;
+) -> JVMResult<'a, (IntStr<'a>, &'b [u8])> {
+    let name = const_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
+    let attr_length = read_u32(jvm, input)?;
     if attr_length as usize > input.len() {
-        bail!("EOF")
+        return Err(cfe(jvm, "EOF reading attribute"));
     }
     let attr_bytes = &input[0..attr_length as usize];
     *input = &input[attr_length as usize..];
@@ -161,7 +170,7 @@ pub(crate) fn parse_field_descriptor<'a, 'b>(
     jvm: &'b JVM<'a>,
     descriptor: IntStr<'a>,
     start: usize,
-) -> Result<(Typ<'a>, usize)> {
+) -> JVMResult<'a, (Typ<'a>, usize)> {
     let str = &descriptor.0[start..];
     if let Some(typ) = match str.chars().next() {
         Some('Z') => Some(Typ::Bool),
@@ -184,7 +193,7 @@ pub(crate) fn parse_field_descriptor<'a, 'b>(
             let typ = Typ::Ref(jvm.intern_str(&class_name));
             return Ok((typ, start));
         } else {
-            bail!("Invalid type descriptor")
+            return Err(cfe(jvm, "invalid field descriptor"));
         }
     }
 
@@ -192,38 +201,38 @@ pub(crate) fn parse_field_descriptor<'a, 'b>(
         let (_, end) = parse_field_descriptor(jvm, descriptor, start + 1)?;
         let typ = Typ::Ref(jvm.intern_str(&str[..end]));
         if typ.array_dimensions() > 255 {
-            bail!("Too many array dimensions")
+            return Err(cfe(jvm, "too many array dimensions"));
         }
         return Ok((typ, start));
     }
 
-    bail!("Invalid type descriptor: {}", str)
+    return Err(cfe(jvm, "invalid field descriptor"));
 }
 
 fn read_field<'a, 'b, 'c>(
     input: &'b mut &'c [u8],
     constant_pool: &ConstPool<'a>,
     jvm: &'b JVM<'a>,
-) -> Result<Field<'a>> {
-    let access_flags = AccessFlags::from_bits_truncate(read_u16(input)?);
+) -> JVMResult<'a, Field<'a>> {
+    let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
 
-    let name = constant_pool.get_utf8(read_u16(input)?)?;
+    let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
 
-    let descriptor_str = constant_pool.get_utf8(read_u16(input)?)?;
+    let descriptor_str = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
     let (descriptor, remaining) = parse_field_descriptor(jvm, descriptor_str, 0)?;
     if remaining < descriptor_str.0.len() {
-        bail!("Invalid type descriptor")
+        return Err(cfe(jvm, "Invalid type descriptor"));
     }
 
     let mut const_value_index = None;
-    let attributes_count = read_u16(input)?;
+    let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
-        let (name, data) = read_attribute(input, constant_pool)?;
+        let (name, data) = read_attribute(jvm, input, constant_pool)?;
         if access_flags.contains(AccessFlags::STATIC) && (name.0 == "ConstantValue") {
             if const_value_index.is_none() & (data.len() == 2) {
                 const_value_index = Some(((data[0] as u16) << 8) + data[1] as u16)
             } else {
-                bail!("Invalid ConstantValue attribute")
+                return Err(cfe(jvm, "Invalid ConstantValue attribute"));
             }
         }
     }
@@ -243,13 +252,16 @@ fn read_fields<'a, 'b, 'c>(
     input: &'b mut &'c [u8],
     constant_pool: &ConstPool<'a>,
     jvm: &'b JVM<'a>,
-) -> Result<(
-    HashMap<FieldNaT<'a>, Field<'a>>,
-    /*static fields size*/ usize,
-    /*object fields size*/ usize,
-)> {
+) -> JVMResult<
+    'a,
+    (
+        HashMap<FieldNaT<'a>, Field<'a>>,
+        /*static fields size*/ usize,
+        /*object fields size*/ usize,
+    ),
+> {
     // Read fields
-    let length = read_u16(input)?;
+    let length = read_u16(jvm, input)?;
     let mut fields = Vec::new();
     for _ in 0..length {
         let field = read_field(input, constant_pool, jvm)?;
@@ -285,10 +297,11 @@ fn read_fields<'a, 'b, 'c>(
 }
 
 fn read_verification_type<'c, 'b, 'a>(
+    jvm: &JVM<'a>,
     input: &'b mut &'c [u8],
     const_pool: &'b ConstPool<'a>,
-) -> Result<VerificationType<'a>> {
-    Ok(match read_u8(input)? {
+) -> JVMResult<'a, VerificationType<'a>> {
+    Ok(match read_u8(jvm, input)? {
         0 => VerificationType::Top,
         1 => VerificationType::Integer,
         2 => VerificationType::Float,
@@ -296,21 +309,22 @@ fn read_verification_type<'c, 'b, 'a>(
         4 => VerificationType::Long,
         5 => VerificationType::Null,
         6 => VerificationType::UninitializedThis,
-        7 => VerificationType::ObjectVariable(const_pool.get_class(read_u16(input)?)?),
+        7 => VerificationType::ObjectVariable(const_pool.get_class(jvm, read_u16(jvm, input)?)?),
         8 => VerificationType::UninitializedVariable {
-            offset: read_u16(input)?,
+            offset: read_u16(jvm, input)?,
         },
-        _ => bail!("Invalid verification type"),
+        _ => return Err(cfe(jvm, "Invalid verification type")),
     })
 }
 
 // TODO: check how inefficient this is
 /// This is called during varification, as it is only needed then and because the const pool has been resolved by then.
 pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
+    jvm: &JVM<'a>,
     input: Option<&'c [u8]>,
     const_pool: &'b ConstPool<'a>,
     initial_locals: Vec<VerificationType<'a>>,
-) -> Result<BTreeMap<u16, StackMapFrame<'a>>> {
+) -> JVMResult<'a, BTreeMap<u16, StackMapFrame<'a>>> {
     let mut frames = BTreeMap::new();
     let mut pc = 0;
     frames.insert(
@@ -326,10 +340,10 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
         return Ok(frames);
     };
     let input = &mut input;
-    let length = read_u16(input)?;
+    let length = read_u16(jvm, input)?;
     for _ in 0..length {
         let prev_frame = frames.iter().rev().next().unwrap().1;
-        let frame_type = read_u8(input)?;
+        let frame_type = read_u8(jvm, input)?;
         let (offset, current_frame) = if frame_type < 64 {
             // same
             (frame_type as u16, prev_frame.clone())
@@ -339,26 +353,26 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
                 frame_type as u16 - 64,
                 StackMapFrame {
                     locals: prev_frame.locals.clone(),
-                    stack: vec![read_verification_type(input, const_pool)?],
+                    stack: vec![read_verification_type(jvm, input, const_pool)?],
                 },
             )
         } else if frame_type == 247 {
             // same locals 1 stack item extended
             (
-                read_u16(input)?,
+                read_u16(jvm, input)?,
                 StackMapFrame {
                     locals: prev_frame.locals.clone(),
-                    stack: vec![read_verification_type(input, const_pool)?],
+                    stack: vec![read_verification_type(jvm, input, const_pool)?],
                 },
             )
         } else if (frame_type > 247) & (frame_type < 251) {
             // chop
             let k = 251 - frame_type;
             (
-                read_u16(input)?,
+                read_u16(jvm, input)?,
                 StackMapFrame {
                     locals: if prev_frame.locals.len() < k as usize {
-                        bail!("invalid stack frame")
+                        return Err(cfe(jvm, "invalid stack frame"));
                     } else {
                         prev_frame.locals[0..prev_frame.locals.len() - k as usize].into()
                     },
@@ -367,17 +381,17 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
             )
         } else if frame_type == 251 {
             // same extended
-            (read_u16(input)?, prev_frame.clone())
+            (read_u16(jvm, input)?, prev_frame.clone())
         } else if (frame_type > 251) & (frame_type < 255) {
             // append
             let k = frame_type - 251;
             (
-                read_u16(input)?,
+                read_u16(jvm, input)?,
                 StackMapFrame {
                     locals: {
                         let mut locals = prev_frame.locals.clone();
                         for _ in 0..k {
-                            let typ = read_verification_type(input, const_pool)?;
+                            let typ = read_verification_type(jvm, input, const_pool)?;
                             locals.push(typ);
                             if typ.category_2() {
                                 locals.push(VerificationType::Top)
@@ -390,20 +404,20 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
             )
         } else if frame_type == 255 {
             // full
-            let offset_delta = read_u16(input)?;
-            let num_locals = read_u16(input)?;
+            let offset_delta = read_u16(jvm, input)?;
+            let num_locals = read_u16(jvm, input)?;
             let mut locals = Vec::with_capacity(num_locals as usize);
             for _ in 0..num_locals {
-                locals.push(read_verification_type(input, const_pool)?)
+                locals.push(read_verification_type(jvm, input, const_pool)?)
             }
-            let num_stack = read_u16(input)?;
+            let num_stack = read_u16(jvm, input)?;
             let mut stack = Vec::with_capacity(num_stack as usize);
             for _ in 0..num_stack {
-                stack.push(read_verification_type(input, const_pool)?)
+                stack.push(read_verification_type(jvm, input, const_pool)?)
             }
             (offset_delta, StackMapFrame { locals, stack })
         } else {
-            bail!("invalid verification type: {}", frame_type)
+            return Err(cfe(jvm, "invalid stack map frame type"));
         };
         pc += offset as u16;
         frames.insert(pc, current_frame);
@@ -411,44 +425,48 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
         pc += 1;
     }
     if !input.is_empty() {
-        bail!("invalid stack map table: {:?}", input)
+        return Err(cfe(jvm, "invalid stack map table"));
     }
     Ok(frames)
 }
 
-fn read_code<'a>(mut input: &[u8], constant_pool: &ConstPool<'a>) -> Result<Code> {
+fn read_code<'a>(
+    jvm: &JVM<'a>,
+    mut input: &[u8],
+    constant_pool: &ConstPool<'a>,
+) -> JVMResult<'a, Code> {
     let input = &mut input;
-    let max_stack = read_u16(input)?;
-    let max_locals = read_u16(input)?;
+    let max_stack = read_u16(jvm, input)?;
+    let max_locals = read_u16(jvm, input)?;
 
-    let code_length = read_u32(input)?;
+    let code_length = read_u32(jvm, input)?;
     let mut bytes = Vec::with_capacity(code_length as usize);
     for _ in 0..code_length {
-        bytes.push(read_u8(input)?);
+        bytes.push(read_u8(jvm, input)?);
     }
 
-    let exception_table_length = read_u16(input)?;
+    let exception_table_length = read_u16(jvm, input)?;
     for _ in 0..exception_table_length {
-        // TODO: unsupport exceptions
-        read_u64(input)?;
+        // TODO: support exceptions
+        read_u64(jvm, input)?;
     }
 
-    let attributes_count = read_u16(input)?;
+    let attributes_count = read_u16(jvm, input)?;
     let mut stack_map_table = None;
     for _ in 0..attributes_count {
         // Ignore attributes for now
-        let (name, bytes) = read_attribute(input, constant_pool).context("Reading attributes")?;
+        let (name, bytes) = read_attribute(jvm, input, constant_pool)?;
         if name.0 == "StackMapTable" {
             if stack_map_table.is_none() {
                 stack_map_table = Some(bytes.into());
             } else {
-                bail!("Duplicate StackMapTable")
+                return Err(cfe(jvm, "Duplicate StackMapTable"));
             }
         }
     }
 
     if !input.is_empty() {
-        bail!("End of code attribute not reached")
+        return Err(cfe(jvm, "End of code attribute not reached"));
     }
 
     Ok(Code {
@@ -462,15 +480,14 @@ fn read_code<'a>(mut input: &[u8], constant_pool: &ConstPool<'a>) -> Result<Code
 pub(crate) fn parse_method_descriptor<'a, 'b>(
     jvm: &'b JVM<'a>,
     descriptor: IntStr<'a>,
-) -> Result<MethodDescriptor<'a>> {
+) -> JVMResult<'a, MethodDescriptor<'a>> {
     if !descriptor.0.starts_with('(') {
-        bail!("Invalid method descriptor")
+        return Err(cfe(jvm, "Invalid method descriptor"));
     }
     let mut start = 1;
     let mut args = Vec::new();
     while !descriptor.0[start..].starts_with(')') {
-        let (arg, next_start) =
-            parse_field_descriptor(jvm, descriptor, start).context("Parsing method descriptor")?;
+        let (arg, next_start) = parse_field_descriptor(jvm, descriptor, start)?;
         args.push(arg);
         start = next_start;
     }
@@ -478,10 +495,9 @@ pub(crate) fn parse_method_descriptor<'a, 'b>(
     if &descriptor.0[start..] == "V" {
         Ok(MethodDescriptor(args, None))
     } else {
-        let (return_type, start) =
-            parse_field_descriptor(jvm, descriptor, start).context("Parsing method descriptor")?;
+        let (return_type, start) = parse_field_descriptor(jvm, descriptor, start)?;
         if start < descriptor.0.len() {
-            bail!("Invalid method descriptor")
+            return Err(cfe(jvm, "Invalid method descriptor"));
         }
         Ok(MethodDescriptor(args, Some(return_type)))
     }
@@ -491,23 +507,23 @@ fn read_method<'a, 'b, 'c>(
     input: &'b mut &'c [u8],
     constant_pool: &'b ConstPool<'a>,
     jvm: &'b JVM<'a>,
-) -> Result<Method<'a>> {
-    let access_flags = AccessFlags::from_bits_truncate(read_u16(input)?);
+) -> JVMResult<'a, Method<'a>> {
+    let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
 
-    let name = constant_pool.get_utf8(read_u16(input)?)?;
+    let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
 
-    let descriptor = constant_pool.get_utf8(read_u16(input)?)?;
+    let descriptor = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
     let descriptor = parse_method_descriptor(jvm, descriptor)?;
 
     let mut code = None;
-    let attributes_count = read_u16(input)?;
+    let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
-        let (attr_name, bytes) = read_attribute(input, constant_pool)?;
+        let (attr_name, bytes) = read_attribute(jvm, input, constant_pool)?;
         if attr_name.0 == "Code" {
             if code.is_none() {
-                code = Some(read_code(bytes, constant_pool).context("Reading bytecode")?);
+                code = Some(read_code(jvm, bytes, constant_pool)?);
             } else {
-                bail!("Multiple code attributes on same method")
+                return Err(cfe(jvm, "Multiple code attributes on same method"));
             }
         }
     }
@@ -526,14 +542,14 @@ fn read_methods<'a, 'b, 'c>(
     input: &'b mut &'c [u8],
     constant_pool: &ConstPool<'a>,
     jvm: &'b JVM<'a>,
-) -> Result<HashMap<MethodNaT<'a>, &'a Method<'a>>> {
-    let length = read_u16(input)?;
+) -> JVMResult<'a, HashMap<MethodNaT<'a>, &'a Method<'a>>> {
+    let length = read_u16(jvm, input)?;
     let mut methods = HashMap::with_capacity(length as usize);
     for _ in 0..length {
         let method = read_method(input, constant_pool, jvm)?;
         for existing_nat in methods.keys() {
             if existing_nat == &method.nat {
-                bail!("Duplicate method in same class")
+                return Err(cfe(jvm, "Duplicate method in same class"));
             }
         }
         let method = jvm.method_storage.lock().alloc(method);
@@ -548,58 +564,44 @@ fn read_methods<'a, 'b, 'c>(
 pub(crate) fn read_class_file<'a, 'b, 'c>(
     mut input: &'c [u8],
     jvm: &'b JVM<'a>,
-) -> Result<ClassDescriptor<'a>> {
+) -> JVMResult<'a, ClassDescriptor<'a>> {
     let input = &mut input;
 
-    read_magic(input)?;
-    let minor_version = read_u16(input)?;
-    let major_version = read_u16(input)?;
+    read_magic(jvm, input)?;
+    let _minor_version = read_u16(jvm, input)?;
+    let major_version = read_u16(jvm, input)?;
 
-    if major_version > 52 {
-        bail!(
-            "Class version {}.{} > 52 not supported yet",
-            major_version,
-            minor_version
-        )
-    }
-    if major_version < 50 {
-        // Verification by type inference not implemented yet
-        bail!(
-            "Class version {}.{} < 50 not supported yet",
-            major_version,
-            minor_version
-        )
+    if !(50..=52).contains(&major_version) {
+        return Err(exception(jvm, "UnsupportedClassVersionError"));
     }
 
     let const_pool = read_const_pool(input, jvm)?;
 
-    let access_flags = AccessFlags::from_bits_truncate(read_u16(input)?);
+    let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
 
-    let this_class = const_pool.get_unresolved_class(read_u16(input)?)?;
+    let this_class = const_pool.get_unresolved_class(jvm, read_u16(jvm, input)?)?;
     let super_class = {
-        let index = read_u16(input)?;
+        let index = read_u16(jvm, input)?;
         if index > 0 {
-            Some(const_pool.get_unresolved_class(index)?)
+            Some(const_pool.get_unresolved_class(jvm, index)?)
         } else {
             None
         }
     };
 
-    let interfaces =
-        read_interfaces(input, &const_pool).context("Reading implemented interfaces")?;
-    let (fields, static_layout, object_size) =
-        read_fields(input, &const_pool, jvm).context("Reading fields")?;
-    let methods = read_methods(input, &const_pool, jvm).context("Reading methods")?;
+    let interfaces = read_interfaces(jvm, input, &const_pool)?;
+    let (fields, static_layout, object_size) = read_fields(input, &const_pool, jvm)?;
+    let methods = read_methods(input, &const_pool, jvm)?;
 
     let static_storage = FieldStorage::new(&jvm.heap, static_layout);
 
-    let attributes_count = read_u16(input)?;
+    let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
-        read_attribute(input, &const_pool)?;
+        read_attribute(jvm, input, &const_pool)?;
     }
 
     if !input.is_empty() {
-        bail!("Malformed class file: Expected EOF")
+        return Err(cfe(jvm, "expected EOF"));
     }
 
     Ok(ClassDescriptor {
@@ -626,4 +628,8 @@ pub(crate) struct ClassDescriptor<'a> {
     pub(crate) methods: HashMap<MethodNaT<'a>, &'a Method<'a>>,
     pub(crate) static_storage: FieldStorage,
     pub(crate) object_size: usize,
+}
+
+fn cfe<'a>(jvm: &JVM<'a>, _message: &str) -> Object<'a> {
+    exception(jvm, "ClassFormatError")
 }

@@ -2,18 +2,19 @@ use std::{mem::size_of, usize};
 
 use crate::{
     const_pool::{ConstPool, ConstPoolItem},
+    exception,
     field_storage::FieldStorage,
     heap::JVMPtrSize,
     instructions::*,
     object::{self, Object},
-    AccessFlags, Field, Method, Typ, JVM,
+    AccessFlags, Field, JVMResult, Method, Typ, JVM,
 };
-use anyhow::{anyhow, bail, Context, Result};
+//use anyhow::{anyhow, bail, Context, Result};
 
 // User-facing type
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum JVMValue<'jvm> {
-    Ref(Object<'jvm>),
+pub enum JVMValue<'a> {
+    Ref(Object<'a>),
     Int(i32),
     Long(i64),
     Float(f32),
@@ -25,7 +26,7 @@ pub fn invoke<'a, 'b>(
     jvm: &'b JVM<'a>,
     method: &'a Method<'a>,
     args: &'b [JVMValue<'a>],
-) -> Result<Option<JVMValue<'a>>> {
+) -> JVMResult<'a, Option<JVMValue<'a>>> {
     method.class.load().ensure_init(jvm)?;
     let mut arg_values = Vec::new();
     for arg in args {
@@ -46,7 +47,6 @@ pub fn invoke<'a, 'b>(
         }
     }
     invoke_initialized(jvm, method, &arg_values)
-        .with_context(|| format!("Trying to call {}", method.nat))
 }
 
 /// Stack or local entry.
@@ -62,7 +62,10 @@ type SlotSize = u32;
 #[repr(transparent)]
 struct Value(SlotSize);
 
-pub(crate) fn invoke_initializer<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> Result<()> {
+pub(crate) fn invoke_initializer<'a, 'b>(
+    jvm: &'b JVM<'a>,
+    method: &'a Method<'a>,
+) -> JVMResult<'a, ()> {
     invoke_initialized(jvm, method, &[]).map(|_| ())
 }
 
@@ -71,7 +74,7 @@ fn invoke_initialized<'a, 'b>(
     jvm: &'b JVM<'a>,
     method: &'a Method<'a>,
     args: &'b [Value],
-) -> Result<Option<JVMValue<'a>>> {
+) -> JVMResult<'a, Option<JVMValue<'a>>> {
     if method.code.is_none() {
         todo!("Methods without code attribute");
     }
@@ -94,6 +97,10 @@ fn invoke_initialized<'a, 'b>(
         stack: Vec::with_capacity(method.code.as_ref().unwrap().max_stack as usize),
         pc: 0,
     };
+
+    if !method.access_flags.contains(AccessFlags::STATIC) && args[0].0 == 0 {
+        return Err(exception(jvm, "NullPointerException"));
+    }
 
     // Todo: bytecode verification, esp. about pc
     loop {
@@ -161,138 +168,106 @@ fn invoke_initialized<'a, 'b>(
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if obj.class().element_type == Some(Typ::Int) {
-                    frame.stack.push(Value::from_int(
-                        obj.ptr
-                            .read_i32((object::header_size() as isize + 4 * index as isize) as u32)
-                            .ok_or_else(|| anyhow!("index out of bounds"))?,
-                    ));
-                } else {
-                    bail!("expected int array")
-                }
+                frame.stack.push(Value::from_int(
+                    obj.ptr
+                        .read_i32((object::header_size() as isize + 4 * index as isize) as u32)
+                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
+                ));
             }
             LALOAD => {
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if obj.class().element_type == Some(Typ::Long) {
-                    frame.push_long(
-                        obj.ptr
-                            .read_i64((object::header_size() as isize + 8 * index as isize) as u32)
-                            .ok_or_else(|| anyhow!("index out of bounds"))?,
-                    );
-                } else {
-                    bail!("expected long array")
-                }
+                frame.push_long(
+                    obj.ptr
+                        .read_i64((object::header_size() as isize + 8 * index as isize) as u32)
+                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
+                );
             }
             FALOAD => {
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if obj.class().element_type == Some(Typ::Float) {
-                    frame.stack.push(Value::from_float(
-                        obj.ptr
-                            .read_f32((object::header_size() as isize + 4 * index as isize) as u32)
-                            .ok_or_else(|| anyhow!("index out of bounds"))?,
-                    ));
-                } else {
-                    bail!("expected float array")
-                }
+                frame.stack.push(Value::from_float(
+                    obj.ptr
+                        .read_f32((object::header_size() as isize + 4 * index as isize) as u32)
+                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
+                ));
             }
             DALOAD => {
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if obj.class().element_type == Some(Typ::Double) {
-                    frame.push_double(
-                        obj.ptr
-                            .read_f64((object::header_size() as isize + 8 * index as isize) as u32)
-                            .ok_or_else(|| anyhow!("index out of bounds"))?,
-                    );
-                } else {
-                    bail!("expected double array")
-                }
+                frame.push_double(
+                    obj.ptr
+                        .read_f64((object::header_size() as isize + 8 * index as isize) as u32)
+                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
+                );
             }
             AALOAD => {
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if matches!(obj.class().element_type, Some(Typ::Ref(_))) {
-                    frame.stack.push(Value::from_ref(unsafe {
-                        Object::from_ptr(
-                            obj.ptr
-                                .read_ptr(
-                                    (object::header_size() as isize
-                                        + size_of::<usize>() as isize * index as isize)
-                                        as u32,
-                                )
-                                .ok_or_else(|| anyhow!("index out of bounds"))?,
-                        )
-                    }));
-                } else {
-                    bail!("expected object array")
-                }
+                frame.stack.push(Value::from_ref(unsafe {
+                    Object::from_ptr(
+                        obj.ptr
+                            .read_ptr(
+                                (object::header_size() as isize
+                                    + size_of::<usize>() as isize * index as isize)
+                                    as u32,
+                            )
+                            .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
+                    )
+                }));
             }
             BALOAD => {
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if matches!(obj.class().element_type, Some(Typ::Byte | Typ::Bool)) {
-                    frame.stack.push(Value::from_int(
-                        obj.ptr
-                            .read_i8((object::header_size() as isize + index as isize) as u32)
-                            .ok_or_else(|| anyhow!("index out of bounds"))?
-                            as i32,
-                    ));
-                } else {
-                    bail!("expected bool or byte array")
-                }
+                frame.stack.push(Value::from_int(
+                    obj.ptr
+                        .read_i8((object::header_size() as isize + index as isize) as u32)
+                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?
+                        as i32,
+                ));
             }
             CALOAD => {
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if obj.class().element_type == Some(Typ::Char) {
-                    frame.stack.push(Value::from_int(
-                        obj.ptr
-                            .read_i16((object::header_size() as isize + 2 * index as isize) as u32)
-                            .ok_or_else(|| anyhow!("index out of bounds"))?
-                            as u16 as i32,
-                    ));
-                } else {
-                    bail!("expected char array")
-                }
+                frame.stack.push(Value::from_int(
+                    obj.ptr
+                        .read_i16((object::header_size() as isize + 2 * index as isize) as u32)
+                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?
+                        as u16 as i32,
+                ));
             }
             SALOAD => {
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if obj.class().element_type == Some(Typ::Short) {
-                    frame.stack.push(Value::from_int(
-                        obj.ptr
-                            .read_i16((object::header_size() as isize + 2 * index as isize) as u32)
-                            .ok_or_else(|| anyhow!("index out of bounds"))?
-                            as i32,
-                    ));
-                } else {
-                    bail!("expected short array")
-                }
+                frame.stack.push(Value::from_int(
+                    obj.ptr
+                        .read_i16((object::header_size() as isize + 2 * index as isize) as u32)
+                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?
+                        as i32,
+                ));
             }
             ISTORE | FSTORE | ASTORE => {
                 let index = frame.read_code_u8() as u16;
@@ -329,83 +304,67 @@ fn invoke_initialized<'a, 'b>(
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if obj.class().element_type == Some(Typ::Int) {
-                    obj.ptr
-                        .write_i32(
-                            (object::header_size() as isize + 4 * index as isize) as u32,
-                            value,
-                        )
-                        .ok_or_else(|| anyhow!("index out of bounds"))?;
-                } else {
-                    bail!("expected int array")
-                }
+                obj.ptr
+                    .write_i32(
+                        (object::header_size() as isize + 4 * index as isize) as u32,
+                        value,
+                    )
+                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
             LASTORE => {
                 let value = frame.pop_long();
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if obj.class().element_type == Some(Typ::Long) {
-                    obj.ptr
-                        .write_i64(
-                            (object::header_size() as isize + 8 * index as isize) as u32,
-                            value,
-                        )
-                        .ok_or_else(|| anyhow!("index out of bounds"))?;
-                } else {
-                    bail!("expected long array")
-                }
+                obj.ptr
+                    .write_i64(
+                        (object::header_size() as isize + 8 * index as isize) as u32,
+                        value,
+                    )
+                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
             FASTORE => {
                 let value = frame.pop().as_float();
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if obj.class().element_type == Some(Typ::Float) {
-                    obj.ptr
-                        .write_f32(
-                            (object::header_size() as isize + 4 * index as isize) as u32,
-                            value,
-                        )
-                        .ok_or_else(|| anyhow!("index out of bounds"))?;
-                } else {
-                    bail!("expected float array")
-                }
+                obj.ptr
+                    .write_f32(
+                        (object::header_size() as isize + 4 * index as isize) as u32,
+                        value,
+                    )
+                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
             DASTORE => {
                 let value = frame.pop_double();
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if obj.class().element_type == Some(Typ::Double) {
-                    obj.ptr
-                        .write_f64(
-                            (object::header_size() as isize + 8 * index as isize) as u32,
-                            value,
-                        )
-                        .ok_or_else(|| anyhow!("index out of bounds"))?;
-                } else {
-                    bail!("expected double array")
-                }
+                obj.ptr
+                    .write_f64(
+                        (object::header_size() as isize + 8 * index as isize) as u32,
+                        value,
+                    )
+                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
             AASTORE => {
                 let value = unsafe { frame.pop().as_ref() };
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
                 if let Some(Typ::Ref(component)) = obj.class().element_type {
                     if !obj.class().assignable_to(jvm.resolve_class(component)?) {
-                        bail!("ArrayStoreException")
+                        return Err(exception(jvm, "ArrayStoreException"));
                     }
                     obj.ptr
                         .write_ptr(
@@ -414,9 +373,9 @@ fn invoke_initialized<'a, 'b>(
                                 as u32,
                             value.ptr.ptr(),
                         )
-                        .ok_or_else(|| anyhow!("index out of bounds"))?;
+                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
                 } else {
-                    bail!("expected object array")
+                    unreachable!()
                 }
             }
             BASTORE => {
@@ -424,54 +383,42 @@ fn invoke_initialized<'a, 'b>(
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if matches!(obj.class().element_type, Some(Typ::Bool | Typ::Byte)) {
-                    obj.ptr
-                        .write_i8(
-                            (object::header_size() as isize + index as isize) as u32,
-                            value as i8,
-                        )
-                        .ok_or_else(|| anyhow!("index out of bounds"))?;
-                } else {
-                    bail!("expected boolean or byte array")
-                }
+                obj.ptr
+                    .write_i8(
+                        (object::header_size() as isize + index as isize) as u32,
+                        value as i8,
+                    )
+                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
             CASTORE => {
                 let value = frame.pop().as_int();
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if obj.class().element_type == Some(Typ::Char) {
-                    obj.ptr
-                        .write_i16(
-                            (object::header_size() as isize + 2 * index as isize) as u32,
-                            value as u16 as i16,
-                        )
-                        .ok_or_else(|| anyhow!("index out of bounds"))?;
-                } else {
-                    bail!("expected char array")
-                }
+                obj.ptr
+                    .write_i16(
+                        (object::header_size() as isize + 2 * index as isize) as u32,
+                        value as u16 as i16,
+                    )
+                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
             SASTORE => {
                 let value = frame.pop().as_int();
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
-                if obj.class().element_type == Some(Typ::Short) {
-                    obj.ptr
-                        .write_i16(
-                            (object::header_size() as isize + 2 * index as isize) as u32,
-                            value as i16,
-                        )
-                        .ok_or_else(|| anyhow!("index out of bounds"))?;
-                } else {
-                    bail!("expected short array")
-                }
+                obj.ptr
+                    .write_i16(
+                        (object::header_size() as isize + 2 * index as isize) as u32,
+                        value as i16,
+                    )
+                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
             POP => {
                 frame.pop();
@@ -544,12 +491,14 @@ fn invoke_initialized<'a, 'b>(
                     IADD => a + b,
                     ISUB => a - b,
                     IMUL => a * b,
-                    IDIV => a.checked_div(b).ok_or_else(|| anyhow!("idiv by 0"))?,
+                    IDIV => a
+                        .checked_div(b)
+                        .ok_or_else(|| exception(jvm, "ArithmeticException"))?,
                     IREM => {
                         if b != 0 {
                             a % b
                         } else {
-                            bail!("irem by 0")
+                            return Err(exception(jvm, "ArithmeticException"));
                         }
                     }
                     ISHL => a << (b & 0x1f),
@@ -569,12 +518,14 @@ fn invoke_initialized<'a, 'b>(
                     LADD => a + b,
                     LSUB => a - b,
                     LMUL => a * b,
-                    LDIV => a.checked_div(b).ok_or_else(|| anyhow!("idiv by 0"))?,
+                    LDIV => a
+                        .checked_div(b)
+                        .ok_or_else(|| exception(jvm, "ArithmeticException"))?,
                     LREM => {
                         if b != 0 {
                             a % b
                         } else {
-                            bail!("irem by 0")
+                            return Err(exception(jvm, "ArithmeticException"));
                         }
                     }
                     LSHL => a << (b & 0x3f),
@@ -783,10 +734,6 @@ fn invoke_initialized<'a, 'b>(
                 let low = frame.read_code_u32() as i32;
                 let high = frame.read_code_u32() as i32;
 
-                if low > high {
-                    bail!("Invalid tableswitch")
-                }
-
                 let target = if (index < low) | (index >= high) {
                     default
                 } else {
@@ -826,25 +773,25 @@ fn invoke_initialized<'a, 'b>(
             RETURN => return Ok(None),
             GETSTATIC => {
                 let index = frame.read_code_u16();
-                let field = const_pool.get_field(index).unwrap();
+                let field = const_pool.get_field(jvm, index).unwrap();
                 field.class.load().ensure_init(jvm)?;
                 get_field(&mut frame, field, &field.class.load().static_storage);
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16();
-                let field = const_pool.get_field(index).unwrap();
+                let field = const_pool.get_field(jvm, index).unwrap();
                 field.class.load().ensure_init(jvm)?;
                 put_field(&mut frame, field, &field.class.load().static_storage);
             }
             GETFIELD => {
                 let index = frame.read_code_u16();
-                let field = const_pool.get_field(index)?;
+                let field = const_pool.get_field(jvm, index)?;
                 let object = unsafe { frame.pop().as_ref() };
                 get_field(&mut frame, field, &object.ptr);
             }
             PUTFIELD => {
                 let index = frame.read_code_u16();
-                let field = const_pool.get_field(index)?;
+                let field = const_pool.get_field(jvm, index)?;
                 // Stack has object ref first, then value on top
                 // This is ugly
                 let object = if matches!(field.descriptor, Typ::Long | Typ::Double) {
@@ -864,30 +811,39 @@ fn invoke_initialized<'a, 'b>(
             }
             INVOKEVIRTUAL => {
                 let index = frame.read_code_u16();
-                let (_, nat) = const_pool.get_virtual_method(index)?;
-                if nat.name.0.starts_with('<') {
-                    bail!("Must not invokevirtual class or instance initialization method")
-                }
-                let obj = if let Some(obj) = frame.stack.last() {
-                    unsafe { obj.as_ref() }
-                } else {
-                    bail!("Failed invoke_special")
-                };
+                let (_, nat) = const_pool.get_virtual_method(jvm, index)?;
+                let obj_index = frame.stack.len() - nat.typ.arg_slots() - 1;
+                let obj = unsafe { frame.stack[obj_index].as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException")
+                    return Err(exception(jvm, "NullPointerException"));
                 }
+                // TODO: move method linking (incl NoSuchMethodError and IncompatibleClassChangeError) to class init
                 let invoke_method = obj
                     .class()
                     .methods
                     .get(&nat)
-                    .ok_or_else(|| anyhow!("Method not found"))?;
+                    .ok_or_else(|| exception(jvm, "NoSuchMethodError"))?;
+                if invoke_method.access_flags.contains(AccessFlags::STATIC) {
+                    return Err(exception(jvm, "IncompatibleClassChangeError"));
+                }
+                if invoke_method.access_flags.contains(AccessFlags::ABSTRACT) {
+                    return Err(exception(jvm, "AbstractMethodError"));
+                }
                 execute_invoke_instr(jvm, &mut frame, invoke_method)?;
             }
             INVOKESPECIAL => {
                 let index = frame.read_code_u16();
-                let (named_class, nat) = const_pool.get_virtual_method(index)?;
+                let (named_class, nat) = const_pool.get_virtual_method(jvm, index)?;
 
-                let class = if (nat.name.0 != "<init>")
+                let obj_index = frame.stack.len() - nat.typ.arg_slots() - 1;
+                let obj = unsafe { frame.stack[obj_index].as_ref() };
+                if obj.null() {
+                    return Err(exception(jvm, "NullPointerException"));
+                }
+
+                let is_instance_init = nat.name.0 == "<init>";
+
+                let class = if !is_instance_init
                     & method.class.load().subclass_of(named_class)
                     & method
                         .class
@@ -895,37 +851,40 @@ fn invoke_initialized<'a, 'b>(
                         .access_flags
                         .contains(AccessFlags::SUPER)
                 {
-                    method
-                        .class
-                        .load()
-                        .super_class
-                        .ok_or_else(|| anyhow!("Invalid invokespecial"))?
+                    method.class.load().super_class.unwrap()
                 } else {
                     named_class
                 };
 
+                // TODO: move method linking (incl NoSuchMethodError and IncompatibleClassChangeError) to class init
                 let invoke_method = class
                     .methods
                     .get(&nat)
-                    .ok_or_else(|| anyhow!("Method not found"))?;
+                    .ok_or_else(|| exception(jvm, "NoSuchMethodError"))?;
+                if is_instance_init && invoke_method.class() != named_class {
+                    return Err(exception(jvm, "NoSuchMethodError"));
+                }
+                if invoke_method.access_flags.contains(AccessFlags::STATIC) {
+                    return Err(exception(jvm, "IncompatibleClassChangeError"));
+                }
                 execute_invoke_instr(jvm, &mut frame, invoke_method)?;
             }
             INVOKESTATIC => {
                 let index = frame.read_code_u16();
-                let invoke_method = const_pool.get_static_method(index)?;
+                let invoke_method = const_pool.get_static_method(jvm, index)?;
                 invoke_method.class.load().ensure_init(jvm)?;
                 execute_invoke_instr(jvm, &mut frame, invoke_method)?;
             }
             NEW => {
                 let index = frame.read_code_u16();
-                let class = const_pool.get_class(index)?;
+                let class = const_pool.get_class(jvm, index)?;
                 class.ensure_init(jvm)?;
                 frame.stack.push(Value::from_ref(jvm.create_object(class)))
             }
             NEWARRAY => {
                 let length = frame.pop().as_int();
                 if length < 0 {
-                    bail!("Negative array length")
+                    return Err(exception(jvm, "NegativeArraySizeException"));
                 }
                 let typ = match frame.read_code_u8() {
                     4 => "[Z",
@@ -936,7 +895,7 @@ fn invoke_initialized<'a, 'b>(
                     9 => "[S",
                     10 => "[I",
                     11 => "[J",
-                    _ => bail!("invalid array type"),
+                    _ => unreachable!(),
                 };
                 let typ = jvm.resolve_class(typ)?;
                 frame
@@ -946,11 +905,11 @@ fn invoke_initialized<'a, 'b>(
             ANEWARRAY => {
                 let length = frame.pop().as_int();
                 let index = frame.read_code_u16();
-                let component = const_pool.get_class(index)?;
+                let component = const_pool.get_class(jvm, index)?;
                 // TODO: make it easier to refer to array types
                 let typ = jvm.resolve_class(format!("[L{};", component.name))?;
                 if length < 0 {
-                    bail!("Negative array length")
+                    return Err(exception(jvm, "NegativeArraySizeException"));
                 }
                 frame
                     .stack
@@ -959,14 +918,14 @@ fn invoke_initialized<'a, 'b>(
             ARRAYLENGTH => {
                 let obj = unsafe { frame.pop().as_ref() };
                 if obj.null() {
-                    bail!("NullPointerException");
+                    return Err(exception(jvm, "NullPointerException"));
                 }
                 if let Some(base) = obj.class().element_type {
                     let length =
                         ((obj.ptr.size() - object::header_size()) / base.layout().size()) as i32;
                     frame.stack.push(Value::from_int(length));
                 } else {
-                    bail!("object not array")
+                    unreachable!()
                 }
             }
             MULTIANEWARRAY => {
@@ -1051,26 +1010,16 @@ fn execute_invoke_instr<'jvm, 'b>(
     jvm: &'b JVM<'jvm>,
     frame: &'b mut Frame<'jvm>,
     method: &'jvm Method<'jvm>,
-) -> Result<()> {
-    let mut arg_count = 0;
+) -> JVMResult<'jvm, ()> {
+    let mut arg_slots = method.nat.typ.arg_slots();
     if !method.access_flags.contains(AccessFlags::STATIC) {
         // `this` is treated as an argument, but not mentioned in method descriptor
-        arg_count = 1;
+        arg_slots += 1;
     }
-    for typ in &method.nat.typ.0 {
-        arg_count += 1;
-        // Longs & doubles are double wide...
-        if matches!(typ, Typ::Long | Typ::Double) {
-            arg_count += 1;
-        }
-    }
-    if arg_count > frame.stack.len() {
-        bail!("Invokestatic: not enough elements on stack")
-    }
-    let args = &frame.stack[frame.stack.len() - arg_count..];
-    let result = invoke_initialized(jvm, method, args)
-        .with_context(|| format!("Trying to call {}", method.nat.name))?;
-    frame.stack.truncate(frame.stack.len() - arg_count);
+
+    let args = &frame.stack[frame.stack.len() - arg_slots..];
+    let result = invoke_initialized(jvm, method, args)?;
+    frame.stack.truncate(frame.stack.len() - arg_slots);
     match result {
         None => (),
         Some(JVMValue::Ref(object)) => frame.stack.push(Value::from_ref(object)),

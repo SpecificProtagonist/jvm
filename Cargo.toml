@@ -5,7 +5,6 @@ authors = ["Vincent Junge <vincentjunge@posteo.net>"]
 edition = "2018"
 
 [dependencies]
-anyhow = "1"
 bimap = "0.6"
 # AccessFlags
 bitflags = "1.3"
