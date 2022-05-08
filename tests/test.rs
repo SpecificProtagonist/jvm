@@ -5,7 +5,7 @@ use jvm::*;
 
 #[test]
 fn circular_loading() {
-    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
     println!("{:?}", jvm.resolve_class("CircularA").unwrap_err());
     assert_eq!(
         jvm.resolve_class("CircularA")
@@ -19,7 +19,7 @@ fn circular_loading() {
 
 #[test]
 fn initialization() {
-    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
     let method = jvm
         .resolve_method("Initialization", "check_init", vec![], Some(Typ::Bool))
         .unwrap();
@@ -31,7 +31,7 @@ fn initialization() {
 
 #[test]
 fn init_lock() {
-    let jvm = Arc::new(JVM::new(vec!["classes".into(), "tests".into()]));
+    let jvm = Arc::new(JVM::new(vec!["classes".into(), "tests/classes".into()]));
     let class = Arc::new(JVM::resolve_class(&jvm, "InitLock").unwrap());
     // TODO: use scoped threads when stabilized
     let threads = (0..50)
@@ -59,7 +59,7 @@ fn init_lock() {
 
 #[test]
 fn control_flow() {
-    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
     let method = jvm
         .resolve_method("ControlFlow", "is_even", vec![Typ::Int], Some(Typ::Bool))
         .unwrap();
@@ -71,7 +71,7 @@ fn control_flow() {
 
 #[test]
 fn field_access() {
-    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
     let class = jvm.resolve_class("FieldAccess").unwrap();
     let set_method = class
         .method(
@@ -97,7 +97,7 @@ fn field_access() {
 
 #[test]
 fn invoke_static() {
-    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
     let method = jvm
         .resolve_method(
             "InvokeStatic",
@@ -114,7 +114,7 @@ fn invoke_static() {
 
 #[test]
 fn invoke_virtual() {
-    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
     let method = jvm
         .resolve_method("InvokeVirtual", "test", vec![], Some(Typ::Bool))
         .unwrap();
@@ -126,7 +126,7 @@ fn invoke_virtual() {
 
 #[test]
 fn arrays() {
-    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
     let method = jvm
         .resolve_method("Arrays", "test", vec![], Some(Typ::Bool))
         .unwrap();
@@ -139,13 +139,13 @@ fn arrays() {
 /// Lazy resolution isn't mandatory for the spec, but I still want it
 #[test]
 fn lazy_resolve() {
-    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
     jvm.resolve_class("LazyResolve").unwrap();
 }
 
 #[test]
 fn lazy_init() {
-    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
     let method = jvm
         .resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))
         .unwrap();
@@ -154,7 +154,7 @@ fn lazy_init() {
         Some(JVMValue::Int(1))
     );
 
-    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
     let method = jvm
         .resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))
         .unwrap();
@@ -166,7 +166,7 @@ fn lazy_init() {
 
 #[test]
 fn many_allocs() {
-    let jvm = JVM::new(vec!["classes".into(), "tests".into()]);
+    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
     let method = jvm
         .resolve_method("ManyAllocs", "test", vec![], None)
         .unwrap();
