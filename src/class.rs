@@ -1,11 +1,10 @@
-use anyhow::{anyhow, bail, Result};
 use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::{Condvar, Mutex, RwLock};
 use std::{collections::HashMap, fmt::Debug, thread::ThreadId};
 
 use crate::{
-    const_pool::ConstPool, field_storage::FieldStorage, heap::Heap, verification::verify,
-    AccessFlags, IntStr, Typ, JVM,
+    const_pool::ConstPool, exception, field_storage::FieldStorage, heap::Heap,
+    verification::verify, AccessFlags, IntStr, JVMResult, Typ, JVM,
 };
 
 /// Represents a regular class, an array class or (in the future) an enum or an interface
@@ -66,6 +65,12 @@ pub struct Method<'a> {
     pub(crate) code: Option<Code>,
 }
 
+impl<'a> Method<'a> {
+    pub fn class(&self) -> &'a Class {
+        self.class.load()
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MethodNaT<'a> {
     pub(crate) name: IntStr<'a>,
@@ -74,6 +79,18 @@ pub struct MethodNaT<'a> {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct MethodDescriptor<'a>(pub Vec<Typ<'a>>, pub Option<Typ<'a>>);
+
+impl<'a> MethodDescriptor<'a> {
+    pub(crate) fn arg_slots(&self) -> usize {
+        self.0
+            .iter()
+            .map(|typ| match typ {
+                Typ::Long | Typ::Double => 2,
+                _ => 1,
+            })
+            .sum()
+    }
+}
 
 // TODO: use verification data to construct a more efficient bytecode
 pub(crate) struct Code {
@@ -91,9 +108,14 @@ impl<'a, 'b> PartialEq for &'b Class<'a> {
 }
 
 impl<'a> Class<'a> {
+    pub fn name(&'a self) -> IntStr<'a> {
+        self.name
+    }
+
     pub fn field(&'a self, name: IntStr<'a>, typ: Typ<'a>) -> Option<&'a Field<'a>> {
         self.fields.get(&FieldNaT { name, typ })
     }
+
     pub fn method<'b>(
         &'b self,
         name: IntStr<'a>,
@@ -129,24 +151,19 @@ impl<'a> Class<'a> {
         }
     }
 
-    pub fn resolve_field(&'a self, field: FieldNaT<'a>) -> Result<&'a Field<'a>> {
-        if let Some(field) = self.fields.get(&field) {
-            Ok(field)
-        } else {
-            match self.super_class {
-                Some(super_class) => super_class.resolve_field(field),
-                None => Err(anyhow!("Failed to resolve field {}", field.name)),
-            }
-        }
+    pub fn resolve_field(&'a self, field: FieldNaT<'a>) -> Option<&'a Field<'a>> {
+        self.fields
+            .get(&field)
+            .or_else(|| self.super_class.and_then(|c| c.resolve_field(field)))
     }
 
     /// Ensures this class is initialized. This includes linking, verification, preparation & resolution
     /// May only be called by the instuctions new, getstatic, putstatic or invokestatic or by being the initial class
-    pub(crate) fn ensure_init<'b>(&'b self, jvm: &'b JVM<'a>) -> Result<()> {
+    pub(crate) fn ensure_init<'b>(&'b self, jvm: &'b JVM<'a>) -> JVMResult<'a, ()> {
         let mut guard = self.init.lock();
         match *guard {
             ClassInitState::Done => Ok(()),
-            ClassInitState::Error => Err(anyhow!("NoClassDefFoundError (initialization failed)")),
+            ClassInitState::Error => Err(exception(jvm, "NoClassDefFoundError")),
             ClassInitState::InProgress(thread) => {
                 if thread == std::thread::current().id() {
                     Ok(())
@@ -156,7 +173,7 @@ impl<'a> Class<'a> {
                         match *guard {
                             ClassInitState::Done => return Ok(()),
                             ClassInitState::Error => {
-                                return Err(anyhow!("NoClassDefFoundError (initialization)"))
+                                return Err(exception(jvm, "NoClassDefFoundError"))
                             }
                             ClassInitState::InProgress(_) => continue,
                             ClassInitState::Uninit => unreachable!(),
@@ -193,7 +210,7 @@ impl<'a> Class<'a> {
     }
 
     /// This may only be called from self.ensure_init
-    fn init<'b>(&'b self, jvm: &'b JVM<'a>) -> Result<()>
+    fn init<'b>(&'b self, jvm: &'b JVM<'a>) -> JVMResult<'a, ()>
     where
         'a: 'b,
     {
@@ -204,33 +221,33 @@ impl<'a> Class<'a> {
                 match field.descriptor {
                     Typ::Bool | Typ::Byte => self
                         .static_storage
-                        .write_i8(field.byte_offset, const_pool.get_int(index)? as i8)
+                        .write_i8(field.byte_offset, const_pool.get_int(jvm, index)? as i8)
                         .unwrap(),
                     Typ::Short | Typ::Char => self
                         .static_storage
-                        .write_i16(field.byte_offset, const_pool.get_int(index)? as i16)
+                        .write_i16(field.byte_offset, const_pool.get_int(jvm, index)? as i16)
                         .unwrap(),
                     Typ::Int => self
                         .static_storage
-                        .write_i32(field.byte_offset, const_pool.get_int(index)?)
+                        .write_i32(field.byte_offset, const_pool.get_int(jvm, index)?)
                         .unwrap(),
                     Typ::Float => self
                         .static_storage
-                        .write_f32(field.byte_offset, const_pool.get_float(index)?)
+                        .write_f32(field.byte_offset, const_pool.get_float(jvm, index)?)
                         .unwrap(),
                     Typ::Double => self
                         .static_storage
-                        .write_f64(field.byte_offset, const_pool.get_double(index)?)
+                        .write_f64(field.byte_offset, const_pool.get_double(jvm, index)?)
                         .unwrap(),
                     Typ::Long => self
                         .static_storage
-                        .write_i64(field.byte_offset, const_pool.get_long(index)?)
+                        .write_i64(field.byte_offset, const_pool.get_long(jvm, index)?)
                         .unwrap(),
                     Typ::Ref(name) => {
                         if name.0 == "java/lang/String" {
                             todo!()
                         } else {
-                            bail!("final static non-null object")
+                            return Err(exception(jvm, "ClassFormatError"));
                         }
                     }
                 }

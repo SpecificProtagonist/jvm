@@ -1,5 +1,7 @@
-use crate::{class::Field, AccessFlags, Class, IntStr, Method, MethodNaT, JVM};
-use anyhow::{anyhow, bail, Result};
+use crate::{
+    class::Field, exception, object::Object, parse, AccessFlags, Class, IntStr, JVMResult, Method,
+    MethodNaT, JVM,
+};
 
 // Differentiating runtime- and on-disk const pool shouldn't be neccessary
 // although it would allow a speedup
@@ -30,26 +32,31 @@ pub(crate) enum ConstPoolItem<'a> {
     PlaceholderAfterLongOrDoubleEntryOrForEntryZero,
 }
 
+fn cfe<'a>(jvm: &JVM<'a>) -> Object<'a> {
+    exception(jvm, "ClassFormatError")
+}
+
 impl<'a> ConstPool<'a> {
     /// Must be called prior to initialization
-    pub fn resolve(&mut self, jvm: &JVM<'a>) -> Result<()> {
+    pub fn resolve(&mut self, jvm: &JVM<'a>) -> JVMResult<'a, ()> {
         for i in 0..self.items.len() {
             if let ConstPoolItem::RawClass(index) = self.items[i] {
-                self.items[i] = ConstPoolItem::Class(jvm.resolve_class(self.get_utf8(index)?)?);
+                self.items[i] =
+                    ConstPoolItem::Class(jvm.resolve_class(self.get_utf8(jvm, index)?)?);
             }
         }
         for i in 0..self.items.len() {
             match self.items[i] {
                 ConstPoolItem::MethodRef { class, nat } => {
                     // Arrays inherit methods from Object
-                    let class = self.get_class(class)?;
-                    let (name, descriptor) = self.get_raw_nat(nat)?;
-                    let typ = crate::parse::parse_method_descriptor(jvm, descriptor)?;
+                    let class = self.get_class(jvm, class)?;
+                    let (name, descriptor) = self.get_raw_nat(jvm, nat)?;
+                    let typ = parse::parse_method_descriptor(jvm, descriptor)?;
                     let typ = jvm.method_descriptor_storage.lock().alloc(typ);
                     let method = class
                         .methods
                         .get(&MethodNaT { name, typ })
-                        .ok_or_else(|| anyhow!("Method not found"))?;
+                        .ok_or_else(|| exception(jvm, "NoSuchMethodError"))?;
                     if method.access_flags.contains(AccessFlags::STATIC) {
                         self.items[i] = ConstPoolItem::StaticMethod(method);
                     } else {
@@ -59,17 +66,13 @@ impl<'a> ConstPool<'a> {
                     }
                 }
                 ConstPoolItem::FieldRef { class, nat } => {
-                    let class = self.get_class(class)?;
-                    let (name, typ) = self.get_raw_nat(nat)?;
-                    let (typ, _) = crate::parse::parse_field_descriptor(jvm, typ, 0)?;
+                    let class = self.get_class(jvm, class)?;
+                    let (name, typ) = self.get_raw_nat(jvm, nat)?;
+                    let (typ, _) = parse::parse_field_descriptor(jvm, typ, 0)?;
                     if let Some(field) = class.field(name, typ) {
                         self.items[i] = ConstPoolItem::Field(field);
                     } else {
-                        bail!(
-                            "Class {} does not have field {} of correct type",
-                            class.name,
-                            name
-                        );
+                        return Err(exception(jvm, "NoSuchFieldError"));
                     }
                 }
                 _ => (),
@@ -78,94 +81,95 @@ impl<'a> ConstPool<'a> {
         Ok(())
     }
 
-    pub fn get_int(&self, index: u16) -> Result<i32> {
+    pub fn get_int(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, i32> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Integer(int)) => Ok(*int),
-            _ => bail!("Constant pool index {} not Integer", index),
+            _ => Err(cfe(jvm)),
         }
     }
 
-    pub fn get_long(&self, index: u16) -> Result<i64> {
+    pub fn get_long(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, i64> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Long(long)) => Ok(*long),
-            _ => bail!("Constant pool index {} not Long", index),
+            _ => Err(cfe(jvm)),
         }
     }
 
-    pub fn get_float(&self, index: u16) -> Result<f32> {
+    pub fn get_float(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, f32> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Float(float)) => Ok(*float),
-            _ => bail!("Constant pool index {} not Float", index),
+            _ => Err(cfe(jvm)),
         }
     }
 
-    pub fn get_double(&self, index: u16) -> Result<f64> {
+    pub fn get_double(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, f64> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Double(double)) => Ok(*double),
-            _ => bail!("Constant pool index {} not Double", index),
+            _ => Err(cfe(jvm)),
         }
     }
 
-    pub fn get_utf8(&self, index: u16) -> Result<IntStr<'a>> {
+    pub fn get_utf8(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, IntStr<'a>> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Utf8(string)) => Ok(*string),
-            _ => bail!("Constant pool index {} not Utf8", index),
+            _ => Err(cfe(jvm)),
         }
     }
 
     /// Cannot be called after resolution
-    pub fn get_unresolved_class(&self, index: u16) -> Result<IntStr<'a>> {
+    pub fn get_unresolved_class(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, IntStr<'a>> {
         match self.items.get(index as usize) {
-            Some(ConstPoolItem::RawClass(index)) => self.get_utf8(*index),
-            _ => bail!("Constant pool index {} not Class", index),
+            Some(ConstPoolItem::RawClass(index)) => self.get_utf8(jvm, *index),
+            _ => Err(cfe(jvm)),
         }
     }
 
     /// Requires resolution first
-    pub fn get_class(&self, index: u16) -> Result<&'a Class<'a>> {
+    pub fn get_class(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, &'a Class<'a>> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Class(class)) => Ok(class),
-            _ => bail!("Constant pool index {} not Class", index),
+            _ => Err(cfe(jvm)),
         }
     }
 
     /// Requires resolution first
-    pub fn get_static_method<'b>(&'b self, index: u16) -> Result<&'a Method<'a>> {
+    pub fn get_static_method<'b>(
+        &'b self,
+        jvm: &JVM<'a>,
+        index: u16,
+    ) -> JVMResult<'a, &'a Method<'a>> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::StaticMethod(method)) => Ok(method),
-            other => bail!(
-                "Constant pool index {} not a static method (found {:?})",
-                index,
-                other
-            ),
+            _ => Err(cfe(jvm)),
         }
     }
 
     /// Requires resolution first
-    pub fn get_virtual_method(&self, index: u16) -> Result<(&'a Class<'a>, MethodNaT<'a>)> {
+    pub fn get_virtual_method(
+        &self,
+        jvm: &JVM<'a>,
+        index: u16,
+    ) -> JVMResult<'a, (&'a Class<'a>, MethodNaT<'a>)> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, *nat)),
-            _ => bail!("Constant pool index {} not a virtual method", index,),
+            _ => Err(cfe(jvm)),
         }
     }
 
     /// Requires resolution first
-    pub fn get_field(&self, index: u16) -> Result<&'a Field<'a>> {
+    pub fn get_field(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, &'a Field<'a>> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Field(field)) => Ok(field),
-            other => bail!(
-                "Constant pool index {index} not a field (found {:?})",
-                other
-            ),
+            _ => Err(cfe(jvm)),
         }
     }
 
-    fn get_raw_nat(&self, index: u16) -> Result<(IntStr<'a>, IntStr<'a>)> {
+    fn get_raw_nat(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, (IntStr<'a>, IntStr<'a>)> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::NameAndType { name, descriptor }) => {
-                Ok((self.get_utf8(*name)?, self.get_utf8(*descriptor)?))
+                Ok((self.get_utf8(jvm, *name)?, self.get_utf8(jvm, *descriptor)?))
             }
-            _ => bail!("Invalid class constant pool item index"),
+            _ => Err(cfe(jvm)),
         }
     }
 }

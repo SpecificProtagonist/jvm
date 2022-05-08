@@ -1,13 +1,16 @@
-//! Java strings are currently not yet supported.
-//! Until then this module is only for utf8 constants and
-//! strings interned per API. There are no corresponding string objects.
-
 use std::hash::Hash;
 
 use crate::JVM;
 
+// TODO: replace or augment with Object<'a>
 #[derive(Debug, Clone, Copy, Eq)]
 pub struct IntStr<'a>(pub(crate) &'a str);
+
+impl<'a> IntStr<'a> {
+    pub fn get(&self) -> &'a str {
+        self.0
+    }
+}
 
 impl<'a> PartialEq for IntStr<'a> {
     fn eq(&self, other: &Self) -> bool {
