@@ -13,6 +13,7 @@ use std::{
     hash::Hash,
     io::Read,
     path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 mod class;
@@ -48,6 +49,8 @@ pub enum JVMValue<'a> {
 pub struct JVM<'a> {
     /// TODO: provide ClassLoader trait instead
     class_path: Vec<PathBuf>,
+    /// Bypasses verification by type checking. This is unsafe!
+    pub verification_type_checking_disabled: AtomicBool,
     heap: Heap<'a>,
     // Classes (including arrays), methods, method descriptors and interned strings live as long as the JVM
     string_storage: Mutex<ManuallyDropArena<String, 256>>,
@@ -66,20 +69,32 @@ impl<'a> JVM<'a> {
     /// Construct a new JVM. When searching for class definitions, the folders specified in
     /// `class_path` are searched in order.
     pub fn new(class_path: Vec<PathBuf>) -> Self {
-        //let class_storage = Mutex::<ManuallyDropArena<_, 128>>::default();
         let heap = Heap::default();
         let dummy_class = heap.alloc_typed(Class::dummy_class(&heap));
         Self {
             class_path,
+            verification_type_checking_disabled: false.into(),
             heap,
             string_storage: Default::default(),
-            //class_storage,
             method_storage: Default::default(),
             method_descriptor_storage: Default::default(),
             strings: Default::default(),
             classes: Default::default(),
             dummy_class,
         }
+    }
+
+    /// Bypasses verification by type checking.
+    /// # Safety
+    /// Undefined behavior if any invalid class gets loaded
+    pub unsafe fn disable_verification_by_type_checking(&self) {
+        self.verification_type_checking_disabled
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub fn enable_verification_by_type_checking(&self) {
+        self.verification_type_checking_disabled
+            .store(false, Ordering::SeqCst)
     }
 
     pub fn intern_str<'b>(&'b self, str: impl Into<Cow<'b, str>>) -> IntStr<'a> {
