@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 use crate::{
     const_pool::ConstPoolItem, exception, instructions::*, object::Object, parse, AccessFlags,
@@ -135,7 +135,7 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b JVM<'a>, class: &'b Class<'a>) -> JVMR
 }
 
 // TODO: do this lazily
-fn verify_method<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> JVMResult<'a, ()> {
+fn verify_method<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResult<'a, ()> {
     if let (false, Some(super_class)) = (
         method.access_flags.contains(AccessFlags::STATIC),
         method.class.load().super_class,
@@ -148,7 +148,12 @@ fn verify_method<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> JVMResult<
     }
 
     if method.code.is_some() {
-        verify_bytecode(jvm, method)?
+        if !jvm
+            .verification_type_checking_disabled
+            .load(Ordering::SeqCst)
+        {
+            verify_bytecode(jvm, method)?
+        }
     } else if !method
         .access_flags
         .intersects(AccessFlags::NATIVE | AccessFlags::ABSTRACT)
@@ -159,12 +164,19 @@ fn verify_method<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> JVMResult<
     Ok(())
 }
 
-fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> JVMResult<'a, ()> {
-    ///// for testing /////
+fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResult<'a, ()> {
+    println!(
+        "verifying {}.{} ({})",
+        method.class().name,
+        method.nat.name,
+        jvm.verification_type_checking_disabled
+            .load(Ordering::SeqCst)
+    );
+    ///// for testing, TODO: remove this! /////
     if method.nat.name.0 == "<init>" {
         return Ok(());
     }
-    ///////////////////////
+    ///////////////////////////////////////////
 
     let code = method.code.as_ref().unwrap();
     let const_pool = method.class.load().const_pool.read();
@@ -728,8 +740,8 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> JVMResul
         // If the next specified stack map frame is reached, check if it matches the inferred one
         if let Some((type_state_pc, explicit_type_state)) = next_explicit_type_state {
             match (*pc).cmp(type_state_pc) {
-                Ordering::Less => {} // Not at frame yet
-                Ordering::Equal => {
+                std::cmp::Ordering::Less => {} // Not at frame yet
+                std::cmp::Ordering::Equal => {
                     if !connected_to_previous_block
                         | type_state.is_assignable_to(explicit_type_state)
                     {
@@ -741,7 +753,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'b Method<'a>) -> JVMResul
                         );
                     }
                 }
-                Ordering::Greater => {
+                std::cmp::Ordering::Greater => {
                     return Err(ve(
                         jvm,
                         &format!(

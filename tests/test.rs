@@ -64,6 +64,10 @@ fn control_flow() {
 #[test]
 fn field_access() {
     let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    unsafe {
+        // TODO: implement enough verification
+        jvm.disable_verification_by_type_checking()
+    }
     let class = jvm.resolve_class("FieldAccess").unwrap();
     let set_method = class
         .method(
@@ -87,6 +91,10 @@ fn field_access() {
 #[test]
 fn invoke_static() {
     let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    unsafe {
+        // TODO: implement enough verification
+        jvm.disable_verification_by_type_checking()
+    }
     let method = jvm
         .resolve_method(
             "InvokeStatic",
@@ -105,6 +113,10 @@ fn invoke_static() {
 #[test]
 fn invoke_virtual() {
     let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    unsafe {
+        // TODO: implement enough verification
+        jvm.disable_verification_by_type_checking()
+    }
     let method = jvm
         .resolve_method("InvokeVirtual", "test", vec![], Some(Typ::Bool))
         .unwrap();
@@ -114,6 +126,10 @@ fn invoke_virtual() {
 #[test]
 fn arrays() {
     let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    unsafe {
+        // TODO: implement enough verification
+        jvm.disable_verification_by_type_checking()
+    }
     let method = jvm
         .resolve_method("Arrays", "test", vec![], Some(Typ::Bool))
         .unwrap();
@@ -130,6 +146,10 @@ fn lazy_resolve() {
 #[test]
 fn lazy_init() {
     let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    unsafe {
+        // TODO: implement enough verification
+        jvm.disable_verification_by_type_checking()
+    }
     let method = jvm
         .resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))
         .unwrap();
@@ -139,6 +159,10 @@ fn lazy_init() {
     );
 
     let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    unsafe {
+        // TODO: implement enough verification
+        jvm.disable_verification_by_type_checking()
+    }
     let method = jvm
         .resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))
         .unwrap();
@@ -151,6 +175,10 @@ fn lazy_init() {
 #[test]
 fn many_allocs() {
     let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    unsafe {
+        // TODO: implement enough verification
+        jvm.disable_verification_by_type_checking()
+    }
     let method = jvm
         .resolve_method("ManyAllocs", "test", vec![], None)
         .unwrap();
