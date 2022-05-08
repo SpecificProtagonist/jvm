@@ -36,18 +36,14 @@ pub use typ::Typ;
 /// Err is an object that extends Throwable
 pub type JVMResult<'a, T> = std::result::Result<T, Object<'a>>;
 
-// Should JVMResult use the following?
-/*
-#[derive(Debug, Clone)]
-struct Exception<'a>(Object<'a>);
-
-impl<'a> std::fmt::Display for Exception<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TODO: also print message if available
-        f.write_str(self.0.class().name.get())
-    }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum JVMValue<'a> {
+    Ref(Object<'a>),
+    Int(i32),
+    Long(i64),
+    Float(f32),
+    Double(f64),
 }
-*/
 
 pub struct JVM<'a> {
     /// TODO: provide ClassLoader trait instead
@@ -274,6 +270,17 @@ impl<'a> JVM<'a> {
             })
             .ok_or_else(|| exception(self, "NoSuchMethodError"))
             .map(|m| *m)
+    }
+
+    // TODO: publicly accessible dynamic method resolution
+    /// Calls a method, initializing its class if necessary
+    /// Returns either the function's return value or the exception that was thrown
+    pub fn invoke(
+        &self,
+        method: &'a Method<'a>,
+        args: &[JVMValue<'a>],
+    ) -> JVMResult<'a, Option<JVMValue<'a>>> {
+        interp::invoke(self, method, args)
     }
 
     /// Creates an instance of a non-array class on the heap

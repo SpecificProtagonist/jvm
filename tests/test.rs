@@ -1,12 +1,10 @@
 use std::sync::Arc;
 
-use jvm::interp::JVMValue;
 use jvm::*;
 
 #[test]
 fn circular_loading() {
     let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
-    println!("{:?}", jvm.resolve_class("CircularA").unwrap_err());
     assert_eq!(
         jvm.resolve_class("CircularA")
             .unwrap_err()
@@ -23,10 +21,7 @@ fn initialization() {
     let method = jvm
         .resolve_method("Initialization", "check_init", vec![], Some(Typ::Bool))
         .unwrap();
-    assert_eq!(
-        interp::invoke(&jvm, method, &[]).unwrap(),
-        Some(JVMValue::Int(1))
-    );
+    assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(JVMValue::Int(1)));
 }
 
 #[test]
@@ -45,10 +40,7 @@ fn init_lock() {
                         &MethodDescriptor(vec![], Some(Typ::Bool)),
                     )
                     .unwrap();
-                assert_eq!(
-                    interp::invoke(&jvm, method, &[]).unwrap(),
-                    Some(JVMValue::Int(1))
-                );
+                assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(JVMValue::Int(1)));
             })
         })
         .collect::<Vec<_>>();
@@ -63,9 +55,9 @@ fn control_flow() {
     let method = jvm
         .resolve_method("ControlFlow", "is_even", vec![Typ::Int], Some(Typ::Bool))
         .unwrap();
-    let even_10 = interp::invoke(&jvm, method, &[JVMValue::Int(10)]).unwrap();
+    let even_10 = jvm.invoke(method, &[JVMValue::Int(10)]).unwrap();
     assert_eq!(even_10, Some(JVMValue::Int(1)));
-    let even_13 = interp::invoke(&jvm, method, &[JVMValue::Int(13)]).unwrap();
+    let even_13 = jvm.invoke(method, &[JVMValue::Int(13)]).unwrap();
     assert_eq!(even_13, Some(JVMValue::Int(0)));
 }
 
@@ -85,12 +77,9 @@ fn field_access() {
             &MethodDescriptor(vec![], Some(Typ::Int)),
         )
         .unwrap();
+    assert_eq!(jvm.invoke(set_method, &[JVMValue::Int(42)]).unwrap(), None);
     assert_eq!(
-        interp::invoke(&jvm, set_method, &[JVMValue::Int(42)]).unwrap(),
-        None
-    );
-    assert_eq!(
-        interp::invoke(&jvm, get_method, &[]).unwrap(),
+        jvm.invoke(get_method, &[]).unwrap(),
         Some(JVMValue::Int(42))
     );
 }
@@ -107,7 +96,8 @@ fn invoke_static() {
         )
         .unwrap();
     assert_eq!(
-        interp::invoke(&jvm, method, &[JVMValue::Int(1), JVMValue::Int(0)]).unwrap(),
+        jvm.invoke(method, &[JVMValue::Int(1), JVMValue::Int(0)])
+            .unwrap(),
         Some(JVMValue::Int(1))
     );
 }
@@ -118,10 +108,7 @@ fn invoke_virtual() {
     let method = jvm
         .resolve_method("InvokeVirtual", "test", vec![], Some(Typ::Bool))
         .unwrap();
-    assert_eq!(
-        interp::invoke(&jvm, method, &[]).unwrap(),
-        Some(JVMValue::Int(1))
-    );
+    assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(JVMValue::Int(1)));
 }
 
 #[test]
@@ -130,10 +117,7 @@ fn arrays() {
     let method = jvm
         .resolve_method("Arrays", "test", vec![], Some(Typ::Bool))
         .unwrap();
-    assert_eq!(
-        interp::invoke(&jvm, method, &[]).unwrap(),
-        Some(JVMValue::Int(1))
-    );
+    assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(JVMValue::Int(1)));
 }
 
 /// Lazy resolution isn't mandatory for the spec, but I still want it
@@ -150,7 +134,7 @@ fn lazy_init() {
         .resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))
         .unwrap();
     assert_eq!(
-        interp::invoke(&jvm, method, &[JVMValue::Int(0)]).unwrap(),
+        jvm.invoke(method, &[JVMValue::Int(0)]).unwrap(),
         Some(JVMValue::Int(1))
     );
 
@@ -159,7 +143,7 @@ fn lazy_init() {
         .resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))
         .unwrap();
     assert_eq!(
-        interp::invoke(&jvm, method, &[JVMValue::Int(1)]).unwrap(),
+        jvm.invoke(method, &[JVMValue::Int(1)]).unwrap(),
         Some(JVMValue::Int(2))
     );
 }
@@ -170,5 +154,5 @@ fn many_allocs() {
     let method = jvm
         .resolve_method("ManyAllocs", "test", vec![], None)
         .unwrap();
-    assert_eq!(interp::invoke(&jvm, method, &[]).unwrap(), None);
+    assert_eq!(jvm.invoke(method, &[]).unwrap(), None);
 }

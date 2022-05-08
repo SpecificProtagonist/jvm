@@ -7,22 +7,10 @@ use crate::{
     heap::JVMPtrSize,
     instructions::*,
     object::{self, Object},
-    AccessFlags, Field, JVMResult, Method, Typ, JVM,
+    AccessFlags, Field, JVMResult, JVMValue, Method, Typ, JVM,
 };
-//use anyhow::{anyhow, bail, Context, Result};
 
-// User-facing type
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum JVMValue<'a> {
-    Ref(Object<'a>),
-    Int(i32),
-    Long(i64),
-    Float(f32),
-    Double(f64),
-}
-
-// User facing way to invoke methods
-pub fn invoke<'a, 'b>(
+pub(crate) fn invoke<'a, 'b>(
     jvm: &'b JVM<'a>,
     method: &'a Method<'a>,
     args: &'b [JVMValue<'a>],
