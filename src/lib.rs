@@ -1,6 +1,5 @@
 #![feature(hash_set_entry)]
 #![feature(map_first_last)]
-#![feature(never_type)]
 
 use fixed_typed_arena::ManuallyDropArena;
 use heap::Heap;
@@ -33,7 +32,8 @@ use field_storage::FieldStorage;
 pub use string_interning::*;
 pub use typ::Typ;
 
-// TODO: what to do if trying to throw an exception retursively throws infinite exceptions?
+// TODO: what to do if trying to throw an exception retursively throws infinite exceptions
+// (e.g. java/lang/Object is missing/corrupt)? Currently stackoverflow
 /// Err is an object that extends Throwable
 pub type JVMResult<'a, T> = std::result::Result<T, Object<'a>>;
 
@@ -196,6 +196,7 @@ impl<'a> JVM<'a> {
                     .read_to_end(&mut file)
                     .expect(error);
                 bytes = Some(file);
+
                 break;
             }
         }
@@ -339,8 +340,10 @@ impl<'a> Drop for JVM<'a> {
     }
 }
 
-fn exception<'b, 'a: 'b>(jvm: &'b JVM<'a>, class: &'static str) -> Object<'a> {
-    match jvm.resolve_class(class) {
+/// For exceptions and errors thrown by the JVM (instead of by athrow).
+/// `name` doesn't include `java/lang` prefix
+fn exception<'b, 'a: 'b>(jvm: &'b JVM<'a>, name: &'static str) -> Object<'a> {
+    match jvm.resolve_class(format!("java/lang/{name}")) {
         Ok(class) => {
             if let Err(thrown) = class.ensure_init(jvm) {
                 thrown

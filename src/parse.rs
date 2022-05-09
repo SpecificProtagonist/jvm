@@ -9,7 +9,8 @@ use crate::{
     exception,
     object::{header_size, Object},
     verification::{StackMapFrame, VerificationType},
-    AccessFlags, Code, FieldStorage, IntStr, JVMResult, MethodDescriptor, Typ, JVM,
+    AccessFlags, Code, ExceptionHandler, FieldStorage, IntStr, JVMResult, MethodDescriptor, Typ,
+    JVM,
 };
 use crossbeam_utils::atomic::AtomicCell;
 
@@ -445,10 +446,15 @@ fn read_code<'a>(
         bytes.push(read_u8(jvm, input)?);
     }
 
+    let mut exception_table = Vec::new();
     let exception_table_length = read_u16(jvm, input)?;
     for _ in 0..exception_table_length {
-        // TODO: support exceptions
-        read_u64(jvm, input)?;
+        exception_table.push(ExceptionHandler {
+            start_pc: read_u16(jvm, input)?,
+            end_pc: read_u16(jvm, input)?,
+            handler_pc: read_u16(jvm, input)?,
+            catch_type: read_u16(jvm, input)?,
+        });
     }
 
     let attributes_count = read_u16(jvm, input)?;
@@ -474,6 +480,7 @@ fn read_code<'a>(
         max_locals,
         bytes,
         stack_map_table,
+        exception_table,
     })
 }
 

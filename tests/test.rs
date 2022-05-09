@@ -11,7 +11,7 @@ fn circular_loading() {
             .class()
             .name()
             .get(),
-        "ClassCircularityError"
+        "java/lang/ClassCircularityError"
     )
 }
 
@@ -183,4 +183,24 @@ fn many_allocs() {
         .resolve_method("ManyAllocs", "test", vec![], None)
         .unwrap();
     assert_eq!(jvm.invoke(method, &[]).unwrap(), None);
+}
+
+#[test]
+fn exceptions() {
+    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    unsafe {
+        // TODO: implement enough verification
+        jvm.disable_verification_by_type_checking()
+    }
+    let method = jvm
+        .resolve_method("Exceptions", "test", vec![Typ::Bool], Some(Typ::Bool))
+        .unwrap();
+    assert_eq!(
+        jvm.invoke(method, &[JVMValue::Int(0)]).unwrap(),
+        Some(JVMValue::Int(0))
+    );
+    assert_eq!(
+        jvm.invoke(method, &[JVMValue::Int(1)]).unwrap(),
+        Some(JVMValue::Int(1))
+    );
 }

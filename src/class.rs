@@ -3,7 +3,7 @@ use parking_lot::{Condvar, Mutex, RwLock};
 use std::{collections::HashMap, fmt::Debug, thread::ThreadId};
 
 use crate::{
-    const_pool::ConstPool, exception, field_storage::FieldStorage, heap::Heap,
+    const_pool::ConstPool, exception, field_storage::FieldStorage, heap::Heap, object::Object,
     verification::verify, AccessFlags, IntStr, JVMResult, Typ, JVM,
 };
 
@@ -26,15 +26,15 @@ pub struct Class<'a> {
     pub(crate) static_storage: FieldStorage,
     /// Combined size of instance fields in normal class, 0 if array
     pub(crate) object_size: usize,
-    pub(crate) init: Mutex<ClassInitState>,
+    pub(crate) init: Mutex<ClassInitState<'a>>,
     pub(crate) init_waiter: Condvar,
 }
 
-pub(crate) enum ClassInitState {
+pub(crate) enum ClassInitState<'a> {
     Uninit,
     InProgress(ThreadId),
     Done,
-    Error,
+    Error(Object<'a>),
 }
 
 #[derive(Debug)]
@@ -98,6 +98,14 @@ pub(crate) struct Code {
     pub max_locals: u16,
     pub bytes: Vec<u8>,
     pub stack_map_table: Option<Vec<u8>>,
+    pub exception_table: Vec<ExceptionHandler>,
+}
+
+pub(crate) struct ExceptionHandler {
+    pub start_pc: u16,
+    pub end_pc: u16,
+    pub handler_pc: u16,
+    pub catch_type: u16,
 }
 
 impl<'a, 'b> Eq for &'b Class<'a> {}
@@ -124,14 +132,14 @@ impl<'a> Class<'a> {
         self.methods.get(&MethodNaT { name, typ }).copied()
     }
 
-    pub fn subclass_of(&'a self, other: &'a Class<'a>) -> bool {
+    pub fn true_subclass_of(&'a self, other: &'a Class<'a>) -> bool {
         self.super_class
             .map(|sc| (sc == other) || sc.assignable_to(other))
             .unwrap_or(false)
     }
 
     pub fn assignable_to(&'a self, other: &'a Class<'a>) -> bool {
-        (self == other) || self.subclass_of(other)
+        (self == other) || self.true_subclass_of(other)
     }
 
     pub(crate) fn dummy_class(heap: &Heap) -> Self {
@@ -163,7 +171,7 @@ impl<'a> Class<'a> {
         let mut guard = self.init.lock();
         match *guard {
             ClassInitState::Done => Ok(()),
-            ClassInitState::Error => Err(exception(jvm, "NoClassDefFoundError")),
+            ClassInitState::Error(err) => Err(err),
             ClassInitState::InProgress(thread) => {
                 if thread == std::thread::current().id() {
                     Ok(())
@@ -172,9 +180,7 @@ impl<'a> Class<'a> {
                         self.init_waiter.wait(&mut guard);
                         match *guard {
                             ClassInitState::Done => return Ok(()),
-                            ClassInitState::Error => {
-                                return Err(exception(jvm, "NoClassDefFoundError"))
-                            }
+                            ClassInitState::Error(err) => return Err(err),
                             ClassInitState::InProgress(_) => continue,
                             ClassInitState::Uninit => unreachable!(),
                         }
@@ -188,23 +194,14 @@ impl<'a> Class<'a> {
                 if let Some(super_class) = self.super_class {
                     super_class.ensure_init(jvm)?;
                 }
-                let init_result = self.init(jvm);
 
-                *self.init.lock() = if init_result.is_ok() {
-                    ClassInitState::Done
-                } else {
-                    // TMP
-                    println!(
-                        "Initializatin error for {}: {:?}",
-                        self.name,
-                        init_result.unwrap_err()
-                    );
-                    ClassInitState::Error
+                let result = self.init(jvm);
+                *self.init.lock() = match result {
+                    Ok(()) => ClassInitState::Done,
+                    Err(err) => ClassInitState::Error(err),
                 };
-
                 self.init_waiter.notify_all();
-
-                Ok(())
+                result
             }
         }
     }

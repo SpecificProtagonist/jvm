@@ -113,8 +113,8 @@ pub(crate) fn push_type<'a, 'b>(
     Ok(())
 }
 
-// TODO: use this to construct a more efficient bytecode format?
 // TODO: if this throws a linkage error, it must always throw the same instance for the same class
+// TODO: Exception handlers
 /// Verification by type checking
 /// (Verification by type inference is not planned)
 pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b JVM<'a>, class: &'b Class<'a>) -> JVMResult<'a, ()> {
@@ -165,6 +165,7 @@ fn verify_method<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResult<
 }
 
 fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResult<'a, ()> {
+    ///// for testing, TODO: remove this! /////
     println!(
         "verifying {}.{} ({})",
         method.class().name,
@@ -172,7 +173,6 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
         jvm.verification_type_checking_disabled
             .load(Ordering::SeqCst)
     );
-    ///// for testing, TODO: remove this! /////
     if method.nat.name.0 == "<init>" {
         return Ok(());
     }
@@ -246,6 +246,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
     while (*pc as usize) < code.bytes.len() {
         match read_code_u8(jvm, bytes, pc)? {
             NOP => {}
+            ACONST_NULL => type_state.stack.push(VerificationType::Null),
             ICONST_0 | ICONST_1 | ICONST_2 | ICONST_3 | ICONST_4 | ICONST_5 | ICONST_M1 => {
                 type_state.stack.push(VerificationType::Integer)
             }
@@ -731,7 +732,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
                 }
                 type_state.stack.push(VerificationType::Integer);
             }
-            _ => todo!(),
+            other => todo!("bytecode {other}"),
         }
 
         if type_state.stack.len() > code.max_stack as usize {
