@@ -92,6 +92,7 @@ impl<'a> std::fmt::Debug for Object<'a> {
                         }
                     }
                 }
+                write!(f, "}}")?;
             }
         }
         Ok(())

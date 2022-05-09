@@ -70,9 +70,11 @@ fn invoke_initialized<'a, 'b>(
     // The class is already initialized, so we can hold the read lock for as long as we like
     let const_pool = method.class.load().const_pool.read();
 
+    let code = method.code.as_ref().unwrap();
+
     let mut frame = Frame {
         method,
-        code_bytes: &method.code.as_ref().unwrap().bytes,
+        code_bytes: &code.bytes,
         locals: {
             let max_locals = method.code.as_ref().unwrap().max_locals as usize;
             let mut locals = Vec::with_capacity(max_locals);
@@ -90,10 +92,46 @@ fn invoke_initialized<'a, 'b>(
         return Err(exception(jvm, "NullPointerException"));
     }
 
-    // Todo: bytecode verification, esp. about pc
+    loop {
+        match run_until_exception_or_return(jvm, method, &const_pool, &mut frame) {
+            Ok(result) => return Ok(result),
+            Err(thrown) => {
+                // Check whether the exception gets caught or rethrown
+                let mut caught = false;
+                for handler in &code.exception_table {
+                    let in_range = (handler.start_pc..=handler.end_pc).contains(&frame.pc);
+                    if in_range
+                        && (handler.catch_type == 0
+                            || thrown
+                                .class()
+                                .assignable_to(const_pool.get_class(jvm, handler.catch_type)?))
+                    {
+                        frame.stack.clear();
+                        frame.stack.push(Value::from_ref(thrown));
+                        frame.pc = handler.handler_pc;
+                        caught = true;
+                        break;
+                    }
+                }
+                if !caught {
+                    return Err(thrown);
+                }
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn run_until_exception_or_return<'a>(
+    jvm: &JVM<'a>,
+    method: &'a Method<'a>,
+    const_pool: &ConstPool<'a>,
+    frame: &mut Frame<'a>,
+) -> JVMResult<'a, Option<JVMValue<'a>>> {
     loop {
         match frame.read_code_u8() {
             NOP => {}
+            ACONST_NULL => frame.stack.push(Value(0)),
             ICONST_M1 => frame.stack.push(Value::from_int(-1)),
             ICONST_0 => frame.stack.push(Value::from_int(0)),
             ICONST_1 => frame.stack.push(Value::from_int(1)),
@@ -118,15 +156,15 @@ fn invoke_initialized<'a, 'b>(
             }
             LDC => {
                 let index = frame.read_code_u8() as u16;
-                ldc(&mut frame, &const_pool, index);
+                ldc(frame, const_pool, index);
             }
             LDC_W => {
                 let index = frame.read_code_u16();
-                ldc(&mut frame, &const_pool, index);
+                ldc(frame, const_pool, index);
             }
             LDC2_W => {
                 let index = frame.read_code_u16();
-                ldc(&mut frame, &const_pool, index);
+                ldc(frame, const_pool, index);
             }
             ILOAD | FLOAD | ALOAD => {
                 let index = frame.read_code_u8() as u16;
@@ -763,19 +801,19 @@ fn invoke_initialized<'a, 'b>(
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field(jvm, index).unwrap();
                 field.class.load().ensure_init(jvm)?;
-                get_field(&mut frame, field, &field.class.load().static_storage);
+                get_field(frame, field, &field.class.load().static_storage);
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field(jvm, index).unwrap();
                 field.class.load().ensure_init(jvm)?;
-                put_field(&mut frame, field, &field.class.load().static_storage);
+                put_field(frame, field, &field.class.load().static_storage);
             }
             GETFIELD => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field(jvm, index)?;
                 let object = unsafe { frame.pop().as_ref() };
-                get_field(&mut frame, field, &object.ptr);
+                get_field(frame, field, &object.ptr);
             }
             PUTFIELD => {
                 let index = frame.read_code_u16();
@@ -795,7 +833,7 @@ fn invoke_initialized<'a, 'b>(
                     frame.stack.push(value);
                     obj
                 };
-                put_field(&mut frame, field, &object.ptr);
+                put_field(frame, field, &object.ptr);
             }
             INVOKEVIRTUAL => {
                 let index = frame.read_code_u16();
@@ -817,7 +855,7 @@ fn invoke_initialized<'a, 'b>(
                 if invoke_method.access_flags.contains(AccessFlags::ABSTRACT) {
                     return Err(exception(jvm, "AbstractMethodError"));
                 }
-                execute_invoke_instr(jvm, &mut frame, invoke_method)?;
+                execute_invoke_instr(jvm, frame, invoke_method)?;
             }
             INVOKESPECIAL => {
                 let index = frame.read_code_u16();
@@ -832,7 +870,7 @@ fn invoke_initialized<'a, 'b>(
                 let is_instance_init = nat.name.0 == "<init>";
 
                 let class = if !is_instance_init
-                    & method.class.load().subclass_of(named_class)
+                    & method.class.load().true_subclass_of(named_class)
                     & method
                         .class
                         .load()
@@ -855,13 +893,13 @@ fn invoke_initialized<'a, 'b>(
                 if invoke_method.access_flags.contains(AccessFlags::STATIC) {
                     return Err(exception(jvm, "IncompatibleClassChangeError"));
                 }
-                execute_invoke_instr(jvm, &mut frame, invoke_method)?;
+                execute_invoke_instr(jvm, frame, invoke_method)?;
             }
             INVOKESTATIC => {
                 let index = frame.read_code_u16();
                 let invoke_method = const_pool.get_static_method(jvm, index)?;
                 invoke_method.class.load().ensure_init(jvm)?;
-                execute_invoke_instr(jvm, &mut frame, invoke_method)?;
+                execute_invoke_instr(jvm, frame, invoke_method)?;
             }
             NEW => {
                 let index = frame.read_code_u16();
@@ -915,6 +953,13 @@ fn invoke_initialized<'a, 'b>(
                 } else {
                     unreachable!()
                 }
+            }
+            ATHROW => {
+                let obj = unsafe { frame.pop().as_ref() };
+                if obj.null() {
+                    return Err(exception(jvm, "NullPointerException"));
+                }
+                return Err(obj);
             }
             MULTIANEWARRAY => {
                 todo!()

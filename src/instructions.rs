@@ -1,4 +1,5 @@
 pub const NOP: u8 = 0;
+pub const ACONST_NULL: u8 = 1;
 pub const ICONST_M1: u8 = 2;
 pub const ICONST_0: u8 = 3;
 pub const ICONST_1: u8 = 4;
@@ -185,6 +186,7 @@ pub const NEW: u8 = 187;
 pub const NEWARRAY: u8 = 188;
 pub const ANEWARRAY: u8 = 189;
 pub const ARRAYLENGTH: u8 = 190;
+pub const ATHROW: u8 = 191;
 pub const MULTIANEWARRAY: u8 = 197;
 pub const IF_NULL: u8 = 198;
 pub const GOTO_W: u8 = 200;
