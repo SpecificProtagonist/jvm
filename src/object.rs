@@ -34,7 +34,7 @@ impl<'a> Object<'a> {
     }
 
     pub fn class(self) -> &'a Class<'a> {
-        unsafe { &*(heap::ptr_decode(self.ptr.read_ptr(0).unwrap()) as *const Class) }
+        unsafe { &*(heap::ptr_decode(self.ptr.read_ptr(0, false).unwrap()) as *const Class) }
     }
 
     pub fn ptr(self) -> JVMPtrSize {
@@ -67,27 +67,41 @@ impl<'a> std::fmt::Debug for Object<'a> {
                         first = false;
                         write!(f, "{}: ", field.name)?;
                         match field.descriptor {
-                            Typ::Bool | Typ::Byte => {
-                                write!(f, "{}", self.ptr.read_i8(field.byte_offset).unwrap())?
-                            }
-                            Typ::Short => {
-                                write!(f, "{}", self.ptr.read_i16(field.byte_offset).unwrap())?
-                            }
-                            Typ::Char => {
-                                write!(f, "u+{:x}", self.ptr.read_i16(field.byte_offset).unwrap())?
-                            }
-                            Typ::Int => {
-                                write!(f, "{}", self.ptr.read_i32(field.byte_offset).unwrap())?
-                            }
-                            Typ::Long => {
-                                write!(f, "{}", self.ptr.read_i64(field.byte_offset).unwrap())?
-                            }
-                            Typ::Float => {
-                                write!(f, "{}", self.ptr.read_f32(field.byte_offset).unwrap())?
-                            }
-                            Typ::Double => {
-                                write!(f, "{}", self.ptr.read_f64(field.byte_offset).unwrap())?
-                            }
+                            Typ::Bool | Typ::Byte => write!(
+                                f,
+                                "{}",
+                                self.ptr.read_i8(field.byte_offset, false).unwrap()
+                            )?,
+                            Typ::Short => write!(
+                                f,
+                                "{}",
+                                self.ptr.read_i16(field.byte_offset, false).unwrap()
+                            )?,
+                            Typ::Char => write!(
+                                f,
+                                "u+{:x}",
+                                self.ptr.read_i16(field.byte_offset, false).unwrap()
+                            )?,
+                            Typ::Int => write!(
+                                f,
+                                "{}",
+                                self.ptr.read_i32(field.byte_offset, false).unwrap()
+                            )?,
+                            Typ::Long => write!(
+                                f,
+                                "{}",
+                                self.ptr.read_i64(field.byte_offset, false).unwrap()
+                            )?,
+                            Typ::Float => write!(
+                                f,
+                                "{}",
+                                self.ptr.read_f32(field.byte_offset, false).unwrap()
+                            )?,
+                            Typ::Double => write!(
+                                f,
+                                "{}",
+                                self.ptr.read_f64(field.byte_offset, false).unwrap()
+                            )?,
                             Typ::Ref(_) => write!(f, "obj")?,
                         }
                     }

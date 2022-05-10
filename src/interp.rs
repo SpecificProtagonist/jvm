@@ -198,7 +198,10 @@ fn run_until_exception_or_return<'a>(
                 }
                 frame.stack.push(Value::from_int(
                     obj.ptr
-                        .read_i32((object::header_size() as isize + 4 * index as isize) as u32)
+                        .read_i32(
+                            (object::header_size() as isize + 4 * index as isize) as u32,
+                            false,
+                        )
                         .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
                 ));
             }
@@ -210,7 +213,10 @@ fn run_until_exception_or_return<'a>(
                 }
                 frame.push_long(
                     obj.ptr
-                        .read_i64((object::header_size() as isize + 8 * index as isize) as u32)
+                        .read_i64(
+                            (object::header_size() as isize + 8 * index as isize) as u32,
+                            false,
+                        )
                         .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
                 );
             }
@@ -222,7 +228,10 @@ fn run_until_exception_or_return<'a>(
                 }
                 frame.stack.push(Value::from_float(
                     obj.ptr
-                        .read_f32((object::header_size() as isize + 4 * index as isize) as u32)
+                        .read_f32(
+                            (object::header_size() as isize + 4 * index as isize) as u32,
+                            false,
+                        )
                         .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
                 ));
             }
@@ -234,7 +243,10 @@ fn run_until_exception_or_return<'a>(
                 }
                 frame.push_double(
                     obj.ptr
-                        .read_f64((object::header_size() as isize + 8 * index as isize) as u32)
+                        .read_f64(
+                            (object::header_size() as isize + 8 * index as isize) as u32,
+                            false,
+                        )
                         .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
                 );
             }
@@ -251,6 +263,7 @@ fn run_until_exception_or_return<'a>(
                                 (object::header_size() as isize
                                     + size_of::<usize>() as isize * index as isize)
                                     as u32,
+                                false,
                             )
                             .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
                     )
@@ -264,7 +277,10 @@ fn run_until_exception_or_return<'a>(
                 }
                 frame.stack.push(Value::from_int(
                     obj.ptr
-                        .read_i8((object::header_size() as isize + index as isize) as u32)
+                        .read_i8(
+                            (object::header_size() as isize + index as isize) as u32,
+                            false,
+                        )
                         .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?
                         as i32,
                 ));
@@ -277,7 +293,10 @@ fn run_until_exception_or_return<'a>(
                 }
                 frame.stack.push(Value::from_int(
                     obj.ptr
-                        .read_i16((object::header_size() as isize + 2 * index as isize) as u32)
+                        .read_i16(
+                            (object::header_size() as isize + 2 * index as isize) as u32,
+                            false,
+                        )
                         .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?
                         as u16 as i32,
                 ));
@@ -290,7 +309,10 @@ fn run_until_exception_or_return<'a>(
                 }
                 frame.stack.push(Value::from_int(
                     obj.ptr
-                        .read_i16((object::header_size() as isize + 2 * index as isize) as u32)
+                        .read_i16(
+                            (object::header_size() as isize + 2 * index as isize) as u32,
+                            false,
+                        )
                         .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?
                         as i32,
                 ));
@@ -336,6 +358,7 @@ fn run_until_exception_or_return<'a>(
                     .write_i32(
                         (object::header_size() as isize + 4 * index as isize) as u32,
                         value,
+                        false,
                     )
                     .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
@@ -350,6 +373,7 @@ fn run_until_exception_or_return<'a>(
                     .write_i64(
                         (object::header_size() as isize + 8 * index as isize) as u32,
                         value,
+                        false,
                     )
                     .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
@@ -364,6 +388,7 @@ fn run_until_exception_or_return<'a>(
                     .write_f32(
                         (object::header_size() as isize + 4 * index as isize) as u32,
                         value,
+                        false,
                     )
                     .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
@@ -378,6 +403,7 @@ fn run_until_exception_or_return<'a>(
                     .write_f64(
                         (object::header_size() as isize + 8 * index as isize) as u32,
                         value,
+                        false,
                     )
                     .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
@@ -398,6 +424,7 @@ fn run_until_exception_or_return<'a>(
                                 + size_of::<usize>() as isize * index as isize)
                                 as u32,
                             value.ptr.ptr(),
+                            false,
                         )
                         .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
                 } else {
@@ -415,6 +442,7 @@ fn run_until_exception_or_return<'a>(
                     .write_i8(
                         (object::header_size() as isize + index as isize) as u32,
                         value as i8,
+                        false,
                     )
                     .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
@@ -429,6 +457,7 @@ fn run_until_exception_or_return<'a>(
                     .write_i16(
                         (object::header_size() as isize + 2 * index as isize) as u32,
                         value as u16 as i16,
+                        false,
                     )
                     .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
@@ -443,6 +472,7 @@ fn run_until_exception_or_return<'a>(
                     .write_i16(
                         (object::header_size() as isize + 2 * index as isize) as u32,
                         value as i16,
+                        false,
                     )
                     .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
             }
@@ -993,49 +1023,52 @@ fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) {
 }
 
 fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
-    // Correct allignment guaranteed because it is used to construct the FieldStorage layout and is stored immutably
+    let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
     match field.descriptor {
         Typ::Bool | Typ::Byte => frame.stack.push(Value::from_int(
-            storage.read_i8(field.byte_offset).unwrap() as i32,
+            storage.read_i8(field.byte_offset, volatile).unwrap() as i32,
         )),
         Typ::Short | Typ::Char => frame.stack.push(Value::from_int(
-            storage.read_i16(field.byte_offset).unwrap() as i32,
+            storage.read_i16(field.byte_offset, volatile).unwrap() as i32,
         )),
         Typ::Int => frame.stack.push(Value::from_int(
-            storage.read_i32(field.byte_offset).unwrap(),
+            storage.read_i32(field.byte_offset, volatile).unwrap(),
         )),
         Typ::Float => frame.stack.push(Value::from_float(
-            storage.read_f32(field.byte_offset).unwrap(),
+            storage.read_f32(field.byte_offset, volatile).unwrap(),
         )),
-        Typ::Long => frame.push_long(storage.read_i64(field.byte_offset).unwrap()),
-        Typ::Double => frame.push_double(storage.read_f64(field.byte_offset).unwrap()),
+        Typ::Long => frame.push_long(storage.read_i64(field.byte_offset, volatile).unwrap()),
+        Typ::Double => frame.push_double(storage.read_f64(field.byte_offset, volatile).unwrap()),
         Typ::Ref(..) => frame.stack.push(Value::from_ref(unsafe {
-            std::mem::transmute(storage.read_ptr(field.byte_offset).unwrap())
+            std::mem::transmute(storage.read_ptr(field.byte_offset, volatile).unwrap())
         })),
     }
 }
 
 fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
+    let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
     match field.descriptor {
         Typ::Bool | Typ::Byte => storage
-            .write_i8(field.byte_offset, frame.pop().as_int() as i8)
+            .write_i8(field.byte_offset, frame.pop().as_int() as i8, volatile)
             .unwrap(),
         Typ::Short | Typ::Char => storage
-            .write_i16(field.byte_offset, frame.pop().as_int() as i16)
+            .write_i16(field.byte_offset, frame.pop().as_int() as i16, volatile)
             .unwrap(),
         Typ::Int => storage
-            .write_i32(field.byte_offset, frame.pop().as_int())
+            .write_i32(field.byte_offset, frame.pop().as_int(), volatile)
             .unwrap(),
         Typ::Float => storage
-            .write_f32(field.byte_offset, frame.pop().as_float())
+            .write_f32(field.byte_offset, frame.pop().as_float(), volatile)
             .unwrap(),
         Typ::Long => storage
-            .write_i64(field.byte_offset, frame.pop_long())
+            .write_i64(field.byte_offset, frame.pop_long(), volatile)
             .unwrap(),
         Typ::Double => storage
-            .write_f64(field.byte_offset, frame.pop_double())
+            .write_f64(field.byte_offset, frame.pop_double(), volatile)
             .unwrap(),
-        Typ::Ref(..) => storage.write_ptr(field.byte_offset, frame.pop().0).unwrap(),
+        Typ::Ref(..) => storage
+            .write_ptr(field.byte_offset, frame.pop().0, volatile)
+            .unwrap(),
     }
 }
 

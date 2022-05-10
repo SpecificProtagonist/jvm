@@ -218,27 +218,35 @@ impl<'a> Class<'a> {
                 match field.descriptor {
                     Typ::Bool | Typ::Byte => self
                         .static_storage
-                        .write_i8(field.byte_offset, const_pool.get_int(jvm, index)? as i8)
+                        .write_i8(
+                            field.byte_offset,
+                            const_pool.get_int(jvm, index)? as i8,
+                            true,
+                        )
                         .unwrap(),
                     Typ::Short | Typ::Char => self
                         .static_storage
-                        .write_i16(field.byte_offset, const_pool.get_int(jvm, index)? as i16)
+                        .write_i16(
+                            field.byte_offset,
+                            const_pool.get_int(jvm, index)? as i16,
+                            true,
+                        )
                         .unwrap(),
                     Typ::Int => self
                         .static_storage
-                        .write_i32(field.byte_offset, const_pool.get_int(jvm, index)?)
+                        .write_i32(field.byte_offset, const_pool.get_int(jvm, index)?, true)
                         .unwrap(),
                     Typ::Float => self
                         .static_storage
-                        .write_f32(field.byte_offset, const_pool.get_float(jvm, index)?)
+                        .write_f32(field.byte_offset, const_pool.get_float(jvm, index)?, true)
                         .unwrap(),
                     Typ::Double => self
                         .static_storage
-                        .write_f64(field.byte_offset, const_pool.get_double(jvm, index)?)
+                        .write_f64(field.byte_offset, const_pool.get_double(jvm, index)?, true)
                         .unwrap(),
                     Typ::Long => self
                         .static_storage
-                        .write_i64(field.byte_offset, const_pool.get_long(jvm, index)?)
+                        .write_i64(field.byte_offset, const_pool.get_long(jvm, index)?, true)
                         .unwrap(),
                     Typ::Ref(name) => {
                         if name.0 == "java/lang/String" {
