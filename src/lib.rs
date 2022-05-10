@@ -1,5 +1,6 @@
 #![feature(hash_set_entry)]
 #![feature(map_first_last)]
+#![feature(concat_idents)]
 
 use fixed_typed_arena::ManuallyDropArena;
 use heap::Heap;
@@ -305,7 +306,7 @@ impl<'a> JVM<'a> {
             panic!("Called create_object with an array")
         }
         let data = FieldStorage::new(&self.heap, class.object_size);
-        data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8));
+        data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true);
         Object {
             ptr: data,
             _marker: std::marker::PhantomData,
@@ -321,7 +322,7 @@ impl<'a> JVM<'a> {
             &self.heap,
             object::header_size() + component.layout().size() * length,
         );
-        data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8));
+        data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true);
         Object {
             ptr: data,
             _marker: std::marker::PhantomData,
@@ -360,6 +361,7 @@ bitflags::bitflags! {
         const STATIC = 0x0008;
         const FINAL = 0x0010;
         const SUPER = 0x0020;
+        const VOLATILE = 0x0040;
         const NATIVE = 0x0100;
         const ABSTRACT = 0x0400;
     }
