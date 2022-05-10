@@ -3,11 +3,12 @@ use std::{mem::size_of, usize};
 use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     exception,
+    field::Field,
     field_storage::FieldStorage,
     heap::JVMPtrSize,
     instructions::*,
     object::{self, Object},
-    AccessFlags, Field, JVMResult, JVMValue, Method, Typ, JVM,
+    AccessFlags, JVMResult, JVMValue, Method, Typ, JVM,
 };
 
 pub(crate) fn invoke<'a, 'b>(
@@ -850,7 +851,7 @@ fn run_until_exception_or_return<'a>(
                 let field = const_pool.get_field(jvm, index)?;
                 // Stack has object ref first, then value on top
                 // This is ugly
-                let object = if matches!(field.descriptor, Typ::Long | Typ::Double) {
+                let object = if matches!(field.nat.typ, Typ::Long | Typ::Double) {
                     let high = frame.pop();
                     let low = frame.pop();
                     let obj = unsafe { frame.pop().as_ref() };
@@ -956,7 +957,7 @@ fn run_until_exception_or_return<'a>(
                 let typ = jvm.resolve_class(typ)?;
                 frame
                     .stack
-                    .push(Value::from_ref(jvm.create_array(typ, length as usize)));
+                    .push(Value::from_ref(jvm.create_array(typ, length)));
             }
             ANEWARRAY => {
                 let length = frame.pop().as_int();
@@ -969,7 +970,7 @@ fn run_until_exception_or_return<'a>(
                 }
                 frame
                     .stack
-                    .push(Value::from_ref(jvm.create_array(typ, length as usize)));
+                    .push(Value::from_ref(jvm.create_array(typ, length)));
             }
             ARRAYLENGTH => {
                 let obj = unsafe { frame.pop().as_ref() };
@@ -1018,13 +1019,13 @@ fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) {
         Some(ConstPoolItem::Long(l)) => frame.push_long(*l),
         Some(ConstPoolItem::Double(d)) => frame.push_double(*d),
         Some(ConstPoolItem::RawString(_) | ConstPoolItem::Class(_)) => todo!(),
-        _ => unreachable!("Invalid ldc/ldc_w/ldc2_w     index: {}", index,),
+        _ => unreachable!("Invalid ldc/ldc_w/ldc2_w"),
     }
 }
 
 fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
-    match field.descriptor {
+    match field.nat.typ {
         Typ::Bool | Typ::Byte => frame.stack.push(Value::from_int(
             storage.read_i8(field.byte_offset, volatile).unwrap() as i32,
         )),
@@ -1039,15 +1040,15 @@ fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
         )),
         Typ::Long => frame.push_long(storage.read_i64(field.byte_offset, volatile).unwrap()),
         Typ::Double => frame.push_double(storage.read_f64(field.byte_offset, volatile).unwrap()),
-        Typ::Ref(..) => frame.stack.push(Value::from_ref(unsafe {
-            std::mem::transmute(storage.read_ptr(field.byte_offset, volatile).unwrap())
-        })),
+        Typ::Ref(..) => frame.stack.push(Value(
+            storage.read_ptr(field.byte_offset, volatile).unwrap(),
+        )),
     }
 }
 
 fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
-    match field.descriptor {
+    match field.nat.typ {
         Typ::Bool | Typ::Byte => storage
             .write_i8(field.byte_offset, frame.pop().as_int() as i8, volatile)
             .unwrap(),

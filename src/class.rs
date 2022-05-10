@@ -1,14 +1,21 @@
-use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::{Condvar, Mutex, RwLock};
-use std::{collections::HashMap, fmt::Debug, thread::ThreadId};
+use std::{collections::HashMap, thread::ThreadId};
 
 use crate::{
-    const_pool::ConstPool, exception, field_storage::FieldStorage, heap::Heap, object::Object,
-    verification::verify, AccessFlags, IntStr, JVMResult, Typ, JVM,
+    const_pool::ConstPool,
+    exception,
+    field::{Field, FieldNaT},
+    field_storage::FieldStorage,
+    heap::Heap,
+    object::Object,
+    verification::verify,
+    AccessFlags, IntStr, JVMResult, Method, MethodDescriptor, MethodNaT, Typ, JVM,
 };
 
 /// Represents a regular class, an array class or (in the future) an enum or an interface
 pub struct Class<'a> {
+    // TODO: use normal name, not internal name
+    /// Fully qualified name
     pub(crate) name: IntStr<'a>,
     pub(crate) super_class: Option<&'a Class<'a>>,
     /// For array classes, this is the type of the array elements; None for normal classes
@@ -37,77 +44,6 @@ pub(crate) enum ClassInitState<'a> {
     Error(Object<'a>),
 }
 
-#[derive(Debug)]
-pub struct Field<'a> {
-    pub(crate) name: IntStr<'a>,
-    /// Class is behind a AtomicCell to enable circular references
-    pub(crate) class: AtomicCell<&'a Class<'a>>,
-    pub(crate) access_flags: AccessFlags,
-    pub(crate) descriptor: Typ<'a>,
-    /// Offset into the FieldData of the class (static field) / instance (non-static) where this is stored
-    /// Java has no multiple inheritance for fields, therefore each field can be at a set position
-    pub(crate) byte_offset: u32,
-    /// Only set for static fields
-    pub(crate) const_value_index: Option<u16>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FieldNaT<'a> {
-    pub(crate) name: IntStr<'a>,
-    pub(crate) typ: Typ<'a>,
-}
-
-pub struct Method<'a> {
-    pub(crate) nat: MethodNaT<'a>,
-    pub(crate) access_flags: AccessFlags,
-    /// Class is behind a AtomicCell to enable circular references
-    pub(crate) class: AtomicCell<&'a Class<'a>>,
-    pub(crate) code: Option<Code>,
-}
-
-impl<'a> Method<'a> {
-    pub fn class(&self) -> &'a Class {
-        self.class.load()
-    }
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct MethodNaT<'a> {
-    pub(crate) name: IntStr<'a>,
-    pub(crate) typ: &'a MethodDescriptor<'a>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct MethodDescriptor<'a>(pub Vec<Typ<'a>>, pub Option<Typ<'a>>);
-
-impl<'a> MethodDescriptor<'a> {
-    pub(crate) fn arg_slots(&self) -> usize {
-        self.0
-            .iter()
-            .map(|typ| match typ {
-                Typ::Long | Typ::Double => 2,
-                _ => 1,
-            })
-            .sum()
-    }
-}
-
-// TODO: use verification data to construct a more efficient bytecode
-pub(crate) struct Code {
-    pub max_stack: u16,
-    pub max_locals: u16,
-    pub bytes: Vec<u8>,
-    pub stack_map_table: Option<Vec<u8>>,
-    pub exception_table: Vec<ExceptionHandler>,
-}
-
-pub(crate) struct ExceptionHandler {
-    pub start_pc: u16,
-    pub end_pc: u16,
-    pub handler_pc: u16,
-    pub catch_type: u16,
-}
-
 impl<'a, 'b> Eq for &'b Class<'a> {}
 impl<'a, 'b> PartialEq for &'b Class<'a> {
     fn eq(&self, other: &Self) -> bool {
@@ -116,21 +52,28 @@ impl<'a, 'b> PartialEq for &'b Class<'a> {
 }
 
 impl<'a> Class<'a> {
+    /// Returns the fully qualified internal name (using '/' instead of '.')
     pub fn name(&'a self) -> IntStr<'a> {
         self.name
     }
 
-    pub fn field(&'a self, name: IntStr<'a>, typ: Typ<'a>) -> Option<&'a Field<'a>> {
-        self.fields.get(&FieldNaT { name, typ })
+    /// Is Some() for all classes except `java.lang.Object`
+    pub fn super_class(&'a self) -> Option<&'a Self> {
+        self.super_class
     }
 
-    pub fn method<'b>(
-        &'b self,
-        name: IntStr<'a>,
-        typ: &MethodDescriptor<'a>,
-    ) -> Option<&'a Method<'a>> {
-        self.methods.get(&MethodNaT { name, typ }).copied()
+    pub fn field(&'a self, nat: FieldNaT<'a>) -> Option<&'a Field<'a>> {
+        self.fields
+            .get(&nat)
+            .or_else(|| self.super_class.and_then(|c| c.field(nat)))
     }
+
+    pub fn method(&self, nat: &MethodNaT) -> Option<&'a Method<'a>> {
+        self.methods.get(nat).copied()
+    }
+
+    // TODO: provide fields() and methods()
+    // figure out how to present distinguished between inherited and not
 
     pub fn true_subclass_of(&'a self, other: &'a Class<'a>) -> bool {
         self.super_class
@@ -157,12 +100,6 @@ impl<'a> Class<'a> {
             init: ClassInitState::Uninit.into(),
             init_waiter: Condvar::new(),
         }
-    }
-
-    pub fn resolve_field(&'a self, field: FieldNaT<'a>) -> Option<&'a Field<'a>> {
-        self.fields
-            .get(&field)
-            .or_else(|| self.super_class.and_then(|c| c.resolve_field(field)))
     }
 
     /// Ensures this class is initialized. This includes linking, verification, preparation & resolution
@@ -215,7 +152,7 @@ impl<'a> Class<'a> {
         // Preparation
         for field in self.fields.values() {
             if let Some(index) = field.const_value_index {
-                match field.descriptor {
+                match field.nat.typ {
                     Typ::Bool | Typ::Byte => self
                         .static_storage
                         .write_i8(
@@ -281,46 +218,5 @@ impl<'a> Class<'a> {
 impl<'a> std::fmt::Debug for Class<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name)
-    }
-}
-
-impl<'a, 'b> Eq for &'b Field<'a> {}
-impl<'a, 'b> PartialEq for &'b Field<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(*self, *other)
-    }
-}
-
-impl<'a> Eq for &'a Method<'a> {}
-impl<'a> PartialEq for &'a Method<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(*self, *other)
-    }
-}
-
-impl<'a> Debug for Method<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.nat)
-    }
-}
-
-impl<'a> std::fmt::Display for MethodNaT<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(ret) = self.typ.1 {
-            write!(f, "{}", ret)?;
-        } else {
-            write!(f, "void")?;
-        }
-        write!(f, " {}(", self.name)?;
-        let mut first = true;
-        for arg in &self.typ.0 {
-            if !first {
-                write!(f, ", ")?;
-            }
-            first = false;
-            write!(f, "{}", arg)?;
-        }
-        write!(f, ")")?;
-        Ok(())
     }
 }

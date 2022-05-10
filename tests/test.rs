@@ -35,10 +35,10 @@ fn init_lock() {
             let class = class.clone();
             std::thread::spawn(move || {
                 let method = class
-                    .method(
-                        jvm.intern_str("check"),
-                        &MethodDescriptor(vec![], Some(Typ::Bool)),
-                    )
+                    .method(&MethodNaT {
+                        name: jvm.intern_str("check"),
+                        typ: &MethodDescriptor(vec![], Some(Typ::Bool)),
+                    })
                     .unwrap();
                 assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(JVMValue::Int(1)));
             })
@@ -70,16 +70,16 @@ fn field_access() {
     }
     let class = jvm.resolve_class("FieldAccess").unwrap();
     let set_method = class
-        .method(
-            jvm.intern_str("set"),
-            &MethodDescriptor(vec![Typ::Int], None),
-        )
+        .method(&MethodNaT {
+            name: jvm.intern_str("set"),
+            typ: &MethodDescriptor(vec![Typ::Int], None),
+        })
         .unwrap();
     let get_method = class
-        .method(
-            jvm.intern_str("get"),
-            &MethodDescriptor(vec![], Some(Typ::Int)),
-        )
+        .method(&MethodNaT {
+            name: jvm.intern_str("get"),
+            typ: &MethodDescriptor(vec![], Some(Typ::Int)),
+        })
         .unwrap();
     assert_eq!(jvm.invoke(set_method, &[JVMValue::Int(42)]).unwrap(), None);
     assert_eq!(
