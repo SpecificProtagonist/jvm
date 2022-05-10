@@ -18,10 +18,12 @@ use std::{
 
 mod class;
 mod const_pool;
+mod field;
 mod field_storage;
 mod heap;
 mod instructions;
-pub mod interp;
+mod interp;
+mod method;
 mod object;
 mod parse;
 mod string_interning;
@@ -29,7 +31,9 @@ mod typ;
 mod verification;
 
 pub use class::*;
+pub use field::*;
 use field_storage::FieldStorage;
+pub use method::*;
 pub use string_interning::*;
 pub use typ::Typ;
 
@@ -41,17 +45,20 @@ pub type JVMResult<'a, T> = std::result::Result<T, Object<'a>>;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum JVMValue<'a> {
     Ref(Object<'a>),
+    /// Represents boolean, byte, char, short and int
     Int(i32),
     Long(i64),
     Float(f32),
     Double(f64),
 }
 
+// TODO: what to do to prevent passing refs to objects/classes/… between JVMs?
+
 pub struct JVM<'a> {
     /// TODO: provide ClassLoader trait instead
     class_path: Vec<PathBuf>,
     /// Bypasses verification by type checking. This is unsafe!
-    pub verification_type_checking_disabled: AtomicBool,
+    verification_type_checking_disabled: AtomicBool,
     heap: Heap<'a>,
     // Classes (including arrays), methods, method descriptors and interned strings live as long as the JVM
     string_storage: Mutex<ManuallyDropArena<String, 256>>,
@@ -290,7 +297,7 @@ impl<'a> JVM<'a> {
     }
 
     // TODO: publicly accessible dynamic method resolution
-    /// Calls a method, initializing its class if necessary
+    /// Calls a method, initializing its class if necessary.
     /// Returns either the function's return value or the exception that was thrown
     pub fn invoke(
         &self,
@@ -301,9 +308,11 @@ impl<'a> JVM<'a> {
     }
 
     /// Creates an instance of a non-array class on the heap
-    fn create_object(&self, class: &'a Class) -> Object<'a> {
+    /// # Panics
+    /// Panics if class is an array class
+    pub fn create_object(&self, class: &'a Class) -> Object<'a> {
         if class.element_type.is_some() {
-            panic!("Called create_object with an array")
+            panic!("{} is an array type", class.name)
         }
         let data = FieldStorage::new(&self.heap, class.object_size);
         data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true);
@@ -314,13 +323,17 @@ impl<'a> JVM<'a> {
     }
 
     /// Creates an instance of an array class on the heap
-    fn create_array(&self, class: &'a Class, length: usize) -> Object<'a> {
-        let component = class
-            .element_type
-            .expect("Called create_array with a non-array class");
+    /// # Panics
+    /// Panics if class is not an array class
+    /// or length < 0
+    pub fn create_array(&self, class: &'a Class, length: i32) -> Object<'a> {
+        let component = class.element_type.expect("non-array class");
+        if length < 0 {
+            panic!("array length < 0")
+        }
         let data = FieldStorage::new(
             &self.heap,
-            object::header_size() + component.layout().size() * length,
+            object::header_size() + component.layout().size() * length as usize,
         );
         data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true);
         Object {

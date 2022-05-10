@@ -65,8 +65,8 @@ impl<'a> std::fmt::Debug for Object<'a> {
                             write!(f, ", ")?;
                         }
                         first = false;
-                        write!(f, "{}: ", field.name)?;
-                        match field.descriptor {
+                        write!(f, "{}: ", field.nat.name)?;
+                        match field.nat.typ {
                             Typ::Bool | Typ::Byte => write!(
                                 f,
                                 "{}",

@@ -4,13 +4,13 @@ use std::{
 };
 
 use crate::{
-    class::{Field, FieldNaT, Method, MethodNaT},
     const_pool::{ConstPool, ConstPoolItem},
     exception,
+    field::{Field, FieldNaT},
     object::{header_size, Object},
     verification::{StackMapFrame, VerificationType},
-    AccessFlags, Code, ExceptionHandler, FieldStorage, IntStr, JVMResult, MethodDescriptor, Typ,
-    JVM,
+    AccessFlags, Code, ExceptionHandler, FieldStorage, IntStr, JVMResult, Method, MethodDescriptor,
+    MethodNaT, Typ, JVM,
 };
 use crossbeam_utils::atomic::AtomicCell;
 
@@ -219,9 +219,9 @@ fn read_field<'a, 'b, 'c>(
 
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
 
-    let descriptor_str = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
-    let (descriptor, remaining) = parse_field_descriptor(jvm, descriptor_str, 0)?;
-    if remaining < descriptor_str.0.len() {
+    let descriptor = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
+    let (typ, remaining) = parse_field_descriptor(jvm, descriptor, 0)?;
+    if remaining < descriptor.0.len() {
         return Err(cfe(jvm, "Invalid type descriptor"));
     }
 
@@ -239,9 +239,8 @@ fn read_field<'a, 'b, 'c>(
     }
 
     Ok(Field {
-        name,
+        nat: FieldNaT { name, typ },
         access_flags,
-        descriptor,
         // The correct layout is set in read_fields after field disordering
         byte_offset: 0,
         const_value_index,
@@ -269,13 +268,13 @@ fn read_fields<'a, 'b, 'c>(
         fields.push(field);
     }
     // Decide layout
-    fields.sort_by_key(|field| field.descriptor.layout().align());
+    fields.sort_by_key(|field| field.nat.typ.layout().align());
     let mut static_layout = Layout::new::<()>();
     let mut object_layout = Layout::from_size_align(header_size(), 8).unwrap();
     let fields = fields
         .into_iter()
         .map(|mut field| {
-            let layout = field.descriptor.layout();
+            let layout = field.nat.typ.layout();
             let fields_layout = if field.access_flags.contains(AccessFlags::STATIC) {
                 &mut static_layout
             } else {
@@ -284,13 +283,7 @@ fn read_fields<'a, 'b, 'c>(
             let result = fields_layout.extend(layout).unwrap();
             *fields_layout = result.0;
             field.byte_offset = result.1 as u32;
-            (
-                FieldNaT {
-                    name: field.name,
-                    typ: field.descriptor,
-                },
-                field,
-            )
+            (field.nat, field)
         })
         .collect();
 

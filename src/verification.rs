@@ -677,12 +677,12 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
                 push_type(
                     jvm,
                     &mut type_state.stack,
-                    const_pool.get_field(jvm, index)?.descriptor,
+                    const_pool.get_field(jvm, index)?.nat.typ,
                 )?;
             }
             PUTSTATIC => {
                 let index = read_code_u16(jvm, bytes, pc)?;
-                let typ = const_pool.get_field(jvm, index)?.descriptor;
+                let typ = const_pool.get_field(jvm, index)?.nat.typ;
                 pop_type(jvm, &mut type_state.stack, typ)?;
             }
             NEW => {

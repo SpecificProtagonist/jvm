@@ -1,6 +1,8 @@
 use crate::{
-    class::Field, exception, object::Object, parse, AccessFlags, Class, IntStr, JVMResult, Method,
-    MethodNaT, JVM,
+    exception,
+    field::{Field, FieldNaT},
+    object::Object,
+    parse, AccessFlags, Class, IntStr, JVMResult, Method, MethodNaT, JVM,
 };
 
 // Differentiating runtime- and on-disk const pool shouldn't be neccessary
@@ -69,7 +71,7 @@ impl<'a> ConstPool<'a> {
                     let class = self.get_class(jvm, class)?;
                     let (name, typ) = self.get_raw_nat(jvm, nat)?;
                     let (typ, _) = parse::parse_field_descriptor(jvm, typ, 0)?;
-                    if let Some(field) = class.field(name, typ) {
+                    if let Some(field) = class.fields.get(&FieldNaT { name, typ }) {
                         self.items[i] = ConstPoolItem::Field(field);
                     } else {
                         return Err(exception(jvm, "NoSuchFieldError"));
