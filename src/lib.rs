@@ -2,6 +2,7 @@
 #![feature(map_first_last)]
 #![feature(concat_idents)]
 
+use class_loader::ClassLoader;
 use fixed_typed_arena::ManuallyDropArena;
 use heap::Heap;
 use object::Object;
@@ -9,14 +10,12 @@ use parking_lot::{Mutex, RwLock};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    fs::File,
     hash::Hash,
-    io::Read,
-    path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
 };
 
 mod class;
+mod class_loader;
 mod const_pool;
 mod field;
 mod field_storage;
@@ -31,6 +30,7 @@ mod typ;
 mod verification;
 
 pub use class::*;
+pub use class_loader::*;
 pub use field::*;
 use field_storage::FieldStorage;
 pub use method::*;
@@ -55,8 +55,7 @@ pub enum JVMValue<'a> {
 // TODO: what to do to prevent passing refs to objects/classes/… between JVMs?
 
 pub struct JVM<'a> {
-    /// TODO: provide ClassLoader trait instead
-    class_path: Vec<PathBuf>,
+    pub bootstrap_class_loader: Box<dyn ClassLoader>,
     /// Bypasses verification by type checking. This is unsafe!
     verification_type_checking_disabled: AtomicBool,
     heap: Heap<'a>,
@@ -76,11 +75,11 @@ pub struct JVM<'a> {
 impl<'a> JVM<'a> {
     /// Construct a new JVM. When searching for class definitions, the folders specified in
     /// `class_path` are searched in order.
-    pub fn new(class_path: Vec<PathBuf>) -> Self {
+    pub fn new(base_class_loader: Box<dyn ClassLoader>) -> Self {
         let heap = Heap::default();
         let dummy_class = heap.alloc_typed(Class::dummy_class(&heap));
         Self {
-            class_path,
+            bootstrap_class_loader: base_class_loader,
             verification_type_checking_disabled: false.into(),
             heap,
             string_storage: Default::default(),
@@ -189,26 +188,10 @@ impl<'a> JVM<'a> {
         }
 
         // We want to load a normal class
-        // TODO: move loading the bytes into a Classloader trait
-        let mut bytes = None;
-        for path in &self.class_path {
-            let mut path = path.clone();
-            path.push(name.0);
-            path.set_extension("class");
-
-            if path.exists() {
-                let mut file = Vec::new();
-                let error = "Failed to read class. TODO: What error to throw when the class is found but could not be read?";
-                File::open(path)
-                    .expect(error)
-                    .read_to_end(&mut file)
-                    .expect(error);
-                bytes = Some(file);
-
-                break;
-            }
-        }
-        let bytes = bytes.ok_or_else(|| exception(self, "NoClassDefFoundError"))?;
+        let bytes = self
+            .bootstrap_class_loader
+            .load(name)
+            .ok_or_else(|| exception(self, "NoClassDefFoundError"))?;
 
         let mut class_desc = parse::read_class_file(&bytes, self)?;
 
