@@ -4,7 +4,7 @@ use jvm::*;
 
 #[test]
 fn circular_loading() {
-    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     assert_eq!(
         jvm.resolve_class("CircularA")
             .unwrap_err()
@@ -17,7 +17,7 @@ fn circular_loading() {
 
 #[test]
 fn initialization() {
-    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     let method = jvm
         .resolve_method("Initialization", "check_init", vec![], Some(Typ::Bool))
         .unwrap();
@@ -26,7 +26,10 @@ fn initialization() {
 
 #[test]
 fn init_lock() {
-    let jvm = Arc::new(JVM::new(vec!["classes".into(), "tests/classes".into()]));
+    let jvm = Arc::new(JVM::new(DefaultClassLoader::new_boxed([
+        "classes",
+        "tests/classes",
+    ])));
     let class = Arc::new(JVM::resolve_class(&jvm, "InitLock").unwrap());
     // TODO: use scoped threads when stabilized
     let threads = (0..50)
@@ -51,7 +54,7 @@ fn init_lock() {
 
 #[test]
 fn control_flow() {
-    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     let method = jvm
         .resolve_method("ControlFlow", "is_even", vec![Typ::Int], Some(Typ::Bool))
         .unwrap();
@@ -63,7 +66,7 @@ fn control_flow() {
 
 #[test]
 fn field_access() {
-    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -90,7 +93,7 @@ fn field_access() {
 
 #[test]
 fn invoke_static() {
-    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -112,7 +115,7 @@ fn invoke_static() {
 
 #[test]
 fn invoke_virtual() {
-    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -125,7 +128,7 @@ fn invoke_virtual() {
 
 #[test]
 fn arrays() {
-    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -139,13 +142,13 @@ fn arrays() {
 /// Lazy resolution isn't mandatory for the spec, but I still want it
 #[test]
 fn lazy_resolve() {
-    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     jvm.resolve_class("LazyResolve").unwrap();
 }
 
 #[test]
 fn lazy_init() {
-    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -158,7 +161,7 @@ fn lazy_init() {
         Some(JVMValue::Int(1))
     );
 
-    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -174,7 +177,7 @@ fn lazy_init() {
 
 #[test]
 fn many_allocs() {
-    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -187,7 +190,7 @@ fn many_allocs() {
 
 #[test]
 fn exceptions() {
-    let jvm = JVM::new(vec!["classes".into(), "tests/classes".into()]);
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
