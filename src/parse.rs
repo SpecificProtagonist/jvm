@@ -15,7 +15,7 @@ use crate::{
 use crossbeam_utils::atomic::AtomicCell;
 
 fn read_u8<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, u8> {
-    if let Some(u8) = input.get(0) {
+    if let Some(u8) = input.first() {
         *input = &input[1..];
         Ok(*u8)
     } else {
@@ -204,10 +204,10 @@ pub(crate) fn parse_field_descriptor<'a, 'b>(
         if typ.array_dimensions() > 255 {
             return Err(cfe(jvm, "too many array dimensions"));
         }
-        return Ok((typ, start));
+        return Ok((typ, end));
     }
 
-    return Err(cfe(jvm, "invalid field descriptor"));
+    return Err(cfe(jvm, "invalid field descriptor: "));
 }
 
 fn read_field<'a, 'b, 'c>(
@@ -220,8 +220,8 @@ fn read_field<'a, 'b, 'c>(
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
 
     let descriptor = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
-    let (typ, remaining) = parse_field_descriptor(jvm, descriptor, 0)?;
-    if remaining < descriptor.0.len() {
+    let (typ, end) = parse_field_descriptor(jvm, descriptor, 0)?;
+    if end < descriptor.0.len() {
         return Err(cfe(jvm, "Invalid type descriptor"));
     }
 
@@ -282,7 +282,7 @@ fn read_fields<'a, 'b, 'c>(
             };
             let result = fields_layout.extend(layout).unwrap();
             *fields_layout = result.0;
-            field.byte_offset = result.1 as u32;
+            field.byte_offset = result.1;
             (field.nat, field)
         })
         .collect();

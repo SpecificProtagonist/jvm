@@ -2,7 +2,7 @@ use crate::{
     exception,
     field::{Field, FieldNaT},
     object::Object,
-    parse, AccessFlags, Class, IntStr, JVMResult, Method, MethodNaT, JVM,
+    parse, AccessFlags, Class, IntStr, JVMResult, JVMValue, Method, MethodNaT, Typ, JVM,
 };
 
 // Differentiating runtime- and on-disk const pool shouldn't be neccessary
@@ -19,6 +19,7 @@ pub(crate) enum ConstPoolItem<'a> {
     Float(f32),
     Long(i64),
     Double(f64),
+    String(Object<'a>),
     Class(&'a Class<'a>),
     Field(&'a Field<'a>),
     StaticMethod(&'a Method<'a>),
@@ -41,6 +42,7 @@ fn cfe<'a>(jvm: &JVM<'a>) -> Object<'a> {
 impl<'a> ConstPool<'a> {
     /// Must be called prior to initialization
     pub fn resolve(&mut self, jvm: &JVM<'a>) -> JVMResult<'a, ()> {
+        println!();
         for i in 0..self.items.len() {
             if let ConstPoolItem::RawClass(index) = self.items[i] {
                 self.items[i] =
@@ -76,6 +78,24 @@ impl<'a> ConstPool<'a> {
                     } else {
                         return Err(exception(jvm, "NoSuchFieldError"));
                     }
+                }
+                ConstPoolItem::RawString(index) => {
+                    // The spec doesn't describe when these strings should get instantiated, so let's just do it here
+                    let string = self.get_utf8(jvm, index)?;
+                    let length = string.0.encode_utf16().count();
+                    let char_array = jvm.resolve_class("[C")?;
+                    let backing_array = jvm.create_array(char_array, length as i32);
+                    for (index, char) in string.0.encode_utf16().enumerate() {
+                        backing_array
+                            .ptr
+                            .array_write_i16(jvm, index as i32, char as i16)?
+                    }
+                    let string_class = jvm.resolve_class("java/lang/String")?;
+                    let obj = jvm.create_object(string_class);
+                    let field =
+                        string_class.field(jvm, "chars", Typ::Ref(char_array.name)).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
+                    field.instance_set(obj, JVMValue::Ref(Some(backing_array)));
+                    self.items[i] = ConstPoolItem::String(obj)
                 }
                 _ => (),
             }
@@ -114,6 +134,13 @@ impl<'a> ConstPool<'a> {
     pub fn get_utf8(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, IntStr<'a>> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Utf8(string)) => Ok(*string),
+            _ => Err(cfe(jvm)),
+        }
+    }
+
+    pub fn get_string(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, Object<'a>> {
+        match self.items.get(index as usize) {
+            Some(ConstPoolItem::String(string)) => Ok(*string),
             _ => Err(cfe(jvm)),
         }
     }

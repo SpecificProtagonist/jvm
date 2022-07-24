@@ -1,13 +1,11 @@
-use std::{mem::size_of, usize};
-
 use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     exception,
     field::Field,
     field_storage::FieldStorage,
-    heap::JVMPtrSize,
+    heap::{JVMPtr, NULL_PTR},
     instructions::*,
-    object::{self, Object},
+    object::Object,
     AccessFlags, JVMResult, JVMValue, Method, Typ, JVM,
 };
 
@@ -43,7 +41,7 @@ pub(crate) fn invoke<'a, 'b>(
 /// Ideally we don't want to use 64 bits if we can avoid this, so
 /// use the size of a possibly compressed pointer (but at least 32 bits).
 #[cfg(not(any(target_pointer_width = "8", target_pointer_width = "16")))]
-type SlotSize = JVMPtrSize;
+type SlotSize = JVMPtr;
 #[cfg(any(target_pointer_width = "8", target_pointer_width = "16"))]
 type SlotSize = u32;
 
@@ -108,7 +106,7 @@ fn invoke_initialized<'a, 'b>(
                                 .assignable_to(const_pool.get_class(jvm, handler.catch_type)?))
                     {
                         frame.stack.clear();
-                        frame.stack.push(Value::from_ref(thrown));
+                        frame.stack.push(Value::from_object(thrown));
                         frame.pc = handler.handler_pc;
                         caught = true;
                         break;
@@ -193,129 +191,60 @@ fn run_until_exception_or_return<'a>(
             DLOAD_3 => frame.push_double(frame.load_double(3)),
             IALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                frame.stack.push(Value::from_int(
-                    obj.ptr
-                        .read_i32(
-                            (object::header_size() as isize + 4 * index as isize) as u32,
-                            false,
-                        )
-                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
-                ));
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                frame
+                    .stack
+                    .push(Value::from_int(obj.ptr.array_read_i32(jvm, index)?));
             }
             LALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                frame.push_long(
-                    obj.ptr
-                        .read_i64(
-                            (object::header_size() as isize + 8 * index as isize) as u32,
-                            false,
-                        )
-                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
-                );
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                frame.push_long(obj.ptr.array_read_i64(jvm, index)?);
             }
             FALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                frame.stack.push(Value::from_float(
-                    obj.ptr
-                        .read_f32(
-                            (object::header_size() as isize + 4 * index as isize) as u32,
-                            false,
-                        )
-                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
-                ));
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                frame
+                    .stack
+                    .push(Value::from_float(obj.ptr.array_read_f32(jvm, index)?));
             }
             DALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                frame.push_double(
-                    obj.ptr
-                        .read_f64(
-                            (object::header_size() as isize + 8 * index as isize) as u32,
-                            false,
-                        )
-                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
-                );
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                frame.push_double(obj.ptr.array_read_f64(jvm, index)?);
             }
             AALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                frame.stack.push(Value::from_ref(unsafe {
-                    Object::from_ptr(
-                        obj.ptr
-                            .read_ptr(
-                                (object::header_size() as isize
-                                    + size_of::<usize>() as isize * index as isize)
-                                    as u32,
-                                false,
-                            )
-                            .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?,
-                    )
-                }));
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                frame.stack.push(Value(obj.ptr.array_read_ptr(jvm, index)?));
             }
             BALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 frame.stack.push(Value::from_int(
-                    obj.ptr
-                        .read_i8(
-                            (object::header_size() as isize + index as isize) as u32,
-                            false,
-                        )
-                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?
-                        as i32,
+                    obj.ptr.array_read_i8(jvm, index)? as u8 as i32
                 ));
             }
             CALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 frame.stack.push(Value::from_int(
-                    obj.ptr
-                        .read_i16(
-                            (object::header_size() as isize + 2 * index as isize) as u32,
-                            false,
-                        )
-                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?
-                        as u16 as i32,
+                    obj.ptr.array_read_i16(jvm, index)? as u16 as i32
                 ));
             }
             SALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 frame.stack.push(Value::from_int(
-                    obj.ptr
-                        .read_i16(
-                            (object::header_size() as isize + 2 * index as isize) as u32,
-                            false,
-                        )
-                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?
-                        as i32,
+                    obj.ptr.array_read_i16(jvm, index)? as u16 as i32
                 ));
             }
             ISTORE | FSTORE | ASTORE => {
@@ -351,83 +280,41 @@ fn run_until_exception_or_return<'a>(
             IASTORE => {
                 let value = frame.pop().as_int();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                obj.ptr
-                    .write_i32(
-                        (object::header_size() as isize + 4 * index as isize) as u32,
-                        value,
-                        false,
-                    )
-                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                obj.ptr.array_write_i32(jvm, index, value)?
             }
             LASTORE => {
                 let value = frame.pop_long();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                obj.ptr
-                    .write_i64(
-                        (object::header_size() as isize + 8 * index as isize) as u32,
-                        value,
-                        false,
-                    )
-                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                obj.ptr.array_write_i64(jvm, index, value)?
             }
             FASTORE => {
                 let value = frame.pop().as_float();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                obj.ptr
-                    .write_f32(
-                        (object::header_size() as isize + 4 * index as isize) as u32,
-                        value,
-                        false,
-                    )
-                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                obj.ptr.array_write_f32(jvm, index, value)?
             }
             DASTORE => {
                 let value = frame.pop_double();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                obj.ptr
-                    .write_f64(
-                        (object::header_size() as isize + 8 * index as isize) as u32,
-                        value,
-                        false,
-                    )
-                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                obj.ptr.array_write_f64(jvm, index, value)?
             }
             AASTORE => {
-                let value = unsafe { frame.pop().as_ref() };
+                let value = frame.pop();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 if let Some(Typ::Ref(component)) = obj.class().element_type {
                     if !obj.class().assignable_to(jvm.resolve_class(component)?) {
                         return Err(exception(jvm, "ArrayStoreException"));
                     }
-                    obj.ptr
-                        .write_ptr(
-                            (object::header_size() as isize
-                                + size_of::<usize>() as isize * index as isize)
-                                as u32,
-                            value.ptr.ptr(),
-                            false,
-                        )
-                        .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
+                    obj.ptr.array_write_ptr(jvm, index, value.0)?
                 } else {
                     unreachable!()
                 }
@@ -435,47 +322,23 @@ fn run_until_exception_or_return<'a>(
             BASTORE => {
                 let value = frame.pop().as_int();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                obj.ptr
-                    .write_i8(
-                        (object::header_size() as isize + index as isize) as u32,
-                        value as i8,
-                        false,
-                    )
-                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                obj.ptr.array_write_i8(jvm, index, value as u8 as i8)?
             }
             CASTORE => {
                 let value = frame.pop().as_int();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                obj.ptr
-                    .write_i16(
-                        (object::header_size() as isize + 2 * index as isize) as u32,
-                        value as u16 as i16,
-                        false,
-                    )
-                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                obj.ptr.array_write_i16(jvm, index, value as u16 as i16)?
             }
             SASTORE => {
                 let value = frame.pop().as_int();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                obj.ptr
-                    .write_i16(
-                        (object::header_size() as isize + 2 * index as isize) as u32,
-                        value as i16,
-                        false,
-                    )
-                    .ok_or_else(|| exception(jvm, "ArrayIndexOutOfBoundsException"))?;
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                obj.ptr.array_write_i16(jvm, index, value as u16 as i16)?
             }
             POP => {
                 frame.pop();
@@ -843,7 +706,8 @@ fn run_until_exception_or_return<'a>(
             GETFIELD => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field(jvm, index)?;
-                let object = unsafe { frame.pop().as_ref() };
+                let object = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 get_field(frame, field, &object.ptr);
             }
             PUTFIELD => {
@@ -863,17 +727,16 @@ fn run_until_exception_or_return<'a>(
                     let obj = unsafe { frame.pop().as_ref() };
                     frame.stack.push(value);
                     obj
-                };
+                }
+                .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 put_field(frame, field, &object.ptr);
             }
             INVOKEVIRTUAL => {
                 let index = frame.read_code_u16();
                 let (_, nat) = const_pool.get_virtual_method(jvm, index)?;
                 let obj_index = frame.stack.len() - nat.typ.arg_slots() - 1;
-                let obj = unsafe { frame.stack[obj_index].as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
+                let obj = unsafe { frame.stack[obj_index].as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 // TODO: move method linking (incl NoSuchMethodError and IncompatibleClassChangeError) to class init
                 let invoke_method = obj
                     .class()
@@ -893,10 +756,8 @@ fn run_until_exception_or_return<'a>(
                 let (named_class, nat) = const_pool.get_virtual_method(jvm, index)?;
 
                 let obj_index = frame.stack.len() - nat.typ.arg_slots() - 1;
-                let obj = unsafe { frame.stack[obj_index].as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
+                let obj = unsafe { frame.stack[obj_index].as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
 
                 let is_instance_init = nat.name.0 == "<init>";
 
@@ -936,7 +797,9 @@ fn run_until_exception_or_return<'a>(
                 let index = frame.read_code_u16();
                 let class = const_pool.get_class(jvm, index)?;
                 class.ensure_init(jvm)?;
-                frame.stack.push(Value::from_ref(jvm.create_object(class)))
+                frame
+                    .stack
+                    .push(Value::from_object(jvm.create_object(class)))
             }
             NEWARRAY => {
                 let length = frame.pop().as_int();
@@ -957,7 +820,7 @@ fn run_until_exception_or_return<'a>(
                 let typ = jvm.resolve_class(typ)?;
                 frame
                     .stack
-                    .push(Value::from_ref(jvm.create_array(typ, length)));
+                    .push(Value::from_object(jvm.create_array(typ, length)));
             }
             ANEWARRAY => {
                 let length = frame.pop().as_int();
@@ -970,26 +833,20 @@ fn run_until_exception_or_return<'a>(
                 }
                 frame
                     .stack
-                    .push(Value::from_ref(jvm.create_array(typ, length)));
+                    .push(Value::from_object(jvm.create_array(typ, length)));
             }
             ARRAYLENGTH => {
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
-                if let Some(base) = obj.class().element_type {
-                    let length =
-                        ((obj.ptr.size() - object::header_size()) / base.layout().size()) as i32;
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
+                if let Some(length) = obj.array_len() {
                     frame.stack.push(Value::from_int(length));
                 } else {
                     unreachable!()
                 }
             }
             ATHROW => {
-                let obj = unsafe { frame.pop().as_ref() };
-                if obj.null() {
-                    return Err(exception(jvm, "NullPointerException"));
-                }
+                let obj = unsafe { frame.pop().as_ref() }
+                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 return Err(obj);
             }
             MULTIANEWARRAY => {
@@ -1018,58 +875,53 @@ fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) {
         Some(ConstPoolItem::Float(f)) => frame.stack.push(Value::from_float(*f)),
         Some(ConstPoolItem::Long(l)) => frame.push_long(*l),
         Some(ConstPoolItem::Double(d)) => frame.push_double(*d),
-        Some(ConstPoolItem::RawString(_) | ConstPoolItem::Class(_)) => todo!(),
-        _ => unreachable!("Invalid ldc/ldc_w/ldc2_w"),
+        Some(ConstPoolItem::String(object)) => frame.stack.push(Value::from_object(*object)),
+        Some(ConstPoolItem::Class(_)) => todo!("Class objects"),
+        other => unreachable!("Invalid ldc/ldc_w/ldc2_w: {:?}", other),
     }
 }
 
 fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
-    match field.nat.typ {
-        Typ::Bool | Typ::Byte => frame.stack.push(Value::from_int(
-            storage.read_i8(field.byte_offset, volatile).unwrap() as i32,
-        )),
-        Typ::Short | Typ::Char => frame.stack.push(Value::from_int(
-            storage.read_i16(field.byte_offset, volatile).unwrap() as i32,
-        )),
-        Typ::Int => frame.stack.push(Value::from_int(
-            storage.read_i32(field.byte_offset, volatile).unwrap(),
-        )),
-        Typ::Float => frame.stack.push(Value::from_float(
-            storage.read_f32(field.byte_offset, volatile).unwrap(),
-        )),
-        Typ::Long => frame.push_long(storage.read_i64(field.byte_offset, volatile).unwrap()),
-        Typ::Double => frame.push_double(storage.read_f64(field.byte_offset, volatile).unwrap()),
-        Typ::Ref(..) => frame.stack.push(Value(
-            storage.read_ptr(field.byte_offset, volatile).unwrap(),
-        )),
+    unsafe {
+        match field.nat.typ {
+            Typ::Bool | Typ::Byte => frame.stack.push(Value::from_int(
+                storage.read_i8(field.byte_offset, volatile) as i32,
+            )),
+            Typ::Short | Typ::Char => frame.stack.push(Value::from_int(
+                storage.read_i16(field.byte_offset, volatile) as i32,
+            )),
+            Typ::Int => frame.stack.push(Value::from_int(
+                storage.read_i32(field.byte_offset, volatile),
+            )),
+            Typ::Float => frame.stack.push(Value::from_float(
+                storage.read_f32(field.byte_offset, volatile),
+            )),
+            Typ::Long => frame.push_long(storage.read_i64(field.byte_offset, volatile)),
+            Typ::Double => frame.push_double(storage.read_f64(field.byte_offset, volatile)),
+            Typ::Ref(..) => frame
+                .stack
+                .push(Value(storage.read_ptr(field.byte_offset, volatile))),
+        }
     }
 }
 
 fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
-    match field.nat.typ {
-        Typ::Bool | Typ::Byte => storage
-            .write_i8(field.byte_offset, frame.pop().as_int() as i8, volatile)
-            .unwrap(),
-        Typ::Short | Typ::Char => storage
-            .write_i16(field.byte_offset, frame.pop().as_int() as i16, volatile)
-            .unwrap(),
-        Typ::Int => storage
-            .write_i32(field.byte_offset, frame.pop().as_int(), volatile)
-            .unwrap(),
-        Typ::Float => storage
-            .write_f32(field.byte_offset, frame.pop().as_float(), volatile)
-            .unwrap(),
-        Typ::Long => storage
-            .write_i64(field.byte_offset, frame.pop_long(), volatile)
-            .unwrap(),
-        Typ::Double => storage
-            .write_f64(field.byte_offset, frame.pop_double(), volatile)
-            .unwrap(),
-        Typ::Ref(..) => storage
-            .write_ptr(field.byte_offset, frame.pop().0, volatile)
-            .unwrap(),
+    unsafe {
+        match field.nat.typ {
+            Typ::Bool | Typ::Byte => {
+                storage.write_i8(field.byte_offset, frame.pop().as_int() as i8, volatile)
+            }
+            Typ::Short | Typ::Char => {
+                storage.write_i16(field.byte_offset, frame.pop().as_int() as i16, volatile)
+            }
+            Typ::Int => storage.write_i32(field.byte_offset, frame.pop().as_int(), volatile),
+            Typ::Float => storage.write_f32(field.byte_offset, frame.pop().as_float(), volatile),
+            Typ::Long => storage.write_i64(field.byte_offset, frame.pop_long(), volatile),
+            Typ::Double => storage.write_f64(field.byte_offset, frame.pop_double(), volatile),
+            Typ::Ref(..) => storage.write_ptr(field.byte_offset, frame.pop().0, volatile),
+        }
     }
 }
 
@@ -1120,8 +972,15 @@ impl Value {
         Self::from_long(value.to_bits() as i64)
     }
 
-    fn from_ref(object: Object) -> Self {
-        Self(object.ptr())
+    fn from_ref(object: Option<Object>) -> Self {
+        Self(match object {
+            None => NULL_PTR,
+            Some(object) => object.ptr().into(),
+        })
+    }
+
+    fn from_object(object: Object) -> Self {
+        Self(object.ptr().into())
     }
 
     fn as_int(self) -> i32 {
@@ -1140,7 +999,7 @@ impl Value {
         f64::from_bits(low.0 as u32 as u64 + ((high.0 as u64) << 32))
     }
 
-    unsafe fn as_ref<'jvm>(self) -> Object<'jvm> {
+    unsafe fn as_ref<'jvm>(self) -> Option<Object<'jvm>> {
         Object::from_ptr(self.0)
     }
 }

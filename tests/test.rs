@@ -207,3 +207,43 @@ fn exceptions() {
         Some(JVMValue::Int(1))
     );
 }
+
+#[test]
+fn strings() {
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    unsafe {
+        // TODO: implement enough verification
+        jvm.disable_verification_by_type_checking()
+    }
+    let class = jvm.resolve_class("Strings").unwrap();
+    // Ensure the class is initialized
+    class.ensure_init(&jvm).unwrap();
+    let string = match class
+        .field(&jvm, "foo", Typ::Ref(jvm.intern_str("java/lang/String")))
+        .unwrap()
+        .static_get()
+    {
+        JVMValue::Ref(Some(string)) => string,
+        _ => panic!(),
+    };
+    let backing_field = jvm
+        .resolve_class("java/lang/String")
+        .unwrap()
+        .field(&jvm, "chars", Typ::Ref(jvm.intern_str("[C")))
+        .unwrap();
+    let chars = match backing_field.instance_get(string) {
+        JVMValue::Ref(Some(chars)) => chars,
+        _ => panic!(),
+    };
+    assert_eq!(format!("{:?}", chars), "\"bar\"");
+}
+
+#[test]
+fn object_reference_niche() {
+    assert_eq!(
+        std::mem::size_of::<Object>(),
+        std::mem::size_of::<Option<Object>>()
+    )
+}
+
+// TODO: Compile-fail test for interacting with objects of one JVM via another
