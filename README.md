@@ -24,7 +24,7 @@ Rough overview:
 - objects contain a pointer to their class, followed by their fields
 - objects are currently not garbage collected
 
-This uses quite a bit of unsafe, namely
+This uses copious amounts of unsafe, namely
 - to allocate the heap
 - when casting type-erased local/stack values to objects
 - when accessing fields (in `fields_storage.rs` and when dereferencing pointers to objects)
@@ -36,4 +36,6 @@ of the class library. For example, each `CONSTANT_String` entry of a constant po
 to an instance of the class `String` that contains the codepoints. Leaving aside the fact
 that the correct class is `java.lang.String`, how does the JVM pass the data to the string /
 read it back? Not specified. As a result, JVMs and class libraries are tied together. There's
-a stub in the `java` directory but it's deliberately kept minimal. 
+a stub in the `java` directory but it's deliberately kept minimal to the point of uselessness,
+serving only to describe the API the JVM depends on. Violating said API may cause exceptions, 
+panics or infinite loops.

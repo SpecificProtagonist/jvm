@@ -19,22 +19,25 @@ use std::{
 };
 
 use backend::{alloc_block, dealloc_block};
-pub use backend::{ptr_decode, ptr_encode, AtomicJVMPtr, JVMPtrSize};
+pub use backend::{ptr_decode, ptr_encode, AtomicJVMPtr, JVMPtr, JVMPtrNonNull, NULL_PTR};
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod backend {
 
-    pub type JVMPtrSize = u32;
+    pub type JVMPtr = u32;
+    pub type JVMPtrNonNull = std::num::NonZeroU32;
     /// Only used by field_storage for read/write
     pub type AtomicJVMPtr = std::sync::atomic::AtomicU32;
 
-    pub fn ptr_encode(ptr: *mut u8) -> JVMPtrSize {
-        ptr as usize as JVMPtrSize
+    pub fn ptr_encode(ptr: *mut u8) -> JVMPtr {
+        ptr as usize as JVMPtr
     }
 
-    pub fn ptr_decode(ptr: JVMPtrSize) -> *mut u8 {
+    pub fn ptr_decode(ptr: JVMPtr) -> *mut u8 {
         ptr as usize as *mut u8
     }
+
+    pub const NULL_PTR: JVMPtr = 0;
 
     pub fn alloc_block(len: usize, addr_hint: *mut u8) -> *mut u8 {
         unsafe {
@@ -66,16 +69,20 @@ mod backend {
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 mod backend {
 
-    pub type JVMPtrSize = usize;
+    pub type JVMPtr = usize;
+    pub type JVMPtrNonNull = std::num::NonZeroUsize;
+    /// Only used by field_storage for read/write
     pub type AtomicJVMPtr = AtomicUsize;
 
-    pub fn ptr_encode(ptr: *mut u8) -> JVMPtrSize {
+    pub fn ptr_encode(ptr: *mut u8) -> JVMPtr {
         ptr
     }
 
-    pub fn ptr_decode(ptr: JVMPtrSize) -> *mut u8 {
+    pub fn ptr_decode(ptr: JVMPtr) -> *mut u8 {
         ptr
     }
+
+    pub const NULL_PTR: JVMPtr = 0;
 
     fn alloc_block(len: usize) -> *mut u8 {
         todo!()

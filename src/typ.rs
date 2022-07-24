@@ -1,6 +1,6 @@
 use std::alloc::Layout;
 
-use crate::{heap::JVMPtrSize, IntStr};
+use crate::{heap::JVMPtr, IntStr};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Typ<'a> {
@@ -25,7 +25,7 @@ impl<'a> Typ<'a> {
             Short | Char => Layout::new::<u16>(),
             Int | Float => Layout::new::<u32>(),
             Long | Double => Layout::new::<u64>(),
-            Ref(..) => Layout::new::<JVMPtrSize>(),
+            Ref(..) => Layout::new::<JVMPtr>(),
         }
     }
 

@@ -3,6 +3,7 @@ use std::hash::Hash;
 use crate::JVM;
 
 // TODO: replace or augment with Object<'a>
+/// String interned in the JVM
 #[derive(Debug, Clone, Copy, Eq)]
 pub struct IntStr<'a>(pub(crate) &'a str);
 

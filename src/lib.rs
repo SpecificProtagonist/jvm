@@ -1,15 +1,15 @@
 #![feature(hash_set_entry)]
 #![feature(map_first_last)]
-#![feature(concat_idents)]
 
 use class_loader::ClassLoader;
 use fixed_typed_arena::ManuallyDropArena;
 use heap::Heap;
-use object::Object;
 use parking_lot::{Mutex, RwLock};
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    // TODO: posibly exchange for different hasher (benchmark)
+    collections::HashMap,
+    fmt::Display,
     hash::Hash,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -34,6 +34,7 @@ pub use class_loader::*;
 pub use field::*;
 use field_storage::FieldStorage;
 pub use method::*;
+pub use object::Object;
 pub use string_interning::*;
 pub use typ::Typ;
 
@@ -44,7 +45,7 @@ pub type JVMResult<'a, T> = std::result::Result<T, Object<'a>>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum JVMValue<'a> {
-    Ref(Object<'a>),
+    Ref(Option<Object<'a>>),
     /// Represents boolean, byte, char, short and int
     Int(i32),
     Long(i64),
@@ -52,7 +53,20 @@ pub enum JVMValue<'a> {
     Double(f64),
 }
 
-// TODO: what to do to prevent passing refs to objects/classes/… between JVMs?
+impl<'a> Display for JVMValue<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ref(None) => write!(f, "null"),
+            Self::Ref(Some(obj)) => write!(f, "@{:x}", obj.ptr()),
+            Self::Int(v) => write!(f, "{}", v),
+            Self::Long(v) => write!(f, "{}", v),
+            Self::Float(v) => write!(f, "{}", v),
+            Self::Double(v) => write!(f, "{}", v),
+        }
+    }
+}
+
+// TODO: branded lifetimes/what to do to prevent passing refs to objects/classes/… between JVMs with matching lifetimes?
 
 pub struct JVM<'a> {
     pub bootstrap_class_loader: Box<dyn ClassLoader>,
@@ -64,8 +78,10 @@ pub struct JVM<'a> {
     method_storage: Mutex<ManuallyDropArena<Method<'a>, 128>>,
     /// Implementation detail of const_pool, maybe remove in the future
     method_descriptor_storage: Mutex<ManuallyDropArena<MethodDescriptor<'a>, 128>>,
-    // TODO: intern string objects instead
-    strings: RwLock<HashSet<&'a str>>,
+    /// Interned strings along with the corrosponding object,
+    /// if String.intern has been called or CONST_String was in const pool (null otherwise)
+    // TMP: OPTION
+    strings: RwLock<HashMap<&'a str, Option<Object<'a>>>>,
     classes: RwLock<HashMap<IntStr<'a>, &'a Class<'a>>>,
     /// Placeholder for Method.class/Field.class. Somehow removing this would be nice.
     /// I had a static Class in parse.rs, but apparently I can't use a &'a Class<'static> as a &'a Class<'a>
@@ -107,12 +123,17 @@ impl<'a> JVM<'a> {
     pub fn intern_str<'b>(&'b self, str: impl Into<Cow<'b, str>>) -> IntStr<'a> {
         let str: Cow<_> = str.into();
         let guard = self.strings.read();
-        IntStr(if let Some(str) = guard.get(str.as_ref()) {
-            *str
+        IntStr(if let Some((str, _)) = guard.get_key_value(str.as_ref()) {
+            str
         } else {
             drop(guard);
             let mut guard = self.strings.write();
-            guard.get_or_insert(self.string_storage.lock().alloc(str.into_owned()))
+            let entry = guard.entry(self.string_storage.lock().alloc(str.into_owned()));
+            // Read back key in case another thread inserted the same string
+            // between read guard release and write guard aquire
+            let key = *entry.key();
+            entry.or_default();
+            key
         })
     }
 
@@ -290,6 +311,7 @@ impl<'a> JVM<'a> {
         interp::invoke(self, method, args)
     }
 
+    // Move this over to class?
     /// Creates an instance of a non-array class on the heap
     /// # Panics
     /// Panics if class is an array class
@@ -298,7 +320,8 @@ impl<'a> JVM<'a> {
             panic!("{} is an array type", class.name)
         }
         let data = FieldStorage::new(&self.heap, class.object_size);
-        data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true);
+        // SAFETY: object_size takes object head into account
+        unsafe { data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true) };
         Object {
             ptr: data,
             _marker: std::marker::PhantomData,
@@ -307,8 +330,7 @@ impl<'a> JVM<'a> {
 
     /// Creates an instance of an array class on the heap
     /// # Panics
-    /// Panics if class is not an array class
-    /// or length < 0
+    /// Panics if class is not an array class or length < 0
     pub fn create_array(&self, class: &'a Class, length: i32) -> Object<'a> {
         let component = class.element_type.expect("non-array class");
         if length < 0 {
@@ -318,7 +340,8 @@ impl<'a> JVM<'a> {
             &self.heap,
             object::header_size() + component.layout().size() * length as usize,
         );
-        data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true);
+        // SAFETY: object_size takes object head into account
+        unsafe { data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true) };
         Object {
             ptr: data,
             _marker: std::marker::PhantomData,

@@ -9,7 +9,8 @@ use crate::{
     heap::Heap,
     object::Object,
     verification::verify,
-    AccessFlags, IntStr, JVMResult, Method, MethodDescriptor, MethodNaT, Typ, JVM,
+    AccessFlags, IntStr, JVMResult, MaybeInteredString, Method, MethodDescriptor, MethodNaT, Typ,
+    JVM,
 };
 
 /// Represents a regular class, an array class or (in the future) an enum or an interface
@@ -62,10 +63,23 @@ impl<'a> Class<'a> {
         self.super_class
     }
 
-    pub fn field(&'a self, nat: FieldNaT<'a>) -> Option<&'a Field<'a>> {
+    pub fn field<'b>(
+        &'a self,
+        jvm: &'b JVM<'a>,
+        name: impl Into<MaybeInteredString<'a, 'b>>,
+        typ: Typ<'a>,
+    ) -> Option<&'a Field<'a>> {
+        let nat = FieldNaT {
+            name: name.into().get(jvm),
+            typ,
+        };
+        self.field_by_nat(nat)
+    }
+
+    pub fn field_by_nat(&'a self, nat: FieldNaT<'a>) -> Option<&'a Field<'a>> {
         self.fields
             .get(&nat)
-            .or_else(|| self.super_class.and_then(|c| c.field(nat)))
+            .or_else(|| self.super_class.and_then(|c| c.field_by_nat(nat)))
     }
 
     pub fn method(&self, nat: &MethodNaT) -> Option<&'a Method<'a>> {
@@ -102,9 +116,10 @@ impl<'a> Class<'a> {
         }
     }
 
-    /// Ensures this class is initialized. This includes linking, verification, preparation & resolution
-    /// May only be called by the instuctions new, getstatic, putstatic or invokestatic or by being the initial class
-    pub(crate) fn ensure_init<'b>(&'b self, jvm: &'b JVM<'a>) -> JVMResult<'a, ()> {
+    /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.
+    /// This happens automatically when a method belonging to this class is called.
+    // May only be called by the library consumer or instuctions new, getstatic, putstatic or invokestatic or by being the initial class
+    pub fn ensure_init<'b>(&'b self, jvm: &'b JVM<'a>) -> JVMResult<'a, ()> {
         let mut guard = self.init.lock();
         match *guard {
             ClassInitState::Done => Ok(()),
@@ -153,41 +168,57 @@ impl<'a> Class<'a> {
         for field in self.fields.values() {
             if let Some(index) = field.const_value_index {
                 match field.nat.typ {
-                    Typ::Bool | Typ::Byte => self
-                        .static_storage
-                        .write_i8(
-                            field.byte_offset,
+                    Typ::Bool | Typ::Byte => unsafe {
+                        self.static_storage.write_i8(
+                            field.byte_offset as usize,
                             const_pool.get_int(jvm, index)? as i8,
                             true,
                         )
-                        .unwrap(),
-                    Typ::Short | Typ::Char => self
-                        .static_storage
-                        .write_i16(
-                            field.byte_offset,
+                    },
+                    Typ::Short | Typ::Char => unsafe {
+                        self.static_storage.write_i16(
+                            field.byte_offset as usize,
                             const_pool.get_int(jvm, index)? as i16,
                             true,
                         )
-                        .unwrap(),
-                    Typ::Int => self
-                        .static_storage
-                        .write_i32(field.byte_offset, const_pool.get_int(jvm, index)?, true)
-                        .unwrap(),
-                    Typ::Float => self
-                        .static_storage
-                        .write_f32(field.byte_offset, const_pool.get_float(jvm, index)?, true)
-                        .unwrap(),
-                    Typ::Double => self
-                        .static_storage
-                        .write_f64(field.byte_offset, const_pool.get_double(jvm, index)?, true)
-                        .unwrap(),
-                    Typ::Long => self
-                        .static_storage
-                        .write_i64(field.byte_offset, const_pool.get_long(jvm, index)?, true)
-                        .unwrap(),
+                    },
+                    Typ::Int => unsafe {
+                        self.static_storage.write_i32(
+                            field.byte_offset as usize,
+                            const_pool.get_int(jvm, index)?,
+                            true,
+                        )
+                    },
+                    Typ::Float => unsafe {
+                        self.static_storage.write_f32(
+                            field.byte_offset as usize,
+                            const_pool.get_float(jvm, index)?,
+                            true,
+                        )
+                    },
+                    Typ::Double => unsafe {
+                        self.static_storage.write_f64(
+                            field.byte_offset as usize,
+                            const_pool.get_double(jvm, index)?,
+                            true,
+                        )
+                    },
+                    Typ::Long => unsafe {
+                        self.static_storage.write_i64(
+                            field.byte_offset as usize,
+                            const_pool.get_long(jvm, index)?,
+                            true,
+                        )
+                    },
                     Typ::Ref(name) => {
                         if name.0 == "java/lang/String" {
-                            todo!()
+                            unsafe {
+                                self.static_storage.write_ptr(
+                                    field.byte_offset as usize,
+                                    const_pool.get_string(jvm, index)?.ptr().into(),
+                                    true,
+                                )
+                            }
                         } else {
                             return Err(exception(jvm, "ClassFormatError"));
                         }
