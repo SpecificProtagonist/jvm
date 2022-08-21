@@ -103,7 +103,7 @@ fn invoke_initialized<'a, 'b>(
                         && (handler.catch_type == 0
                             || thrown
                                 .class()
-                                .assignable_to(const_pool.get_class(jvm, handler.catch_type)?))
+                                .assignable_to(const_pool.get_class(jvm, handler.catch_type)?.name))
                     {
                         frame.stack.clear();
                         frame.stack.push(Value::from_object(thrown));
@@ -311,7 +311,7 @@ fn run_until_exception_or_return<'a>(
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 if let Some(Typ::Ref(component)) = obj.class().element_type {
-                    if !obj.class().assignable_to(jvm.resolve_class(component)?) {
+                    if !obj.class().assignable_to(component) {
                         return Err(exception(jvm, "ArrayStoreException"));
                     }
                     obj.ptr.array_write_ptr(jvm, index, value.0)?
@@ -685,11 +685,11 @@ fn run_until_exception_or_return<'a>(
                 }
                 frame.jump_relative(base, target);
             }
-            IRETURN => return Ok(Some(JVMValue::Int(frame.pop().as_int()))),
-            LRETURN => return Ok(Some(JVMValue::Long(frame.pop_long()))),
-            FRETURN => return Ok(Some(JVMValue::Float(frame.pop().as_float()))),
-            DRETURN => return Ok(Some(JVMValue::Double(frame.pop_double()))),
-            ARETURN => return Ok(Some(JVMValue::Ref(unsafe { frame.pop().as_ref() }))),
+            IRETURN => return Ok(Some(frame.pop().as_int().into())),
+            LRETURN => return Ok(Some(frame.pop_long().into())),
+            FRETURN => return Ok(Some(frame.pop().as_float().into())),
+            DRETURN => return Ok(Some(frame.pop_double().into())),
+            ARETURN => return Ok(Some(unsafe { frame.pop().as_ref() }.into())),
             RETURN => return Ok(None),
             GETSTATIC => {
                 let index = frame.read_code_u16();
@@ -762,7 +762,7 @@ fn run_until_exception_or_return<'a>(
                 let is_instance_init = nat.name.0 == "<init>";
 
                 let class = if !is_instance_init
-                    & method.class.load().true_subclass_of(named_class)
+                    & method.class.load().true_subclass_of(named_class.name)
                     & method
                         .class
                         .load()

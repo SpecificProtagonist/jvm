@@ -89,14 +89,14 @@ impl<'a> Class<'a> {
     // TODO: provide fields() and methods()
     // figure out how to present distinguished between inherited and not
 
-    pub fn true_subclass_of(&'a self, other: &'a Class<'a>) -> bool {
+    pub fn true_subclass_of(&'a self, other: IntStr<'a>) -> bool {
         self.super_class
-            .map(|sc| (sc == other) || sc.assignable_to(other))
+            .map(|sc| sc.assignable_to(other))
             .unwrap_or(false)
     }
 
-    pub fn assignable_to(&'a self, other: &'a Class<'a>) -> bool {
-        (self == other) || self.true_subclass_of(other)
+    pub fn assignable_to(&'a self, other: IntStr<'a>) -> bool {
+        (self.name == other) || self.true_subclass_of(other)
     }
 
     pub(crate) fn dummy_class(heap: &Heap) -> Self {

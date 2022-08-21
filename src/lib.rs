@@ -38,11 +38,6 @@ pub use object::Object;
 pub use string_interning::*;
 pub use typ::Typ;
 
-// TODO: what to do if trying to throw an exception retursively throws infinite exceptions
-// (e.g. java/lang/Object is missing/corrupt)? Currently stackoverflow
-/// Err is an object that extends Throwable
-pub type JVMResult<'a, T> = std::result::Result<T, Object<'a>>;
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum JVMValue<'a> {
     Ref(Option<Object<'a>>),
@@ -53,21 +48,23 @@ pub enum JVMValue<'a> {
     Double(f64),
 }
 
-impl<'a> Display for JVMValue<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Ref(None) => write!(f, "null"),
-            Self::Ref(Some(obj)) => write!(f, "@{:x}", obj.ptr()),
-            Self::Int(v) => write!(f, "{}", v),
-            Self::Long(v) => write!(f, "{}", v),
-            Self::Float(v) => write!(f, "{}", v),
-            Self::Double(v) => write!(f, "{}", v),
-        }
+// TODO: what to do if trying to throw an exception retursively throws infinite exceptions
+// (e.g. java/lang/Object is missing/corrupt)? Currently stackoverflow
+/// Err is an object that extends Throwable
+pub type JVMResult<'a, T> = std::result::Result<T, Object<'a>>;
+
+bitflags::bitflags! {
+    pub struct AccessFlags: u16 {
+        const STATIC = 0x0008;
+        const FINAL = 0x0010;
+        const SUPER = 0x0020;
+        const VOLATILE = 0x0040;
+        const NATIVE = 0x0100;
+        const ABSTRACT = 0x0400;
     }
 }
 
 // TODO: branded lifetimes/what to do to prevent passing refs to objects/classes/… between JVMs with matching lifetimes?
-
 pub struct JVM<'a> {
     pub bootstrap_class_loader: Box<dyn ClassLoader>,
     /// Bypasses verification by type checking. This is unsafe!
@@ -375,19 +372,57 @@ fn exception<'b, 'a: 'b>(jvm: &'b JVM<'a>, name: &'static str) -> Object<'a> {
     }
 }
 
-bitflags::bitflags! {
-    pub struct AccessFlags: u16 {
-        const STATIC = 0x0008;
-        const FINAL = 0x0010;
-        const SUPER = 0x0020;
-        const VOLATILE = 0x0040;
-        const NATIVE = 0x0100;
-        const ABSTRACT = 0x0400;
-    }
-}
-
 fn _assert_jvm_send_sync<T: Send + Sync>() {
     if false {
         _assert_jvm_send_sync::<JVM>()
+    }
+}
+
+impl<'a> Display for JVMValue<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ref(None) => write!(f, "null"),
+            Self::Ref(Some(obj)) => write!(f, "@{:x}", obj.ptr()),
+            Self::Int(v) => write!(f, "{}", v),
+            Self::Long(v) => write!(f, "{}", v),
+            Self::Float(v) => write!(f, "{}", v),
+            Self::Double(v) => write!(f, "{}", v),
+        }
+    }
+}
+
+impl<'a> From<Option<Object<'a>>> for JVMValue<'a> {
+    fn from(val: Option<Object<'a>>) -> Self {
+        Self::Ref(val)
+    }
+}
+
+impl<'a> From<Object<'a>> for JVMValue<'a> {
+    fn from(val: Object<'a>) -> Self {
+        Self::Ref(Some(val))
+    }
+}
+
+impl<'a> From<i32> for JVMValue<'a> {
+    fn from(val: i32) -> Self {
+        Self::Int(val)
+    }
+}
+
+impl<'a> From<i64> for JVMValue<'a> {
+    fn from(val: i64) -> Self {
+        Self::Long(val)
+    }
+}
+
+impl<'a> From<f32> for JVMValue<'a> {
+    fn from(val: f32) -> Self {
+        Self::Float(val)
+    }
+}
+
+impl<'a> From<f64> for JVMValue<'a> {
+    fn from(val: f64) -> Self {
+        Self::Double(val)
     }
 }
