@@ -2,7 +2,7 @@ use crate::{
     exception,
     field::{Field, FieldNaT},
     object::Object,
-    parse, AccessFlags, Class, IntStr, JVMResult, JVMValue, Method, MethodNaT, Typ, JVM,
+    parse, AccessFlags, Class, IntStr, JVMResult, Method, MethodNaT, Typ, JVM,
 };
 
 // Differentiating runtime- and on-disk const pool shouldn't be neccessary
@@ -42,7 +42,6 @@ fn cfe<'a>(jvm: &JVM<'a>) -> Object<'a> {
 impl<'a> ConstPool<'a> {
     /// Must be called prior to initialization
     pub fn resolve(&mut self, jvm: &JVM<'a>) -> JVMResult<'a, ()> {
-        println!();
         for i in 0..self.items.len() {
             if let ConstPoolItem::RawClass(index) = self.items[i] {
                 self.items[i] =
@@ -94,7 +93,7 @@ impl<'a> ConstPool<'a> {
                     let obj = jvm.create_object(string_class);
                     let field =
                         string_class.field(jvm, "chars", Typ::Ref(char_array.name)).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
-                    field.instance_set(obj, JVMValue::Ref(Some(backing_array)));
+                    field.instance_set(obj, Some(backing_array).into());
                     self.items[i] = ConstPoolItem::String(obj)
                 }
                 _ => (),

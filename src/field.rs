@@ -55,7 +55,7 @@ impl<'a> Field<'a> {
         if self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is static", self.nat.name)
         }
-        if !object.class().assignable_to(self.class()) {
+        if !object.class().assignable_to(self.class().name) {
             panic!(
                 "object of class {} not instance of {}",
                 object.class().name(),
@@ -76,13 +76,13 @@ impl<'a> Field<'a> {
                 Typ::Short | Typ::Char => {
                     JVMValue::Int(storage.read_i16(self.byte_offset, volatile) as i32)
                 }
-                Typ::Int => JVMValue::Int(storage.read_i32(self.byte_offset, volatile)),
-                Typ::Float => JVMValue::Float(storage.read_f32(self.byte_offset, volatile)),
-                Typ::Long => JVMValue::Long(storage.read_i64(self.byte_offset, volatile)),
-                Typ::Double => JVMValue::Double(storage.read_f64(self.byte_offset, volatile)),
-                Typ::Ref(..) => JVMValue::Ref(Object::from_ptr(
-                    storage.read_ptr(self.byte_offset, volatile),
-                )),
+                Typ::Int => storage.read_i32(self.byte_offset, volatile).into(),
+                Typ::Float => storage.read_f32(self.byte_offset, volatile).into(),
+                Typ::Long => storage.read_i64(self.byte_offset, volatile).into(),
+                Typ::Double => storage.read_f64(self.byte_offset, volatile).into(),
+                Typ::Ref(..) => {
+                    Object::from_ptr(storage.read_ptr(self.byte_offset, volatile)).into()
+                }
             }
         }
     }
@@ -106,7 +106,7 @@ impl<'a> Field<'a> {
         if self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is static", self.nat.name)
         }
-        if !object.class().assignable_to(self.class()) {
+        if !object.class().assignable_to(self.class().name) {
             panic!(
                 "object of class {} not instance of {}",
                 object.class().name(),

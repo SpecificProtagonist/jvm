@@ -21,7 +21,7 @@ fn initialization() {
     let method = jvm
         .resolve_method("Initialization", "check_init", vec![], Some(Typ::Bool))
         .unwrap();
-    assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(JVMValue::Int(1)));
+    assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(1.into()));
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn init_lock() {
                         typ: &MethodDescriptor(vec![], Some(Typ::Bool)),
                     })
                     .unwrap();
-                assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(JVMValue::Int(1)));
+                assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(1.into()));
             })
         })
         .collect::<Vec<_>>();
@@ -58,10 +58,10 @@ fn control_flow() {
     let method = jvm
         .resolve_method("ControlFlow", "is_even", vec![Typ::Int], Some(Typ::Bool))
         .unwrap();
-    let even_10 = jvm.invoke(method, &[JVMValue::Int(10)]).unwrap();
-    assert_eq!(even_10, Some(JVMValue::Int(1)));
-    let even_13 = jvm.invoke(method, &[JVMValue::Int(13)]).unwrap();
-    assert_eq!(even_13, Some(JVMValue::Int(0)));
+    let even_10 = jvm.invoke(method, &[10.into()]).unwrap();
+    assert_eq!(even_10, Some(1.into()));
+    let even_13 = jvm.invoke(method, &[13.into()]).unwrap();
+    assert_eq!(even_13, Some(0.into()));
 }
 
 #[test]
@@ -84,11 +84,8 @@ fn field_access() {
             typ: &MethodDescriptor(vec![], Some(Typ::Int)),
         })
         .unwrap();
-    assert_eq!(jvm.invoke(set_method, &[JVMValue::Int(42)]).unwrap(), None);
-    assert_eq!(
-        jvm.invoke(get_method, &[]).unwrap(),
-        Some(JVMValue::Int(42))
-    );
+    assert_eq!(jvm.invoke(set_method, &[42.into()]).unwrap(), None);
+    assert_eq!(jvm.invoke(get_method, &[]).unwrap(), Some(42.into()));
 }
 
 #[test]
@@ -107,9 +104,8 @@ fn invoke_static() {
         )
         .unwrap();
     assert_eq!(
-        jvm.invoke(method, &[JVMValue::Int(1), JVMValue::Int(0)])
-            .unwrap(),
-        Some(JVMValue::Int(1))
+        jvm.invoke(method, &[1.into(), 0.into()]).unwrap(),
+        Some(1.into())
     );
 }
 
@@ -123,7 +119,7 @@ fn invoke_virtual() {
     let method = jvm
         .resolve_method("InvokeVirtual", "test", vec![], Some(Typ::Bool))
         .unwrap();
-    assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(JVMValue::Int(1)));
+    assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(1.into()));
 }
 
 #[test]
@@ -136,7 +132,7 @@ fn arrays() {
     let method = jvm
         .resolve_method("Arrays", "test", vec![], Some(Typ::Bool))
         .unwrap();
-    assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(JVMValue::Int(1)));
+    assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(1.into()));
 }
 
 /// Lazy resolution isn't mandatory for the spec, but I still want it
@@ -156,10 +152,7 @@ fn lazy_init() {
     let method = jvm
         .resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))
         .unwrap();
-    assert_eq!(
-        jvm.invoke(method, &[JVMValue::Int(0)]).unwrap(),
-        Some(JVMValue::Int(1))
-    );
+    assert_eq!(jvm.invoke(method, &[0.into()]).unwrap(), Some(1.into()));
 
     let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
@@ -169,10 +162,7 @@ fn lazy_init() {
     let method = jvm
         .resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))
         .unwrap();
-    assert_eq!(
-        jvm.invoke(method, &[JVMValue::Int(1)]).unwrap(),
-        Some(JVMValue::Int(2))
-    );
+    assert_eq!(jvm.invoke(method, &[1.into()]).unwrap(), Some(2.into()));
 }
 
 #[test]
@@ -198,14 +188,8 @@ fn exceptions() {
     let method = jvm
         .resolve_method("Exceptions", "test", vec![Typ::Bool], Some(Typ::Bool))
         .unwrap();
-    assert_eq!(
-        jvm.invoke(method, &[JVMValue::Int(0)]).unwrap(),
-        Some(JVMValue::Int(0))
-    );
-    assert_eq!(
-        jvm.invoke(method, &[JVMValue::Int(1)]).unwrap(),
-        Some(JVMValue::Int(1))
-    );
+    assert_eq!(jvm.invoke(method, &[0.into()]).unwrap(), Some(0.into()));
+    assert_eq!(jvm.invoke(method, &[1.into()]).unwrap(), Some(1.into()));
 }
 
 #[test]

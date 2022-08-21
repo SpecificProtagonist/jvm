@@ -76,7 +76,7 @@ impl<'a> VerificationType<'a> {
             if let Self::Null = self {
                 true
             } else if let Self::ObjectVariable(self_class) = self {
-                self_class.assignable_to(other_class)
+                self_class.assignable_to(other_class.name)
             } else {
                 false
             }
@@ -787,7 +787,7 @@ fn pop_type<'a, 'b>(
             matches!(stack.pop(), Some(VerificationType::Double))
         }
         (Typ::Ref(ref_type), Some(VerificationType::ObjectVariable(obj))) => {
-            obj.assignable_to(jvm.resolve_class(ref_type)?)
+            obj.assignable_to(ref_type)
         }
         _ => false,
     } {

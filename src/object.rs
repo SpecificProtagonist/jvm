@@ -15,11 +15,12 @@ impl<'a> PartialEq for Object<'a> {
     }
 }
 
-// TODO: Maybe omit size in case of non-array objects
-/// Object layout:
-/// size (u64, handled by FieldStorage)
-/// JVMPtrSize to RefType
-/// fields (sorted by alignment) | array elements
+// TODO: Maybe omit size in case of non-array objects?
+// TODO: These are handed out to the user. When garbage collection gets implemented, only hand them out in a non-copy wrapper.
+// Object layout:
+// size (u64, handled by FieldStorage)
+// JVMPtrSize to RefType
+// fields (sorted by alignment) | array elements
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Object<'a> {
@@ -58,22 +59,61 @@ impl<'a> Object<'a> {
         match self.class().element_type {
             None => panic!("not an array"),
             Some(Typ::Bool) | Some(Typ::Byte) => {
-                JVMValue::Int(self.ptr.array_read_i8_freestanding(index) as u8 as i32)
+                (self.ptr.array_read_i8_freestanding(index) as u8 as i32).into()
             }
             Some(Typ::Short) | Some(Typ::Char) => {
-                JVMValue::Int(self.ptr.array_read_i16_freestanding(index) as u16 as i32)
+                (self.ptr.array_read_i16_freestanding(index) as u16 as i32).into()
             }
-            Some(Typ::Int) => JVMValue::Int(self.ptr.array_read_i32_freestanding(index)),
-            Some(Typ::Long) => JVMValue::Long(self.ptr.array_read_i64_freestanding(index)),
-            Some(Typ::Float) => JVMValue::Float(self.ptr.array_read_f32_freestanding(index)),
-            Some(Typ::Double) => JVMValue::Double(self.ptr.array_read_f64_freestanding(index)),
-            Some(Typ::Ref(_)) => JVMValue::Ref(unsafe {
-                Object::from_ptr(self.ptr.array_read_ptr_freestanding(index))
-            }),
+            Some(Typ::Int) => self.ptr.array_read_i32_freestanding(index).into(),
+            Some(Typ::Long) => self.ptr.array_read_i64_freestanding(index).into(),
+            Some(Typ::Float) => self.ptr.array_read_f32_freestanding(index).into(),
+            Some(Typ::Double) => self.ptr.array_read_f64_freestanding(index).into(),
+            Some(Typ::Ref(_)) => unsafe {
+                Object::from_ptr(self.ptr.array_read_ptr_freestanding(index)).into()
+            },
         }
     }
 
-    // TODO: array_write
+    /// Sets an array element. If the element type is boolean, byte, short or char, the `JVMValue::Int` is truncated
+    /// Panics if object is not an array, the element type mismatches or the index is out of bounds
+    pub fn array_write(self, index: i32, value: JVMValue) {
+        if let Some(element_type) = self.class().element_type {
+            match (element_type, value) {
+                (Typ::Bool | Typ::Byte, JVMValue::Int(value)) => self
+                    .ptr
+                    .array_write_i8_freestanding(index, value as u8 as i8),
+                (Typ::Short | Typ::Char, JVMValue::Int(value)) => self
+                    .ptr
+                    .array_write_i16_freestanding(index, value as u16 as i16),
+                (Typ::Int, JVMValue::Int(value)) => {
+                    self.ptr.array_write_i32_freestanding(index, value)
+                }
+                (Typ::Long, JVMValue::Long(value)) => {
+                    self.ptr.array_write_i64_freestanding(index, value)
+                }
+                (Typ::Float, JVMValue::Float(value)) => {
+                    self.ptr.array_write_f32_freestanding(index, value)
+                }
+                (Typ::Float, JVMValue::Double(value)) => {
+                    self.ptr.array_write_f64_freestanding(index, value)
+                }
+                (Typ::Ref(typ), JVMValue::Ref(value)) => {
+                    if let Some(obj) = value {
+                        if !obj.class().assignable_to(typ) {
+                            panic!("element type mismatch")
+                        }
+                    }
+                    self.ptr.array_write_ptr_freestanding(
+                        index,
+                        value.map(|o| o.ptr().into()).unwrap_or(heap::NULL_PTR),
+                    )
+                }
+                _ => panic!("element type mismatch"),
+            }
+        } else {
+            panic!("not an array")
+        }
+    }
 }
 
 impl<'a> std::fmt::Debug for Object<'a> {
