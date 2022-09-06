@@ -14,6 +14,12 @@ Currently implemented:
 - accessing fields & array elements
 - compressed pointers on x86-64 Linux
 
+Some mayor missing features:
+- garbage collection
+- interfaces
+- private/protected
+- a way to call native code
+
 Rough overview:
 - a `JVM` contains classes as well as interned strings
 - each fallible operation on it can return an object representing an instance of Throwable

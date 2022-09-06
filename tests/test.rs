@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use jvm::*;
 
 #[test]
@@ -26,17 +24,11 @@ fn initialization() {
 
 #[test]
 fn init_lock() {
-    let jvm = Arc::new(JVM::new(DefaultClassLoader::new_boxed([
-        "classes",
-        "tests/classes",
-    ])));
-    let class = Arc::new(JVM::resolve_class(&jvm, "InitLock").unwrap());
-    // TODO: use scoped threads when stabilized
-    let threads = (0..50)
-        .map(|_| {
-            let jvm = jvm.clone();
-            let class = class.clone();
-            std::thread::spawn(move || {
+    let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let class = JVM::resolve_class(&jvm, "InitLock").unwrap();
+    std::thread::scope(|s| {
+        for _ in 0..100 {
+            s.spawn(|| {
                 let method = class
                     .method(&MethodNaT {
                         name: jvm.intern_str("check"),
@@ -44,12 +36,9 @@ fn init_lock() {
                     })
                     .unwrap();
                 assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(1.into()));
-            })
-        })
-        .collect::<Vec<_>>();
-    for thread in threads {
-        thread.join().unwrap()
-    }
+            });
+        }
+    });
 }
 
 #[test]
@@ -67,10 +56,6 @@ fn control_flow() {
 #[test]
 fn field_access() {
     let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
-    unsafe {
-        // TODO: implement enough verification
-        jvm.disable_verification_by_type_checking()
-    }
     let class = jvm.resolve_class("FieldAccess").unwrap();
     let set_method = class
         .method(&MethodNaT {

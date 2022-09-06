@@ -755,10 +755,6 @@ fn run_until_exception_or_return<'a>(
                 let index = frame.read_code_u16();
                 let (named_class, nat) = const_pool.get_virtual_method(jvm, index)?;
 
-                let obj_index = frame.stack.len() - nat.typ.arg_slots() - 1;
-                let obj = unsafe { frame.stack[obj_index].as_ref() }
-                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-
                 let is_instance_init = nat.name.0 == "<init>";
 
                 let class = if !is_instance_init
