@@ -28,7 +28,6 @@ mod parse;
 mod string_interning;
 mod typ;
 mod verification;
-
 pub use class::*;
 pub use class_loader::*;
 pub use field::*;

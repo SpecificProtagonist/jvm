@@ -88,6 +88,20 @@ impl<'a> VerificationType<'a> {
     pub fn category_2(self) -> bool {
         matches!(self, VerificationType::Long | VerificationType::Double)
     }
+
+    fn matches(self, typ: Typ<'a>) -> bool {
+        matches!(
+            (self, typ),
+            (
+                Self::Integer,
+                Typ::Bool | Typ::Byte | Typ::Char | Typ::Short | Typ::Int
+            ) | (Self::Long, Typ::Long)
+                | (Self::Float, Typ::Float)
+                | (Self::Double, Typ::Double)
+                | (Self::Null, Typ::Ref(_))
+        ) | matches!((self,typ), (Self::ObjectVariable(class), Typ::Ref(classname)) if class.name == classname
+        )
+    }
 }
 
 pub(crate) fn push_type<'a, 'b>(
@@ -684,6 +698,30 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let typ = const_pool.get_field(jvm, index)?.nat.typ;
                 pop_type(jvm, &mut type_state.stack, typ)?;
+            }
+            GETFIELD => {
+                let index = read_code_u16(jvm, bytes, pc)?;
+                let field = const_pool.get_field(jvm, index)?;
+                if field.class().element_type.is_some()
+                    | (type_state.pop(jvm)? != VerificationType::ObjectVariable(field.class()))
+                {
+                    return Err(ve(jvm, "invalid getfield"));
+                }
+                push_type(jvm, &mut type_state.stack, field.nat.typ)?;
+            }
+            INVOKESTATIC => {
+                let index = read_code_u16(jvm, bytes, pc)?;
+                let method = const_pool.get_static_method(jvm, index)?;
+                let mut valid = true;
+                for arg in method.nat.typ.0.iter().rev() {
+                    valid &= type_state.pop(jvm)?.matches(*arg);
+                }
+                if let Some(return_type) = method.nat.typ.1 {
+                    push_type(jvm, &mut type_state.stack, return_type)?
+                }
+                if !valid | (method.nat.name.0 == "<init>") | (method.nat.name.0 == "<cinit>") {
+                    return Err(ve(jvm, "invalid invokestatic"));
+                }
             }
             NEW => {
                 let uninit = VerificationType::UninitializedVariable { offset: *pc - 1 };
