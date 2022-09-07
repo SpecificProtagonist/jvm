@@ -1,9 +1,9 @@
-use std::alloc::Layout;
+use std::{alloc::Layout, sync::Arc};
 
-use crate::{heap::JVMPtr, IntStr};
+use crate::heap::JVMPtr;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum Typ<'a> {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Typ {
     Bool,
     Byte,
     Short,
@@ -14,10 +14,10 @@ pub enum Typ<'a> {
     Double,
     /// Classes are represented unresolved so we can talk about classes without
     /// having all classes resolved already (which wouldn't work as the graph can be cyclic)
-    Ref(IntStr<'a>),
+    Ref(Arc<str>),
 }
 
-impl<'a> Typ<'a> {
+impl Typ {
     pub fn layout(&self) -> Layout {
         use Typ::*;
         match self {
@@ -31,13 +31,13 @@ impl<'a> Typ<'a> {
 
     pub fn array_dimensions(&self) -> usize {
         match self {
-            Self::Ref(name) => name.0.find(|c| c != '[').unwrap_or(0),
+            Self::Ref(name) => name.find(|c| c != '[').unwrap_or(0),
             _ => 0,
         }
     }
 }
 
-impl<'a> std::fmt::Display for Typ<'a> {
+impl std::fmt::Display for Typ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Typ::Bool => write!(f, "boolean"),

@@ -47,7 +47,7 @@ impl<'a> Object<'a> {
     }
 
     pub fn array_len(self) -> Option<i32> {
-        self.class().element_type.map(|base| {
+        self.class().element_type.as_ref().map(|base| {
             ((self.ptr.size() - crate::object::header_size()) / base.layout().size()) as i32
         })
     }
@@ -77,7 +77,7 @@ impl<'a> Object<'a> {
     /// Sets an array element. If the element type is boolean, byte, short or char, the `JVMValue::Int` is truncated
     /// Panics if object is not an array, the element type mismatches or the index is out of bounds
     pub fn array_write(self, index: i32, value: JVMValue) {
-        if let Some(element_type) = self.class().element_type {
+        if let Some(element_type) = &self.class().element_type {
             match (element_type, value) {
                 (Typ::Bool | Typ::Byte, JVMValue::Int(value)) => self
                     .ptr
@@ -99,7 +99,7 @@ impl<'a> Object<'a> {
                 }
                 (Typ::Ref(typ), JVMValue::Ref(value)) => {
                     if let Some(obj) = value {
-                        if !obj.class().assignable_to(typ) {
+                        if !obj.class().assignable_to(&typ) {
                             panic!("element type mismatch")
                         }
                     }
@@ -121,10 +121,10 @@ impl<'a> std::fmt::Debug for Object<'a> {
         let class = self.class();
 
         // Arrays
-        if let Some(base) = class.element_type {
+        if let Some(base) = &class.element_type {
             let length = self.array_len().unwrap();
             // Prettier printing for strings
-            if base == Typ::Char {
+            if base == &Typ::Char {
                 write!(f, "\"")?;
                 for char in char::decode_utf16(
                     (0..length).map(|i| self.ptr.array_read_i16_freestanding(i) as u16),

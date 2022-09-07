@@ -4,11 +4,7 @@ use jvm::*;
 fn circular_loading() {
     let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     assert_eq!(
-        jvm.resolve_class("CircularA")
-            .unwrap_err()
-            .class()
-            .name()
-            .get(),
+        jvm.resolve_class("CircularA").unwrap_err().class().name(),
         "java/lang/ClassCircularityError"
     )
 }
@@ -29,12 +25,7 @@ fn init_lock() {
     std::thread::scope(|s| {
         for _ in 0..100 {
             s.spawn(|| {
-                let method = class
-                    .method(&MethodNaT {
-                        name: jvm.intern_str("check"),
-                        typ: &MethodDescriptor(vec![], Some(Typ::Bool)),
-                    })
-                    .unwrap();
+                let method = class.method("check", vec![], Some(Typ::Bool)).unwrap();
                 assert_eq!(jvm.invoke(method, &[]).unwrap(), Some(1.into()));
             });
         }
@@ -57,18 +48,8 @@ fn control_flow() {
 fn field_access() {
     let jvm = JVM::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     let class = jvm.resolve_class("FieldAccess").unwrap();
-    let set_method = class
-        .method(&MethodNaT {
-            name: jvm.intern_str("set"),
-            typ: &MethodDescriptor(vec![Typ::Int], None),
-        })
-        .unwrap();
-    let get_method = class
-        .method(&MethodNaT {
-            name: jvm.intern_str("get"),
-            typ: &MethodDescriptor(vec![], Some(Typ::Int)),
-        })
-        .unwrap();
+    let set_method = class.method("set", vec![Typ::Int], None).unwrap();
+    let get_method = class.method("get", vec![], Some(Typ::Int)).unwrap();
     assert_eq!(jvm.invoke(set_method, &[42.into()]).unwrap(), None);
     assert_eq!(jvm.invoke(get_method, &[]).unwrap(), Some(42.into()));
 }
@@ -188,7 +169,7 @@ fn strings() {
     // Ensure the class is initialized
     class.ensure_init(&jvm).unwrap();
     let string = match class
-        .field(&jvm, "foo", Typ::Ref(jvm.intern_str("java/lang/String")))
+        .field("foo", Typ::Ref("java/lang/String".into()))
         .unwrap()
         .static_get()
     {
@@ -198,7 +179,7 @@ fn strings() {
     let backing_field = jvm
         .resolve_class("java/lang/String")
         .unwrap()
-        .field(&jvm, "chars", Typ::Ref(jvm.intern_str("[C")))
+        .field("chars", Typ::Ref("[C".into()))
         .unwrap();
     let chars = match backing_field.instance_get(string) {
         JVMValue::Ref(Some(chars)) => chars,

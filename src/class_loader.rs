@@ -1,9 +1,7 @@
 use std::{io::Read, path::PathBuf};
 
-use crate::IntStr;
-
 pub trait ClassLoader: Send + Sync {
-    fn load(&self, name: IntStr) -> Option<Vec<u8>>;
+    fn load(&self, name: &str) -> Option<Vec<u8>>;
 }
 
 pub struct DefaultClassLoader {
@@ -19,10 +17,10 @@ impl DefaultClassLoader {
 }
 
 impl ClassLoader for DefaultClassLoader {
-    fn load(&self, name: IntStr) -> Option<Vec<u8>> {
+    fn load(&self, name: &str) -> Option<Vec<u8>> {
         for path in &self.class_path {
             let mut path = path.clone();
-            path.push(name.0);
+            path.push(name);
             path.set_extension("class");
 
             if path.exists() {

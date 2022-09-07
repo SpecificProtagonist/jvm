@@ -96,7 +96,7 @@ macro_rules! access {
 impl FieldStorage {
     pub fn new(heap: &Heap, size: usize) -> Self {
         Self(unsafe {
-            let ptr = heap.alloc(layout(size));
+            let ptr = heap.alloc(layout(size)) as *mut u8;
             // Store allocation size for safety checks
             *(ptr as *mut u64) = size as u64;
             JVMPtrNonNull::new_unchecked(heap::ptr_encode(ptr.wrapping_add(size_of::<u64>())))

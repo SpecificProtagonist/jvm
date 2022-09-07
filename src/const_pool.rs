@@ -1,8 +1,10 @@
+use std::sync::Arc;
+
 use crate::{
     exception,
     field::{Field, FieldNaT},
     object::Object,
-    parse, AccessFlags, Class, IntStr, JVMResult, Method, MethodNaT, Typ, JVM,
+    parse, AccessFlags, Class, JVMResult, Method, MethodNaT, Typ, JVM,
 };
 
 // Differentiating runtime- and on-disk const pool shouldn't be neccessary
@@ -12,9 +14,9 @@ pub(crate) struct ConstPool<'a> {
     pub items: Vec<ConstPoolItem<'a>>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum ConstPoolItem<'a> {
-    Utf8(IntStr<'a>),
+    Utf8(Arc<str>),
     Integer(i32),
     Float(f32),
     Long(i64),
@@ -45,7 +47,7 @@ impl<'a> ConstPool<'a> {
         for i in 0..self.items.len() {
             if let ConstPoolItem::RawClass(index) = self.items[i] {
                 self.items[i] =
-                    ConstPoolItem::Class(jvm.resolve_class(self.get_utf8(jvm, index)?)?);
+                    ConstPoolItem::Class(jvm.resolve_class(&self.get_utf8(jvm, index)?)?);
             }
         }
         for i in 0..self.items.len() {
@@ -54,11 +56,14 @@ impl<'a> ConstPool<'a> {
                     // Arrays inherit methods from Object
                     let class = self.get_class(jvm, class)?;
                     let (name, descriptor) = self.get_raw_nat(jvm, nat)?;
-                    let typ = parse::parse_method_descriptor(jvm, descriptor)?;
+                    let typ = parse::parse_method_descriptor(jvm, &descriptor)?;
                     let typ = jvm.method_descriptor_storage.lock().alloc(typ);
                     let method = class
                         .methods
-                        .get(&MethodNaT { name, typ })
+                        .get(&MethodNaT {
+                            name: name.clone(),
+                            typ,
+                        })
                         .ok_or_else(|| exception(jvm, "NoSuchMethodError"))?;
                     if method.access_flags.contains(AccessFlags::STATIC) {
                         self.items[i] = ConstPoolItem::StaticMethod(method);
@@ -71,7 +76,7 @@ impl<'a> ConstPool<'a> {
                 ConstPoolItem::FieldRef { class, nat } => {
                     let class = self.get_class(jvm, class)?;
                     let (name, typ) = self.get_raw_nat(jvm, nat)?;
-                    let (typ, _) = parse::parse_field_descriptor(jvm, typ, 0)?;
+                    let (typ, _) = parse::parse_field_descriptor(jvm, &typ, 0)?;
                     if let Some(field) = class.fields.get(&FieldNaT { name, typ }) {
                         self.items[i] = ConstPoolItem::Field(field);
                     } else {
@@ -81,10 +86,11 @@ impl<'a> ConstPool<'a> {
                 ConstPoolItem::RawString(index) => {
                     // The spec doesn't describe when these strings should get instantiated, so let's just do it here
                     let string = self.get_utf8(jvm, index)?;
-                    let length = string.0.encode_utf16().count();
+                    // TODO: move string object creation routine to jvm (for interning)
+                    let length = string.encode_utf16().count();
                     let char_array = jvm.resolve_class("[C")?;
                     let backing_array = jvm.create_array(char_array, length as i32);
-                    for (index, char) in string.0.encode_utf16().enumerate() {
+                    for (index, char) in string.encode_utf16().enumerate() {
                         backing_array
                             .ptr
                             .array_write_i16(jvm, index as i32, char as i16)?
@@ -92,7 +98,7 @@ impl<'a> ConstPool<'a> {
                     let string_class = jvm.resolve_class("java/lang/String")?;
                     let obj = jvm.create_object(string_class);
                     let field =
-                        string_class.field(jvm, "chars", Typ::Ref(char_array.name)).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
+                        string_class.field("chars", Typ::Ref(char_array.name.clone())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
                     field.instance_set(obj, Some(backing_array).into());
                     self.items[i] = ConstPoolItem::String(obj)
                 }
@@ -130,9 +136,9 @@ impl<'a> ConstPool<'a> {
         }
     }
 
-    pub fn get_utf8(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, IntStr<'a>> {
+    pub fn get_utf8(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, Arc<str>> {
         match self.items.get(index as usize) {
-            Some(ConstPoolItem::Utf8(string)) => Ok(*string),
+            Some(ConstPoolItem::Utf8(string)) => Ok(string.clone()),
             _ => Err(cfe(jvm)),
         }
     }
@@ -145,7 +151,7 @@ impl<'a> ConstPool<'a> {
     }
 
     /// Cannot be called after resolution
-    pub fn get_unresolved_class(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, IntStr<'a>> {
+    pub fn get_unresolved_class(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, Arc<str>> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::RawClass(index)) => self.get_utf8(jvm, *index),
             _ => Err(cfe(jvm)),
@@ -179,7 +185,7 @@ impl<'a> ConstPool<'a> {
         index: u16,
     ) -> JVMResult<'a, (&'a Class<'a>, MethodNaT<'a>)> {
         match self.items.get(index as usize) {
-            Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, *nat)),
+            Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, nat.clone())),
             _ => Err(cfe(jvm)),
         }
     }
@@ -192,7 +198,7 @@ impl<'a> ConstPool<'a> {
         }
     }
 
-    fn get_raw_nat(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, (IntStr<'a>, IntStr<'a>)> {
+    fn get_raw_nat(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, (Arc<str>, Arc<str>)> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::NameAndType { name, descriptor }) => {
                 Ok((self.get_utf8(jvm, *name)?, self.get_utf8(jvm, *descriptor)?))
