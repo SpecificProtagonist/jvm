@@ -76,7 +76,7 @@ impl<'a> VerificationType<'a> {
             if let Self::Null = self {
                 true
             } else if let Self::ObjectVariable(self_class) = self {
-                self_class.assignable_to(other_class.name)
+                self_class.assignable_to(&other_class.name)
             } else {
                 false
             }
@@ -89,7 +89,7 @@ impl<'a> VerificationType<'a> {
         matches!(self, VerificationType::Long | VerificationType::Double)
     }
 
-    fn matches(self, typ: Typ<'a>) -> bool {
+    fn matches(self, typ: &Typ) -> bool {
         matches!(
             (self, typ),
             (
@@ -99,7 +99,7 @@ impl<'a> VerificationType<'a> {
                 | (Self::Float, Typ::Float)
                 | (Self::Double, Typ::Double)
                 | (Self::Null, Typ::Ref(_))
-        ) | matches!((self,typ), (Self::ObjectVariable(class), Typ::Ref(classname)) if class.name == classname
+        ) | matches!((self,typ), (Self::ObjectVariable(class), Typ::Ref(classname)) if &class.name == classname
         )
     }
 }
@@ -107,7 +107,7 @@ impl<'a> VerificationType<'a> {
 pub(crate) fn push_type<'a, 'b>(
     jvm: &'b JVM<'a>,
     types: &'b mut Vec<VerificationType<'a>>,
-    typ: Typ<'a>,
+    typ: &Typ,
 ) -> JVMResult<'a, ()> {
     match typ {
         Typ::Bool | Typ::Char | Typ::Byte | Typ::Short | Typ::Int => {
@@ -122,7 +122,7 @@ pub(crate) fn push_type<'a, 'b>(
             types.push(VerificationType::Long);
             types.push(VerificationType::Top);
         }
-        Typ::Ref(class) => types.push(VerificationType::ObjectVariable(jvm.resolve_class(class)?)),
+        Typ::Ref(class) => types.push(VerificationType::ObjectVariable(jvm.resolve_class(&class)?)),
     }
     Ok(())
 }
@@ -135,7 +135,7 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b JVM<'a>, class: &'b Class<'a>) -> JVMR
     if let Some(super_class) = class.super_class {
         verify(jvm, super_class)?;
         // Check whether the super class is final (as described in spec) is redundant (has to already be checked during loading)
-    } else if class.name.0 != "java/lang/Object" {
+    } else if class.name.as_ref() != "java/lang/Object" {
         return Err(ve(jvm, "class has no superclass"));
     }
 
@@ -187,7 +187,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
         jvm.verification_type_checking_disabled
             .load(Ordering::SeqCst)
     );
-    if method.nat.name.0 == "<init>" {
+    if method.nat.name.as_ref() == "<init>" {
         return Ok(());
     }
     ///////////////////////////////////////////
@@ -200,8 +200,8 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
         let mut locals = Vec::new();
         if !method.access_flags.contains(AccessFlags::STATIC) {
             locals.push(
-                if (method.nat.name.0 != "<init>")
-                    || (method.class.load().name.0 == "java/lang/Object")
+                if (method.nat.name.as_ref() != "<init>")
+                    || (method.class.load().name.as_ref() == "java/lang/Object")
                 {
                     VerificationType::ObjectVariable(method.class.load())
                 } else {
@@ -210,7 +210,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
             );
         }
         for arg in &method.nat.typ.0 {
-            push_type(jvm, &mut locals, *arg)?
+            push_type(jvm, &mut locals, arg)?
         }
         if locals.len() > code.max_locals as usize {
             return Err(ve(jvm, "max locals too low"));
@@ -691,12 +691,12 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
                 push_type(
                     jvm,
                     &mut type_state.stack,
-                    const_pool.get_field(jvm, index)?.nat.typ,
+                    &const_pool.get_field(jvm, index)?.nat.typ,
                 )?;
             }
             PUTSTATIC => {
                 let index = read_code_u16(jvm, bytes, pc)?;
-                let typ = const_pool.get_field(jvm, index)?.nat.typ;
+                let typ = &const_pool.get_field(jvm, index)?.nat.typ;
                 pop_type(jvm, &mut type_state.stack, typ)?;
             }
             GETFIELD => {
@@ -707,19 +707,22 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
                 {
                     return Err(ve(jvm, "invalid getfield"));
                 }
-                push_type(jvm, &mut type_state.stack, field.nat.typ)?;
+                push_type(jvm, &mut type_state.stack, &field.nat.typ)?;
             }
             INVOKESTATIC => {
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let method = const_pool.get_static_method(jvm, index)?;
                 let mut valid = true;
                 for arg in method.nat.typ.0.iter().rev() {
-                    valid &= type_state.pop(jvm)?.matches(*arg);
+                    valid &= type_state.pop(jvm)?.matches(arg);
                 }
-                if let Some(return_type) = method.nat.typ.1 {
+                if let Some(return_type) = &method.nat.typ.1 {
                     push_type(jvm, &mut type_state.stack, return_type)?
                 }
-                if !valid | (method.nat.name.0 == "<init>") | (method.nat.name.0 == "<cinit>") {
+                if !valid
+                    | (method.nat.name.as_ref() == "<init>")
+                    | (method.nat.name.as_ref() == "<cinit>")
+                {
                     return Err(ve(jvm, "invalid invokestatic"));
                 }
             }
@@ -733,7 +736,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
                 type_state.stack.push(uninit);
             }
             NEWARRAY => {
-                pop_type(jvm, &mut type_state.stack, Typ::Int)?;
+                pop_type(jvm, &mut type_state.stack, &Typ::Int)?;
                 let typ = match read_code_u8(jvm, bytes, pc)? {
                     4 => "[Z",
                     5 => "[C",
@@ -755,7 +758,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
                 }
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let component = const_pool.get_class(jvm, index)?;
-                let typ = jvm.resolve_class(format!("[L{};", component.name))?;
+                let typ = jvm.resolve_class(&format!("[L{};", component.name))?;
                 type_state.stack.push(VerificationType::ObjectVariable(typ));
             }
             ARRAYLENGTH => {
@@ -810,7 +813,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
 fn pop_type<'a, 'b>(
     jvm: &'b JVM<'a>,
     stack: &'b mut Vec<VerificationType<'a>>,
-    typ: Typ<'a>,
+    typ: &Typ,
 ) -> JVMResult<'a, ()> {
     if match (typ, stack.pop()) {
         (
@@ -825,7 +828,7 @@ fn pop_type<'a, 'b>(
             matches!(stack.pop(), Some(VerificationType::Double))
         }
         (Typ::Ref(ref_type), Some(VerificationType::ObjectVariable(obj))) => {
-            obj.assignable_to(ref_type)
+            obj.assignable_to(&ref_type)
         }
         _ => false,
     } {

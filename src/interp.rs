@@ -101,9 +101,9 @@ fn invoke_initialized<'a, 'b>(
                     let in_range = (handler.start_pc..=handler.end_pc).contains(&frame.pc);
                     if in_range
                         && (handler.catch_type == 0
-                            || thrown
-                                .class()
-                                .assignable_to(const_pool.get_class(jvm, handler.catch_type)?.name))
+                            || thrown.class().assignable_to(
+                                &const_pool.get_class(jvm, handler.catch_type)?.name,
+                            ))
                     {
                         frame.stack.clear();
                         frame.stack.push(Value::from_object(thrown));
@@ -310,8 +310,8 @@ fn run_until_exception_or_return<'a>(
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                if let Some(Typ::Ref(component)) = obj.class().element_type {
-                    if !obj.class().assignable_to(component) {
+                if let Some(Typ::Ref(component)) = &obj.class().element_type {
+                    if !obj.class().assignable_to(&component) {
                         return Err(exception(jvm, "ArrayStoreException"));
                     }
                     obj.ptr.array_write_ptr(jvm, index, value.0)?
@@ -755,10 +755,10 @@ fn run_until_exception_or_return<'a>(
                 let index = frame.read_code_u16();
                 let (named_class, nat) = const_pool.get_virtual_method(jvm, index)?;
 
-                let is_instance_init = nat.name.0 == "<init>";
+                let is_instance_init = nat.name.as_ref() == "<init>";
 
                 let class = if !is_instance_init
-                    & method.class.load().true_subclass_of(named_class.name)
+                    & method.class.load().true_subclass_of(&named_class.name)
                     & method
                         .class
                         .load()
@@ -823,7 +823,7 @@ fn run_until_exception_or_return<'a>(
                 let index = frame.read_code_u16();
                 let component = const_pool.get_class(jvm, index)?;
                 // TODO: make it easier to refer to array types
-                let typ = jvm.resolve_class(format!("[L{};", component.name))?;
+                let typ = jvm.resolve_class(&format!("[L{};", component.name))?;
                 if length < 0 {
                     return Err(exception(jvm, "NegativeArraySizeException"));
                 }

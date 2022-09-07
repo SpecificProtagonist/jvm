@@ -1,13 +1,14 @@
+use std::sync::Arc;
+
 use crossbeam_utils::atomic::AtomicCell;
 
 use crate::{
-    field_storage::FieldStorage, heap::NULL_PTR, object::Object, AccessFlags, Class, IntStr,
-    JVMValue, Typ,
+    field_storage::FieldStorage, heap::NULL_PTR, object::Object, AccessFlags, Class, JVMValue, Typ,
 };
 
 pub struct Field<'a> {
     /// Fields within a class are uniquely identified by name and type – multiple fields of the same name may exist
-    pub(crate) nat: FieldNaT<'a>,
+    pub(crate) nat: FieldNaT,
     /// Class is behind a AtomicCell to enable circular references
     pub(crate) class: AtomicCell<&'a Class<'a>>,
     pub(crate) access_flags: AccessFlags,
@@ -18,15 +19,15 @@ pub struct Field<'a> {
     pub(crate) const_value_index: Option<u16>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FieldNaT<'a> {
-    pub name: IntStr<'a>,
-    pub typ: Typ<'a>,
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct FieldNaT {
+    pub name: Arc<str>,
+    pub typ: Typ,
 }
 
 impl<'a> Field<'a> {
-    pub fn nat(&self) -> FieldNaT<'a> {
-        self.nat
+    pub fn nat(&self) -> &FieldNaT {
+        &self.nat
     }
 
     pub fn access_flags(&self) -> AccessFlags {
@@ -55,7 +56,7 @@ impl<'a> Field<'a> {
         if self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is static", self.nat.name)
         }
-        if !object.class().assignable_to(self.class().name) {
+        if !object.class().assignable_to(&self.class().name) {
             panic!(
                 "object of class {} not instance of {}",
                 object.class().name(),
@@ -106,7 +107,7 @@ impl<'a> Field<'a> {
         if self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is static", self.nat.name)
         }
-        if !object.class().assignable_to(self.class().name) {
+        if !object.class().assignable_to(&self.class().name) {
             panic!(
                 "object of class {} not instance of {}",
                 object.class().name(),
@@ -120,13 +121,13 @@ impl<'a> Field<'a> {
         let volatile = self.access_flags.contains(AccessFlags::VOLATILE);
 
         // This is to avoid the need to take a ref to JVM for resolution
-        fn assignable<'a>(class: &'a Class<'a>, to: IntStr<'a>) -> bool {
-            to == class.name || class.super_class.map_or(false, |s| assignable(s, to))
+        fn assignable<'a>(class: &'a Class<'a>, to: &str) -> bool {
+            to == class.name.as_ref() || class.super_class.map_or(false, |s| assignable(s, to))
         }
 
         // SAFETY: bounds, alignment & datatype unchanged after construction
         unsafe {
-            match (self.nat.typ, value) {
+            match (&self.nat.typ, value) {
                 (Typ::Bool | Typ::Byte, JVMValue::Int(value)) => {
                     storage.write_i8(self.byte_offset, value as i8, volatile)
                 }
@@ -146,7 +147,7 @@ impl<'a> Field<'a> {
                     storage.write_f64(self.byte_offset, value, volatile)
                 }
                 (Typ::Ref(name), JVMValue::Ref(obj))
-                    if obj.map(|o| assignable(o.class(), name)).unwrap_or(true) =>
+                    if obj.map(|o| assignable(o.class(), &name)).unwrap_or(true) =>
                 {
                     storage.write_ptr(
                         self.byte_offset,
@@ -170,7 +171,7 @@ impl<'a, 'b> PartialEq for &'b Field<'a> {
     }
 }
 
-impl<'a> std::fmt::Debug for FieldNaT<'a> {
+impl std::fmt::Debug for FieldNaT {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} {}", self.typ, self.name)
     }

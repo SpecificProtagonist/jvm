@@ -6,12 +6,14 @@ use fixed_typed_arena::ManuallyDropArena;
 use heap::Heap;
 use parking_lot::{Mutex, RwLock};
 use std::{
-    borrow::Cow,
     // TODO: posibly exchange for different hasher (benchmark)
     collections::HashMap,
     fmt::Display,
     hash::Hash,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 mod class;
@@ -25,7 +27,6 @@ mod interp;
 mod method;
 mod object;
 mod parse;
-mod string_interning;
 mod typ;
 mod verification;
 pub use class::*;
@@ -34,8 +35,10 @@ pub use field::*;
 use field_storage::FieldStorage;
 pub use method::*;
 pub use object::Object;
-pub use string_interning::*;
 pub use typ::Typ;
+
+// @next: fix the jvm lifetimes :((((
+// @next: ArrayStoreException
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum JVMValue<'a> {
@@ -70,15 +73,12 @@ pub struct JVM<'a> {
     verification_type_checking_disabled: AtomicBool,
     heap: Heap<'a>,
     // Classes (including arrays), methods, method descriptors and interned strings live as long as the JVM
-    string_storage: Mutex<ManuallyDropArena<String, 256>>,
     method_storage: Mutex<ManuallyDropArena<Method<'a>, 128>>,
     /// Implementation detail of const_pool, maybe remove in the future
-    method_descriptor_storage: Mutex<ManuallyDropArena<MethodDescriptor<'a>, 128>>,
+    method_descriptor_storage: Mutex<ManuallyDropArena<MethodDescriptor, 128>>,
     /// Interned strings along with the corrosponding object,
     /// if String.intern has been called or CONST_String was in const pool (null otherwise)
-    // TMP: OPTION
-    strings: RwLock<HashMap<&'a str, Option<Object<'a>>>>,
-    classes: RwLock<HashMap<IntStr<'a>, &'a Class<'a>>>,
+    classes: RwLock<HashMap<Arc<str>, &'a Class<'a>>>,
     /// Placeholder for Method.class/Field.class. Somehow removing this would be nice.
     /// I had a static Class in parse.rs, but apparently I can't use a &'a Class<'static> as a &'a Class<'a>
     dummy_class: &'a Class<'a>,
@@ -94,10 +94,8 @@ impl<'a> JVM<'a> {
             bootstrap_class_loader: base_class_loader,
             verification_type_checking_disabled: false.into(),
             heap,
-            string_storage: Default::default(),
             method_storage: Default::default(),
             method_descriptor_storage: Default::default(),
-            strings: Default::default(),
             classes: Default::default(),
             dummy_class,
         }
@@ -116,56 +114,36 @@ impl<'a> JVM<'a> {
             .store(false, Ordering::SeqCst)
     }
 
-    pub fn intern_str<'b>(&'b self, str: impl Into<Cow<'b, str>>) -> IntStr<'a> {
-        let str: Cow<_> = str.into();
-        let guard = self.strings.read();
-        IntStr(if let Some((str, _)) = guard.get_key_value(str.as_ref()) {
-            str
-        } else {
-            drop(guard);
-            let mut guard = self.strings.write();
-            let entry = guard.entry(self.string_storage.lock().alloc(str.into_owned()));
-            // Read back key in case another thread inserted the same string
-            // between read guard release and write guard aquire
-            let key = *entry.key();
-            entry.or_default();
-            key
-        })
-    }
-
     /// Returns the class, loading it if it wasn't already loaded.
     /// This also loads its superclass and any interfaces it implements, but not any other class it refers to
     /// Does not initialize this class, nor load any other class referenced.
-    pub fn resolve_class<'b>(
-        &'b self,
-        name: impl Into<MaybeInteredString<'a, 'b>>,
-    ) -> JVMResult<'a, &'a Class<'a>> {
-        self.resolve_class_impl(name.into().get(self), Vec::new())
+    pub fn resolve_class<'b>(&'b self, name: &'b str) -> JVMResult<'a, &'a Class<'a>> {
+        self.resolve_class_impl(name, Vec::new())
     }
 
     /// This is only to be called by `resolve_class` and errors out on loops in the class hierarchy
     fn resolve_class_impl<'b>(
         &'b self,
-        name: IntStr<'a>,
-        mut check_circular: Vec<IntStr<'a>>,
+        name: &'b str,
+        mut check_circular: Vec<Arc<str>>,
     ) -> JVMResult<'a, &'a Class<'a>> {
-        if let Some(class) = self.classes.read().get(&name) {
+        if let Some(class) = self.classes.read().get(name) {
             return Ok(*class);
         }
 
         // Do we want to load an array?
-        if name.0.starts_with('[') {
+        if name.starts_with('[') {
             let (base, end) = parse::parse_field_descriptor(self, name, 1)?;
-            if end != name.0.len() {
+            if end != name.len() {
                 return Err(exception(self, "ClassFormatError"));
             }
 
             // Arrays of primitives inherit from objects,
             // other arrays inherit from arrays of the superclass of their component type
-            let super_class = if let Typ::Ref(component) = base {
+            let super_class = if let Typ::Ref(component) = &base {
                 let component = self.resolve_class(component)?;
                 if let Some(comp_super) = component.super_class {
-                    self.resolve_class(format!("[{}", comp_super.name))?
+                    self.resolve_class(&format!("[{}", comp_super.name))?
                 } else {
                     self.resolve_class("java/lang/Object")?
                 }
@@ -175,7 +153,7 @@ impl<'a> JVM<'a> {
 
             //let array = RefType::Array { base, super_class };
             let array = Class {
-                name,
+                name: name.into(),
                 super_class: Some(super_class),
                 element_type: Some(base),
                 const_pool: Default::default(),
@@ -197,10 +175,10 @@ impl<'a> JVM<'a> {
             let array = self.heap.alloc_typed(array);
             let mut guard = self.classes.write();
             // Check if loaded by another thread in the meantime
-            if let Some(array) = guard.get(&name) {
+            if let Some(array) = guard.get(name) {
                 return Ok(*array);
             }
-            guard.insert(name, array);
+            guard.insert(name.into(), array);
             return Ok(array);
         }
 
@@ -212,7 +190,7 @@ impl<'a> JVM<'a> {
 
         let mut class_desc = parse::read_class_file(&bytes, self)?;
 
-        if name != class_desc.name {
+        if name != class_desc.name.as_ref() {
             return Err(exception(self, "NoClassDefFoundError"));
         }
 
@@ -223,8 +201,8 @@ impl<'a> JVM<'a> {
             if check_circular.contains(&super_class_name) {
                 return Err(exception(self, "ClassCircularityError"));
             }
-            check_circular.push(super_class_name);
-            let super_class = self.resolve_class_impl(super_class_name, check_circular)?;
+            check_circular.push(super_class_name.clone());
+            let super_class = self.resolve_class_impl(&super_class_name, check_circular)?;
 
             if super_class.element_type.is_some()
                 | super_class.access_flags.contains(AccessFlags::FINAL)
@@ -234,7 +212,7 @@ impl<'a> JVM<'a> {
 
             // Method resolution
             for (nat, method) in &super_class.methods {
-                class_desc.methods.entry(*nat).or_insert(*method);
+                class_desc.methods.entry(nat.clone()).or_insert(*method);
             }
             Some(super_class)
         } else {
@@ -260,11 +238,11 @@ impl<'a> JVM<'a> {
 
         let mut guard = self.classes.write();
         // Check if loaded by another thread in the meantime
-        if let Some(class) = guard.get(&name) {
+        if let Some(class) = guard.get(name) {
             return Ok(*class);
         }
-        guard.insert(name, ref_type);
-        let class = guard.get(&name).unwrap();
+        guard.insert(name.into(), ref_type);
+        let class = guard.get(name).unwrap();
 
         // While parsing, each method has their class field set to a dummy
         // We can't use class.methods directly because that also includes parent classes
@@ -281,15 +259,15 @@ impl<'a> JVM<'a> {
     /// Convenience function; this can also be achieved with resolve_class().method()
     pub fn resolve_method<'b>(
         &'b self,
-        class: impl Into<MaybeInteredString<'a, 'b>>,
-        method: impl Into<MaybeInteredString<'a, 'b>>,
-        args: Vec<Typ<'a>>,
-        returns: Option<Typ<'a>>,
+        class: &str,
+        method: &str,
+        args: Vec<Typ>,
+        returns: Option<Typ>,
     ) -> JVMResult<'a, &'a Method<'a>> {
         self.resolve_class(class)?
             .methods
             .get(&MethodNaT {
-                name: method.into().get(self),
+                name: method.into(),
                 typ: &MethodDescriptor(args, returns),
             })
             .ok_or_else(|| exception(self, "NoSuchMethodError"))
@@ -328,7 +306,7 @@ impl<'a> JVM<'a> {
     /// # Panics
     /// Panics if class is not an array class or length < 0
     pub fn create_array(&self, class: &'a Class, length: i32) -> Object<'a> {
-        let component = class.element_type.expect("non-array class");
+        let component = class.element_type.as_ref().expect("non-array class");
         if length < 0 {
             panic!("array length < 0")
         }
@@ -349,7 +327,6 @@ impl<'a> Drop for JVM<'a> {
     fn drop(&mut self) {
         // SAFETY: All references have lifetime 'a and no member of JVM has a drop impl that dereferences them
         unsafe {
-            ManuallyDropArena::drop(&mut self.string_storage.lock());
             ManuallyDropArena::drop(&mut self.method_storage.lock());
             ManuallyDropArena::drop(&mut self.method_descriptor_storage.lock());
         }
@@ -359,7 +336,7 @@ impl<'a> Drop for JVM<'a> {
 /// For exceptions and errors thrown by the JVM (instead of by athrow).
 /// `name` doesn't include `java/lang` prefix
 fn exception<'b, 'a: 'b>(jvm: &'b JVM<'a>, name: &'static str) -> Object<'a> {
-    match jvm.resolve_class(format!("java/lang/{name}")) {
+    match jvm.resolve_class(&format!("java/lang/{name}")) {
         Ok(class) => {
             if let Err(thrown) = class.ensure_init(jvm) {
                 thrown

@@ -1,6 +1,8 @@
+use std::sync::Arc;
+
 use crossbeam_utils::atomic::AtomicCell;
 
-use crate::{AccessFlags, Class, IntStr, Typ};
+use crate::{AccessFlags, Class, Typ};
 
 pub struct Method<'a> {
     pub(crate) nat: MethodNaT<'a>,
@@ -11,8 +13,8 @@ pub struct Method<'a> {
 }
 
 impl<'a> Method<'a> {
-    pub fn nat(&self) -> MethodNaT<'a> {
-        self.nat
+    pub fn nat(&self) -> MethodNaT {
+        self.nat.clone()
     }
 
     pub fn class(&self) -> &'a Class {
@@ -20,17 +22,17 @@ impl<'a> Method<'a> {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MethodNaT<'a> {
-    pub name: IntStr<'a>,
-    pub typ: &'a MethodDescriptor<'a>,
+    pub name: Arc<str>,
+    pub typ: &'a MethodDescriptor,
 }
 
 /// Argument and return types
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct MethodDescriptor<'a>(pub Vec<Typ<'a>>, pub Option<Typ<'a>>);
+pub struct MethodDescriptor(pub Vec<Typ>, pub Option<Typ>);
 
-impl<'a> MethodDescriptor<'a> {
+impl MethodDescriptor {
     pub(crate) fn arg_slots(&self) -> usize {
         self.0
             .iter()
@@ -73,7 +75,7 @@ impl<'a> std::fmt::Debug for Method<'a> {
 
 impl<'a> std::fmt::Display for MethodNaT<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(ret) = self.typ.1 {
+        if let Some(ret) = &self.typ.1 {
             write!(f, "{}", ret)?;
         } else {
             write!(f, "void")?;

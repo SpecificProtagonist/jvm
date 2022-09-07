@@ -1,6 +1,7 @@
 use std::{
     alloc::Layout,
     collections::{BTreeMap, HashMap},
+    sync::Arc,
 };
 
 use crate::{
@@ -9,7 +10,7 @@ use crate::{
     field::{Field, FieldNaT},
     object::{header_size, Object},
     verification::{StackMapFrame, VerificationType},
-    AccessFlags, Code, ExceptionHandler, FieldStorage, IntStr, JVMResult, Method, MethodDescriptor,
+    AccessFlags, Code, ExceptionHandler, FieldStorage, JVMResult, Method, MethodDescriptor,
     MethodNaT, Typ, JVM,
 };
 use crossbeam_utils::atomic::AtomicCell;
@@ -64,7 +65,7 @@ fn read_const_pool_item<'a, 'b, 'c>(
             // TODO: actually read Modified-UTF8 (null codepoint is remapped)
             let string =
                 std::string::String::from_utf8(bytes).map_err(|_| cfe(jvm, "invalid utf8"))?;
-            Ok(Utf8(jvm.intern_str(&string)))
+            Ok(Utf8(string.into()))
         }
         3 => Ok(Integer(read_u32(jvm, input)? as i32)),
         4 => Ok(Float(f32::from_bits(read_u32(jvm, input)?))),
@@ -109,26 +110,26 @@ fn read_const_pool<'a, 'b, 'c>(
         }
     }
     // Const pool validity is part of format checking
-    for &item in items.iter() {
+    for item in items.iter() {
         if !match item {
             ConstPoolItem::RawClass(index) => {
-                matches!(items.get(index as usize), Some(ConstPoolItem::Utf8(..)))
+                matches!(items.get(*index as usize), Some(ConstPoolItem::Utf8(..)))
             }
             ConstPoolItem::FieldRef { class, nat }
             | ConstPoolItem::MethodRef { class, nat }
             | ConstPoolItem::InterfaceMethodRef { class, nat } => matches!(
-                (items.get(class as usize), items.get(nat as usize)),
+                (items.get(*class as usize), items.get(*nat as usize)),
                 (
                     Some(ConstPoolItem::RawClass(..)),
                     Some(ConstPoolItem::NameAndType { .. })
                 )
             ),
             ConstPoolItem::NameAndType { name, descriptor } => matches!(
-                (items.get(name as usize), items.get(descriptor as usize)),
+                (items.get(*name as usize), items.get(*descriptor as usize)),
                 (Some(ConstPoolItem::Utf8(..)), Some(ConstPoolItem::Utf8(..)))
             ),
             ConstPoolItem::RawString(index) => {
-                matches!(items.get(index as usize), Some(ConstPoolItem::Utf8(..)))
+                matches!(items.get(*index as usize), Some(ConstPoolItem::Utf8(..)))
             }
             _ => true,
         } {
@@ -143,7 +144,7 @@ fn read_interfaces<'a>(
     jvm: &JVM<'a>,
     input: &mut &[u8],
     const_pool: &ConstPool<'a>,
-) -> JVMResult<'a, Vec<IntStr<'a>>> {
+) -> JVMResult<'a, Vec<Arc<str>>> {
     let length = read_u16(jvm, input)?;
     let mut vec = Vec::with_capacity(length as usize);
     for _ in 0..length {
@@ -156,7 +157,7 @@ fn read_attribute<'a, 'b, 'c>(
     jvm: &JVM<'a>,
     input: &mut &'b [u8],
     const_pool: &'c ConstPool<'a>,
-) -> JVMResult<'a, (IntStr<'a>, &'b [u8])> {
+) -> JVMResult<'a, (Arc<str>, &'b [u8])> {
     let name = const_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
     let attr_length = read_u32(jvm, input)?;
     if attr_length as usize > input.len() {
@@ -169,10 +170,10 @@ fn read_attribute<'a, 'b, 'c>(
 
 pub(crate) fn parse_field_descriptor<'a, 'b>(
     jvm: &'b JVM<'a>,
-    descriptor: IntStr<'a>,
+    descriptor: &'b str,
     start: usize,
-) -> JVMResult<'a, (Typ<'a>, usize)> {
-    let str = &descriptor.0[start..];
+) -> JVMResult<'a, (Typ, usize)> {
+    let str = &descriptor[start..];
     if let Some(typ) = match str.chars().next() {
         Some('Z') => Some(Typ::Bool),
         Some('B') => Some(Typ::Byte),
@@ -190,8 +191,7 @@ pub(crate) fn parse_field_descriptor<'a, 'b>(
     if let Some(stripped) = str.strip_prefix('L') {
         if let Some((class_name, _)) = stripped.split_once(';') {
             let start = start + 1 + class_name.len() + 1;
-            let class_name = String::from(class_name);
-            let typ = Typ::Ref(jvm.intern_str(&class_name));
+            let typ = Typ::Ref(class_name.into());
             return Ok((typ, start));
         } else {
             return Err(cfe(jvm, "invalid field descriptor"));
@@ -200,7 +200,7 @@ pub(crate) fn parse_field_descriptor<'a, 'b>(
 
     if str.starts_with('[') {
         let (_, end) = parse_field_descriptor(jvm, descriptor, start + 1)?;
-        let typ = Typ::Ref(jvm.intern_str(&str[..end]));
+        let typ = Typ::Ref(str[..end].into());
         if typ.array_dimensions() > 255 {
             return Err(cfe(jvm, "too many array dimensions"));
         }
@@ -220,8 +220,8 @@ fn read_field<'a, 'b, 'c>(
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
 
     let descriptor = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
-    let (typ, end) = parse_field_descriptor(jvm, descriptor, 0)?;
-    if end < descriptor.0.len() {
+    let (typ, end) = parse_field_descriptor(jvm, &descriptor, 0)?;
+    if end < descriptor.len() {
         return Err(cfe(jvm, "Invalid type descriptor"));
     }
 
@@ -229,7 +229,7 @@ fn read_field<'a, 'b, 'c>(
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
         let (name, data) = read_attribute(jvm, input, constant_pool)?;
-        if access_flags.contains(AccessFlags::STATIC) && (name.0 == "ConstantValue") {
+        if access_flags.contains(AccessFlags::STATIC) && (name.as_ref() == "ConstantValue") {
             if const_value_index.is_none() & (data.len() == 2) {
                 const_value_index = Some(((data[0] as u16) << 8) + data[1] as u16)
             } else {
@@ -255,7 +255,7 @@ fn read_fields<'a, 'b, 'c>(
 ) -> JVMResult<
     'a,
     (
-        HashMap<FieldNaT<'a>, Field<'a>>,
+        HashMap<FieldNaT, Field<'a>>,
         /*static fields size*/ usize,
         /*object fields size*/ usize,
     ),
@@ -283,7 +283,7 @@ fn read_fields<'a, 'b, 'c>(
             let result = fields_layout.extend(layout).unwrap();
             *fields_layout = result.0;
             field.byte_offset = result.1;
-            (field.nat, field)
+            (field.nat.clone(), field)
         })
         .collect();
 
@@ -455,7 +455,7 @@ fn read_code<'a>(
     for _ in 0..attributes_count {
         // Ignore attributes for now
         let (name, bytes) = read_attribute(jvm, input, constant_pool)?;
-        if name.0 == "StackMapTable" {
+        if name.as_ref() == "StackMapTable" {
             if stack_map_table.is_none() {
                 stack_map_table = Some(bytes.into());
             } else {
@@ -479,24 +479,24 @@ fn read_code<'a>(
 
 pub(crate) fn parse_method_descriptor<'a, 'b>(
     jvm: &'b JVM<'a>,
-    descriptor: IntStr<'a>,
-) -> JVMResult<'a, MethodDescriptor<'a>> {
-    if !descriptor.0.starts_with('(') {
+    descriptor: &str,
+) -> JVMResult<'a, MethodDescriptor> {
+    if !descriptor.starts_with('(') {
         return Err(cfe(jvm, "Invalid method descriptor"));
     }
     let mut start = 1;
     let mut args = Vec::new();
-    while !descriptor.0[start..].starts_with(')') {
+    while !descriptor[start..].starts_with(')') {
         let (arg, next_start) = parse_field_descriptor(jvm, descriptor, start)?;
         args.push(arg);
         start = next_start;
     }
     start += 1;
-    if &descriptor.0[start..] == "V" {
+    if &descriptor[start..] == "V" {
         Ok(MethodDescriptor(args, None))
     } else {
         let (return_type, start) = parse_field_descriptor(jvm, descriptor, start)?;
-        if start < descriptor.0.len() {
+        if start < descriptor.len() {
             return Err(cfe(jvm, "Invalid method descriptor"));
         }
         Ok(MethodDescriptor(args, Some(return_type)))
@@ -513,13 +513,13 @@ fn read_method<'a, 'b, 'c>(
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
 
     let descriptor = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
-    let descriptor = parse_method_descriptor(jvm, descriptor)?;
+    let descriptor = parse_method_descriptor(jvm, &descriptor)?;
 
     let mut code = None;
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
         let (attr_name, bytes) = read_attribute(jvm, input, constant_pool)?;
-        if attr_name.0 == "Code" {
+        if attr_name.as_ref() == "Code" {
             if code.is_none() {
                 code = Some(read_code(jvm, bytes, constant_pool)?);
             } else {
@@ -553,7 +553,7 @@ fn read_methods<'a, 'b, 'c>(
             }
         }
         let method = jvm.method_storage.lock().alloc(method);
-        methods.insert(method.nat, &*method);
+        methods.insert(method.nat.clone(), &*method);
     }
     Ok(methods)
 }
@@ -621,10 +621,10 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
 pub(crate) struct ClassDescriptor<'a> {
     pub(crate) const_pool: ConstPool<'a>,
     pub(crate) access_flags: AccessFlags,
-    pub(crate) name: IntStr<'a>,
-    pub(crate) super_class: Option<IntStr<'a>>,
-    pub(crate) interfaces: Vec<IntStr<'a>>,
-    pub(crate) fields: HashMap<FieldNaT<'a>, Field<'a>>,
+    pub(crate) name: Arc<str>,
+    pub(crate) super_class: Option<Arc<str>>,
+    pub(crate) interfaces: Vec<Arc<str>>,
+    pub(crate) fields: HashMap<FieldNaT, Field<'a>>,
     pub(crate) methods: HashMap<MethodNaT<'a>, &'a Method<'a>>,
     pub(crate) static_storage: FieldStorage,
     pub(crate) object_size: usize,

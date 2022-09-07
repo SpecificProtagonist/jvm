@@ -15,7 +15,7 @@ use parking_lot::Mutex;
 use std::{
     alloc::Layout,
     marker::PhantomData,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use backend::{alloc_block, dealloc_block};
@@ -39,7 +39,7 @@ mod backend {
 
     pub const NULL_PTR: JVMPtr = 0;
 
-    pub fn alloc_block(len: usize, addr_hint: *mut u8) -> *mut u8 {
+    pub fn alloc_block(len: usize, addr_hint: usize) -> *mut u8 {
         unsafe {
             let addr = libc::mmap(
                 addr_hint as *mut libc::c_void,
@@ -60,7 +60,7 @@ mod backend {
         }
     }
 
-    pub unsafe fn dealloc_block(addr: *mut u8, len: usize) {
+    pub unsafe fn dealloc_block(addr: usize, len: usize) {
         // Should not possibly fail, and if it does anyways, ignore it
         libc::munmap(addr as *mut libc::c_void, len);
     }
@@ -68,28 +68,36 @@ mod backend {
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 mod backend {
+    use std::alloc::Layout;
 
     pub type JVMPtr = usize;
     pub type JVMPtrNonNull = std::num::NonZeroUsize;
     /// Only used by field_storage for read/write
-    pub type AtomicJVMPtr = AtomicUsize;
+    pub type AtomicJVMPtr = std::sync::atomic::AtomicUsize;
 
     pub fn ptr_encode(ptr: *mut u8) -> JVMPtr {
-        ptr
+        ptr as usize
     }
 
     pub fn ptr_decode(ptr: JVMPtr) -> *mut u8 {
-        ptr
+        ptr as *mut u8
     }
 
     pub const NULL_PTR: JVMPtr = 0;
 
-    fn alloc_block(len: usize) -> *mut u8 {
-        todo!()
+    pub fn alloc_block(len: usize, _addr_hint: usize) -> *mut u8 {
+        unsafe {
+            std::alloc::alloc_zeroed(
+                Layout::from_size_align(len, std::mem::align_of::<u64>()).unwrap(),
+            )
+        }
     }
 
-    fn dealloc_block(addr: *mut u8, len: usize) {
-        todo!()
+    pub unsafe fn dealloc_block(addr: usize, len: usize) {
+        std::alloc::dealloc(
+            addr as *mut u8,
+            Layout::from_size_align(len, std::mem::align_of::<u64>()).unwrap(),
+        )
     }
 }
 
@@ -99,7 +107,7 @@ const MIN_BLOCK_SIZE: usize = TYPICAL_PAGE_SIZE * 1024;
 const TYPICAL_PAGE_SIZE: usize = 4096;
 
 struct Block {
-    addr: AtomicPtr<u8>,
+    addr: AtomicUsize,
     len: usize,
 }
 
@@ -107,24 +115,24 @@ struct Block {
 #[derive(Default)]
 pub struct Heap<'jvm> {
     /// Start of free part of current backing
-    current_start: AtomicPtr<u8>,
+    current_start: AtomicUsize,
     /// Points one past end
-    current_end: AtomicPtr<u8>,
+    current_end: AtomicUsize,
     backing: Mutex<Vec<Block>>,
     _marker: PhantomData<&'jvm ()>,
 }
 
 impl<'jvm> Heap<'jvm> {
-    pub fn alloc(&self, layout: Layout) -> *mut u8 {
+    pub fn alloc(&self, layout: Layout) -> usize {
         loop {
             let start = self.current_start.load(Ordering::SeqCst);
             let end = self.current_end.load(Ordering::SeqCst);
             // Ensure alignment
-            // For compressed pointers and a >4gb heap, leave the last thre bits unset
+            // For compressed pointers and a >4gb heap, leave the last three bits unset
             let align = layout.align().max(8);
-            let addr = round_to_multiple(start as usize, align) as *mut u8;
+            let addr = round_to_multiple(start as usize, align);
             let next = addr.wrapping_add(layout.size());
-            assert!(next >= start);
+            assert!(next > start);
             // Does the allocation fit inside the current block?
             if next <= end {
                 // Different blocks can't start at the same address.
@@ -150,7 +158,7 @@ impl<'jvm> Heap<'jvm> {
                 // Make sure the new block large enough
                 let block_size =
                     MIN_BLOCK_SIZE.max(round_to_multiple(layout.size(), TYPICAL_PAGE_SIZE));
-                let addr = alloc_block(block_size, end);
+                let addr = alloc_block(block_size, end) as usize;
 
                 // Extend the previous block if possible
                 if addr == end {
@@ -177,7 +185,7 @@ impl<'jvm> Heap<'jvm> {
     pub fn alloc_typed<T>(&self, value: T) -> &'jvm T {
         let ptr = self.alloc(Layout::new::<T>()) as *mut T;
         unsafe {
-            *ptr = value;
+            ptr.write(value);
             &*ptr
         }
     }
