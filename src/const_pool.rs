@@ -1,32 +1,37 @@
 use std::sync::Arc;
 
 use crate::{
-    exception,
+    class::Class,
     field::{Field, FieldNaT},
+    jvm::{exception, JVMResult, Jvm},
+    method::Method,
+    method::MethodNaT,
     object::Object,
-    parse, AccessFlags, Class, JVMResult, Method, MethodNaT, Typ, JVM,
+    parse,
+    typ::Typ,
+    AccessFlags,
 };
 
 // Differentiating runtime- and on-disk const pool shouldn't be neccessary
 // although it would allow a speedup
 #[derive(Debug, Default)]
-pub(crate) struct ConstPool<'a> {
-    pub items: Vec<ConstPoolItem<'a>>,
+pub(crate) struct ConstPool {
+    pub items: Vec<ConstPoolItem>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum ConstPoolItem<'a> {
+pub(crate) enum ConstPoolItem {
     Utf8(Arc<str>),
     Integer(i32),
     Float(f32),
     Long(i64),
     Double(f64),
-    String(Object<'a>),
-    Class(&'a Class<'a>),
-    Field(&'a Field<'a>),
-    StaticMethod(&'a Method<'a>),
+    String(Object),
+    Class(&'static Class),
+    Field(&'static Field),
+    StaticMethod(&'static Method),
     // Class is neccessary for invoke_special
-    VirtualMethod(&'a Class<'a>, MethodNaT<'a>),
+    VirtualMethod(&'static Class, MethodNaT<'static>),
     InterfaceMethodRef { class: u16, nat: u16 },
     NameAndType { name: u16, descriptor: u16 },
     FieldRef { class: u16, nat: u16 },
@@ -37,13 +42,13 @@ pub(crate) enum ConstPoolItem<'a> {
     PlaceholderAfterLongOrDoubleEntryOrForEntryZero,
 }
 
-fn cfe<'a>(jvm: &JVM<'a>) -> Object<'a> {
+fn cfe(jvm: &Jvm) -> Object {
     exception(jvm, "ClassFormatError")
 }
 
-impl<'a> ConstPool<'a> {
+impl ConstPool {
     /// Must be called prior to initialization
-    pub fn resolve(&mut self, jvm: &JVM<'a>) -> JVMResult<'a, ()> {
+    pub fn resolve(&mut self, jvm: &Jvm) -> JVMResult<()> {
         for i in 0..self.items.len() {
             if let ConstPoolItem::RawClass(index) = self.items[i] {
                 self.items[i] =
@@ -108,42 +113,42 @@ impl<'a> ConstPool<'a> {
         Ok(())
     }
 
-    pub fn get_int(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, i32> {
+    pub fn get_int(&self, jvm: &Jvm, index: u16) -> JVMResult<i32> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Integer(int)) => Ok(*int),
             _ => Err(cfe(jvm)),
         }
     }
 
-    pub fn get_long(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, i64> {
+    pub fn get_long(&self, jvm: &Jvm, index: u16) -> JVMResult<i64> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Long(long)) => Ok(*long),
             _ => Err(cfe(jvm)),
         }
     }
 
-    pub fn get_float(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, f32> {
+    pub fn get_float(&self, jvm: &Jvm, index: u16) -> JVMResult<f32> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Float(float)) => Ok(*float),
             _ => Err(cfe(jvm)),
         }
     }
 
-    pub fn get_double(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, f64> {
+    pub fn get_double(&self, jvm: &Jvm, index: u16) -> JVMResult<f64> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Double(double)) => Ok(*double),
             _ => Err(cfe(jvm)),
         }
     }
 
-    pub fn get_utf8(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, Arc<str>> {
+    pub fn get_utf8(&self, jvm: &Jvm, index: u16) -> JVMResult<Arc<str>> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Utf8(string)) => Ok(string.clone()),
             _ => Err(cfe(jvm)),
         }
     }
 
-    pub fn get_string(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, Object<'a>> {
+    pub fn get_string(&self, jvm: &Jvm, index: u16) -> JVMResult<Object> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::String(string)) => Ok(*string),
             _ => Err(cfe(jvm)),
@@ -151,7 +156,7 @@ impl<'a> ConstPool<'a> {
     }
 
     /// Cannot be called after resolution
-    pub fn get_unresolved_class(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, Arc<str>> {
+    pub fn get_unresolved_class(&self, jvm: &Jvm, index: u16) -> JVMResult<Arc<str>> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::RawClass(index)) => self.get_utf8(jvm, *index),
             _ => Err(cfe(jvm)),
@@ -159,7 +164,7 @@ impl<'a> ConstPool<'a> {
     }
 
     /// Requires resolution first
-    pub fn get_class(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, &'a Class<'a>> {
+    pub fn get_class(&self, jvm: &Jvm, index: u16) -> JVMResult<&'static Class> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Class(class)) => Ok(class),
             _ => Err(cfe(jvm)),
@@ -167,11 +172,7 @@ impl<'a> ConstPool<'a> {
     }
 
     /// Requires resolution first
-    pub fn get_static_method<'b>(
-        &'b self,
-        jvm: &JVM<'a>,
-        index: u16,
-    ) -> JVMResult<'a, &'a Method<'a>> {
+    pub fn get_static_method(&self, jvm: &Jvm, index: u16) -> JVMResult<&'static Method> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::StaticMethod(method)) => Ok(method),
             _ => Err(cfe(jvm)),
@@ -181,9 +182,9 @@ impl<'a> ConstPool<'a> {
     /// Requires resolution first
     pub fn get_virtual_method(
         &self,
-        jvm: &JVM<'a>,
+        jvm: &Jvm,
         index: u16,
-    ) -> JVMResult<'a, (&'a Class<'a>, MethodNaT<'a>)> {
+    ) -> JVMResult<(&'static Class, MethodNaT)> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, nat.clone())),
             _ => Err(cfe(jvm)),
@@ -191,14 +192,14 @@ impl<'a> ConstPool<'a> {
     }
 
     /// Requires resolution first
-    pub fn get_field(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, &'a Field<'a>> {
+    pub fn get_field(&self, jvm: &Jvm, index: u16) -> JVMResult<&'static Field> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Field(field)) => Ok(field),
             _ => Err(cfe(jvm)),
         }
     }
 
-    fn get_raw_nat(&self, jvm: &JVM<'a>, index: u16) -> JVMResult<'a, (Arc<str>, Arc<str>)> {
+    fn get_raw_nat(&self, jvm: &Jvm, index: u16) -> JVMResult<(Arc<str>, Arc<str>)> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::NameAndType { name, descriptor }) => {
                 Ok((self.get_utf8(jvm, *name)?, self.get_utf8(jvm, *descriptor)?))

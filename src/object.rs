@@ -1,19 +1,13 @@
-use std::{
-    marker::PhantomData,
-    mem::{align_of, size_of},
-};
+use std::mem::{align_of, size_of};
 
 use crate::{
+    class::Class,
     field_storage::FieldStorage,
     heap::{self, JVMPtr, JVMPtrNonNull},
-    AccessFlags, Class, JVMValue, Typ,
+    jvm::Value,
+    typ::Typ,
+    AccessFlags,
 };
-
-impl<'a> PartialEq for Object<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        self.ptr.ptr() == other.ptr.ptr()
-    }
-}
 
 // TODO: Maybe omit size in case of non-array objects?
 // TODO: These are handed out to the user. When garbage collection gets implemented, only hand them out in a non-copy wrapper.
@@ -23,14 +17,12 @@ impl<'a> PartialEq for Object<'a> {
 // fields (sorted by alignment) | array elements
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct Object<'a> {
+pub(crate) struct Object {
     pub(crate) ptr: FieldStorage,
-    /// The object may only live as long as the JVM
-    pub(crate) _marker: PhantomData<&'a ()>,
 }
 
-impl<'a> Object<'a> {
-    pub fn class(self) -> &'a Class<'a> {
+impl Object {
+    pub fn class(self) -> &'static Class {
         unsafe { &*(heap::ptr_decode(self.ptr.read_ptr(0, false)) as *const Class) }
     }
 
@@ -42,7 +34,6 @@ impl<'a> Object<'a> {
     pub(crate) unsafe fn from_ptr(addr: JVMPtr) -> Option<Self> {
         JVMPtrNonNull::new(addr).map(|addr| Self {
             ptr: FieldStorage::from_ptr(addr),
-            _marker: Default::default(),
         })
     }
 
@@ -55,7 +46,7 @@ impl<'a> Object<'a> {
     /// Returns either the value at index
     /// # Panics
     /// if the object is not an array or the index is out of bounds
-    pub fn array_read(self, index: i32) -> JVMValue<'a> {
+    pub fn array_read(self, index: i32) -> Value {
         match self.class().element_type {
             None => panic!("not an array"),
             Some(Typ::Bool) | Some(Typ::Byte) => {
@@ -76,30 +67,30 @@ impl<'a> Object<'a> {
 
     /// Sets an array element. If the element type is boolean, byte, short or char, the `JVMValue::Int` is truncated
     /// Panics if object is not an array, the element type mismatches or the index is out of bounds
-    pub fn array_write(self, index: i32, value: JVMValue) {
+    pub fn array_write(self, index: i32, value: Value) {
         if let Some(element_type) = &self.class().element_type {
             match (element_type, value) {
-                (Typ::Bool | Typ::Byte, JVMValue::Int(value)) => self
+                (Typ::Bool | Typ::Byte, Value::Int(value)) => self
                     .ptr
                     .array_write_i8_freestanding(index, value as u8 as i8),
-                (Typ::Short | Typ::Char, JVMValue::Int(value)) => self
+                (Typ::Short | Typ::Char, Value::Int(value)) => self
                     .ptr
                     .array_write_i16_freestanding(index, value as u16 as i16),
-                (Typ::Int, JVMValue::Int(value)) => {
+                (Typ::Int, Value::Int(value)) => {
                     self.ptr.array_write_i32_freestanding(index, value)
                 }
-                (Typ::Long, JVMValue::Long(value)) => {
+                (Typ::Long, Value::Long(value)) => {
                     self.ptr.array_write_i64_freestanding(index, value)
                 }
-                (Typ::Float, JVMValue::Float(value)) => {
+                (Typ::Float, Value::Float(value)) => {
                     self.ptr.array_write_f32_freestanding(index, value)
                 }
-                (Typ::Float, JVMValue::Double(value)) => {
+                (Typ::Float, Value::Double(value)) => {
                     self.ptr.array_write_f64_freestanding(index, value)
                 }
-                (Typ::Ref(typ), JVMValue::Ref(value)) => {
+                (Typ::Ref(typ), Value::Ref(value)) => {
                     if let Some(obj) = value {
-                        if !obj.class().assignable_to(&typ) {
+                        if !obj.class().assignable_to(typ) {
                             panic!("element type mismatch")
                         }
                     }
@@ -116,7 +107,22 @@ impl<'a> Object<'a> {
     }
 }
 
-impl<'a> std::fmt::Debug for Object<'a> {
+impl Eq for Object {
+    fn assert_receiver_is_total_eq(&self) {}
+}
+impl PartialEq for Object {
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr.ptr() == other.ptr.ptr()
+    }
+}
+
+impl std::hash::Hash for Object {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.ptr(), state)
+    }
+}
+
+impl std::fmt::Debug for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let class = self.class();
 

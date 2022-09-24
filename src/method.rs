@@ -2,22 +2,22 @@ use std::sync::Arc;
 
 use crossbeam_utils::atomic::AtomicCell;
 
-use crate::{AccessFlags, Class, Typ};
+use crate::{class::Class, typ::Typ, AccessFlags};
 
-pub struct Method<'a> {
-    pub(crate) nat: MethodNaT<'a>,
+pub(crate) struct Method {
+    pub(crate) nat: MethodNaT<'static>,
     pub(crate) access_flags: AccessFlags,
     /// Class is behind a AtomicCell to enable circular references
-    pub(crate) class: AtomicCell<&'a Class<'a>>,
+    pub(crate) class: AtomicCell<&'static Class>,
     pub(crate) code: Option<Code>,
 }
 
-impl<'a> Method<'a> {
+impl Method {
     pub fn nat(&self) -> MethodNaT {
         self.nat.clone()
     }
 
-    pub fn class(&self) -> &'a Class {
+    pub fn class(&self) -> &'static Class {
         self.class.load()
     }
 }
@@ -60,14 +60,20 @@ pub(crate) struct ExceptionHandler {
     pub catch_type: u16,
 }
 
-impl<'a> Eq for &'a Method<'a> {}
-impl<'a> PartialEq for &'a Method<'a> {
+impl Eq for &'static Method {}
+impl PartialEq for &'static Method {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(*self, *other)
     }
 }
 
-impl<'a> std::fmt::Debug for Method<'a> {
+impl<'a> std::hash::Hash for &'a Method {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&(*self as *const _ as usize), state)
+    }
+}
+
+impl std::fmt::Debug for Method {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.nat)
     }

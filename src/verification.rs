@@ -1,21 +1,28 @@
 use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 use crate::{
-    const_pool::ConstPoolItem, exception, instructions::*, object::Object, parse, AccessFlags,
-    Class, JVMResult, Method, Typ, JVM,
+    class::Class,
+    const_pool::ConstPoolItem,
+    instructions::*,
+    jvm::{exception, JVMResult, Jvm},
+    method::Method,
+    object::Object,
+    parse,
+    typ::Typ,
+    AccessFlags,
 };
 
-fn ve<'a>(jvm: &JVM<'a>, _message: &str) -> Object<'a> {
+fn ve(jvm: &Jvm, _message: &str) -> Object {
     exception(jvm, "VerifyError")
 }
 
 #[derive(Clone, Default, Debug)]
-pub(crate) struct StackMapFrame<'a> {
-    pub locals: Vec<VerificationType<'a>>,
-    pub stack: Vec<VerificationType<'a>>,
+pub(crate) struct StackMapFrame {
+    pub locals: Vec<VerificationType>,
+    pub stack: Vec<VerificationType>,
 }
 
-impl<'a> StackMapFrame<'a> {
+impl StackMapFrame {
     fn is_assignable_to(&self, other: &Self) -> bool {
         (self.locals.len() == other.locals.len())
             & (self.stack.len() == other.stack.len())
@@ -32,7 +39,7 @@ impl<'a> StackMapFrame<'a> {
     }
 
     /// In case of category 2 type, pops both the top type and the actual type
-    fn pop(&mut self, jvm: &JVM<'a>) -> JVMResult<'a, VerificationType<'a>> {
+    fn pop(&mut self, jvm: &Jvm) -> JVMResult<VerificationType> {
         let typ = self
             .stack
             .pop()
@@ -50,25 +57,25 @@ impl<'a> StackMapFrame<'a> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub(crate) enum VerificationType<'a> {
+pub(crate) enum VerificationType {
     Top,
     Integer,
     Float,
     Null,
-    ObjectVariable(&'a Class<'a>),
+    ObjectVariable(&'static Class),
     UninitializedThis,
     UninitializedVariable { offset: u16 },
     Long,
     Double,
 }
 
-impl<'a> Default for VerificationType<'a> {
+impl Default for VerificationType {
     fn default() -> Self {
         Self::Top
     }
 }
 
-impl<'a> VerificationType<'a> {
+impl VerificationType {
     fn is_assignable_to(self, other: Self) -> bool {
         if (self == other) | (other == Self::Top) {
             true
@@ -104,11 +111,11 @@ impl<'a> VerificationType<'a> {
     }
 }
 
-pub(crate) fn push_type<'a, 'b>(
-    jvm: &'b JVM<'a>,
-    types: &'b mut Vec<VerificationType<'a>>,
+pub(crate) fn push_type<'b>(
+    jvm: &'b Jvm,
+    types: &'b mut Vec<VerificationType>,
     typ: &Typ,
-) -> JVMResult<'a, ()> {
+) -> JVMResult<()> {
     match typ {
         Typ::Bool | Typ::Char | Typ::Byte | Typ::Short | Typ::Int => {
             types.push(VerificationType::Integer)
@@ -122,7 +129,7 @@ pub(crate) fn push_type<'a, 'b>(
             types.push(VerificationType::Long);
             types.push(VerificationType::Top);
         }
-        Typ::Ref(class) => types.push(VerificationType::ObjectVariable(jvm.resolve_class(&class)?)),
+        Typ::Ref(class) => types.push(VerificationType::ObjectVariable(jvm.resolve_class(class)?)),
     }
     Ok(())
 }
@@ -131,7 +138,7 @@ pub(crate) fn push_type<'a, 'b>(
 // TODO: Exception handlers
 /// Verification by type checking
 /// (Verification by type inference is not planned)
-pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b JVM<'a>, class: &'b Class<'a>) -> JVMResult<'a, ()> {
+pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: &'b Class) -> JVMResult<()> {
     if let Some(super_class) = class.super_class {
         verify(jvm, super_class)?;
         // Check whether the super class is final (as described in spec) is redundant (has to already be checked during loading)
@@ -149,7 +156,7 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b JVM<'a>, class: &'b Class<'a>) -> JVMR
 }
 
 // TODO: do this lazily
-fn verify_method<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResult<'a, ()> {
+fn verify_method(jvm: &Jvm, method: &Method) -> JVMResult<()> {
     if let (false, Some(super_class)) = (
         method.access_flags.contains(AccessFlags::STATIC),
         method.class.load().super_class,
@@ -178,7 +185,7 @@ fn verify_method<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResult<
     Ok(())
 }
 
-fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResult<'a, ()> {
+fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
     ///// for testing, TODO: remove this! /////
     println!(
         "verifying {}.{} ({})",
@@ -681,7 +688,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
                 connected_to_previous_block = false
             }
             RETURN => {
-                if method.nat.typ.1 != None {
+                if method.nat.typ.1.is_some() {
                     return Err(ve(jvm, "invalid return"));
                 }
                 connected_to_previous_block = false
@@ -810,11 +817,7 @@ fn verify_bytecode<'a, 'b>(jvm: &'b JVM<'a>, method: &'a Method<'a>) -> JVMResul
     Ok(())
 }
 
-fn pop_type<'a, 'b>(
-    jvm: &'b JVM<'a>,
-    stack: &'b mut Vec<VerificationType<'a>>,
-    typ: &Typ,
-) -> JVMResult<'a, ()> {
+fn pop_type<'b>(jvm: &'b Jvm, stack: &'b mut Vec<VerificationType>, typ: &Typ) -> JVMResult<()> {
     if match (typ, stack.pop()) {
         (
             Typ::Bool | Typ::Byte | Typ::Short | Typ::Char | Typ::Int,
@@ -828,7 +831,7 @@ fn pop_type<'a, 'b>(
             matches!(stack.pop(), Some(VerificationType::Double))
         }
         (Typ::Ref(ref_type), Some(VerificationType::ObjectVariable(obj))) => {
-            obj.assignable_to(&ref_type)
+            obj.assignable_to(ref_type)
         }
         _ => false,
     } {
@@ -838,12 +841,12 @@ fn pop_type<'a, 'b>(
     }
 }
 
-fn load<'a, 'b>(
-    jvm: &'b JVM<'a>,
-    type_state: &'b mut StackMapFrame<'a>,
+fn load<'b>(
+    jvm: &'b Jvm,
+    type_state: &'b mut StackMapFrame,
     index: u16,
-    typ: VerificationType<'a>,
-) -> JVMResult<'a, ()> {
+    typ: VerificationType,
+) -> JVMResult<()> {
     let var = type_state
         .locals
         .get(index as usize)
@@ -855,12 +858,12 @@ fn load<'a, 'b>(
     Ok(())
 }
 
-fn store<'a, 'b>(
-    jvm: &'b JVM<'a>,
-    type_state: &'b mut StackMapFrame<'a>,
+fn store<'b>(
+    jvm: &'b Jvm,
+    type_state: &'b mut StackMapFrame,
     index: u16,
-    typ: VerificationType<'a>,
-) -> JVMResult<'a, ()> {
+    typ: VerificationType,
+) -> JVMResult<()> {
     let on_stack = type_state.pop(jvm)?;
 
     let mut cat2_success = true;
@@ -882,11 +885,11 @@ fn store<'a, 'b>(
     }
 }
 
-fn top_of_stack<'a, 'b>(
-    jvm: &'b JVM<'a>,
-    type_state: &'b mut StackMapFrame<'a>,
-    typ: VerificationType<'a>,
-) -> JVMResult<'a, ()> {
+fn top_of_stack<'b>(
+    jvm: &'b Jvm,
+    type_state: &'b mut StackMapFrame,
+    typ: VerificationType,
+) -> JVMResult<()> {
     if typ.category_2() {
         if (type_state.stack.len() > 1)
             && type_state.stack[type_state.stack.len() - 1] == VerificationType::Top
@@ -905,13 +908,13 @@ fn top_of_stack<'a, 'b>(
     }
 }
 
-fn relative_jump<'a, 'b>(
-    jvm: &'b JVM<'a>,
-    stack_map_table: &BTreeMap<u16, StackMapFrame<'a>>,
-    type_state: &'b mut StackMapFrame<'a>,
+fn relative_jump<'b>(
+    jvm: &'b Jvm,
+    stack_map_table: &BTreeMap<u16, StackMapFrame>,
+    type_state: &'b mut StackMapFrame,
     bytes: &'b [u8],
     pc: &'b mut u16,
-) -> JVMResult<'a, ()> {
+) -> JVMResult<()> {
     let base = *pc - 1;
     let target_offset = read_code_u16(jvm, bytes, pc)? as i16;
     let target = (base as i32 + target_offset as i32) as u16;
@@ -936,7 +939,7 @@ fn small_array_type(typ: VerificationType) -> bool {
     }
 }
 
-fn read_code_u8<'a>(jvm: &JVM<'a>, bytes: &[u8], pc: &mut u16) -> JVMResult<'a, u8> {
+fn read_code_u8(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JVMResult<u8> {
     *pc += 1;
     bytes
         .get(*pc as usize - 1)
@@ -944,6 +947,6 @@ fn read_code_u8<'a>(jvm: &JVM<'a>, bytes: &[u8], pc: &mut u16) -> JVMResult<'a, 
         .ok_or_else(|| ve(jvm, "incomplete instruction"))
 }
 
-fn read_code_u16<'a>(jvm: &JVM<'a>, bytes: &[u8], pc: &mut u16) -> JVMResult<'a, u16> {
+fn read_code_u16(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JVMResult<u16> {
     Ok(((read_code_u8(jvm, bytes, pc)? as u16) << 8) + read_code_u8(jvm, bytes, pc)? as u16)
 }

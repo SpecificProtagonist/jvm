@@ -1,9 +1,12 @@
 use std::{io::Read, path::PathBuf};
 
 pub trait ClassLoader: Send + Sync {
+    /// Get the bytes of the classfile representing the class
     fn load(&self, name: &str) -> Option<Vec<u8>>;
 }
 
+/// Class loader that loads classes from a folder, falling back to other folders if
+/// the class wasn't found
 pub struct DefaultClassLoader {
     pub class_path: Vec<PathBuf>,
 }

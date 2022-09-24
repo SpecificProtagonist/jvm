@@ -14,7 +14,6 @@
 use parking_lot::Mutex;
 use std::{
     alloc::Layout,
-    marker::PhantomData,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -113,16 +112,15 @@ struct Block {
 
 // TODO: maybe keep a thread-local buffer to reduce locking
 #[derive(Default)]
-pub struct Heap<'jvm> {
+pub struct Heap {
     /// Start of free part of current backing
     current_start: AtomicUsize,
     /// Points one past end
     current_end: AtomicUsize,
     backing: Mutex<Vec<Block>>,
-    _marker: PhantomData<&'jvm ()>,
 }
 
-impl<'jvm> Heap<'jvm> {
+impl Heap {
     pub fn alloc(&self, layout: Layout) -> usize {
         loop {
             let start = self.current_start.load(Ordering::SeqCst);
@@ -182,7 +180,8 @@ impl<'jvm> Heap<'jvm> {
         }
     }
 
-    pub fn alloc_typed<T>(&self, value: T) -> &'jvm T {
+    // SAFETY: Result must not be used after this Heap is dropped
+    pub unsafe fn alloc_typed<T>(&self, value: T) -> &'static T {
         let ptr = self.alloc(Layout::new::<T>()) as *mut T;
         unsafe {
             ptr.write(value);

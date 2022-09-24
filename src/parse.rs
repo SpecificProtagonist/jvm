@@ -6,16 +6,25 @@ use std::{
 
 use crate::{
     const_pool::{ConstPool, ConstPoolItem},
-    exception,
     field::{Field, FieldNaT},
+    field_storage::FieldStorage,
+    jvm::exception,
+    jvm::JVMResult,
+    jvm::Jvm,
+    method::Code,
+    method::ExceptionHandler,
+    method::Method,
+    method::MethodDescriptor,
+    method::MethodNaT,
     object::{header_size, Object},
+    typ::Typ,
     verification::{StackMapFrame, VerificationType},
-    AccessFlags, Code, ExceptionHandler, FieldStorage, JVMResult, Method, MethodDescriptor,
-    MethodNaT, Typ, JVM,
+    AccessFlags,
 };
 use crossbeam_utils::atomic::AtomicCell;
 
-fn read_u8<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, u8> {
+#[inline]
+fn read_u8<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<u8> {
     if let Some(u8) = input.first() {
         *input = &input[1..];
         Ok(*u8)
@@ -24,25 +33,25 @@ fn read_u8<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, u8> {
     }
 }
 
-fn read_u16<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, u16> {
+fn read_u16<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<u16> {
     let high = read_u8(jvm, input)?;
     let low = read_u8(jvm, input)?;
     Ok(((high as u16) << 8) + low as u16)
 }
 
-fn read_u32<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, u32> {
+fn read_u32<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<u32> {
     let high = read_u16(jvm, input)?;
     let low = read_u16(jvm, input)?;
     Ok(((high as u32) << 16) + low as u32)
 }
 
-fn read_u64<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, u64> {
+fn read_u64<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<u64> {
     let high = read_u32(jvm, input)?;
     let low = read_u32(jvm, input)?;
     Ok(((high as u64) << 32) + low as u64)
 }
 
-fn read_magic<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, ()> {
+fn read_magic<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<()> {
     if 0xCAFEBABE == read_u32(jvm, input)? {
         Ok(())
     } else {
@@ -50,10 +59,7 @@ fn read_magic<'a>(jvm: &JVM<'a>, input: &mut &[u8]) -> JVMResult<'a, ()> {
     }
 }
 
-fn read_const_pool_item<'a, 'b, 'c>(
-    input: &'b mut &'c [u8],
-    jvm: &'b JVM<'a>,
-) -> JVMResult<'a, ConstPoolItem<'a>> {
+fn read_const_pool_item<'a>(input: &mut &'a [u8], jvm: &Jvm) -> JVMResult<ConstPoolItem> {
     use ConstPoolItem::*;
     match read_u8(jvm, input)? {
         1 => {
@@ -93,10 +99,7 @@ fn read_const_pool_item<'a, 'b, 'c>(
     }
 }
 
-fn read_const_pool<'a, 'b, 'c>(
-    input: &'b mut &'c [u8],
-    jvm: &'b JVM<'a>,
-) -> JVMResult<'a, ConstPool<'a>> {
+fn read_const_pool<'a>(input: &mut &'a [u8], jvm: &Jvm) -> JVMResult<ConstPool> {
     let length = read_u16(jvm, input)? as usize;
     let mut items = Vec::with_capacity(length);
     items.push(ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero);
@@ -140,11 +143,11 @@ fn read_const_pool<'a, 'b, 'c>(
     Ok(ConstPool { items })
 }
 
-fn read_interfaces<'a>(
-    jvm: &JVM<'a>,
+fn read_interfaces(
+    jvm: &Jvm,
     input: &mut &[u8],
-    const_pool: &ConstPool<'a>,
-) -> JVMResult<'a, Vec<Arc<str>>> {
+    const_pool: &ConstPool,
+) -> JVMResult<Vec<Arc<str>>> {
     let length = read_u16(jvm, input)?;
     let mut vec = Vec::with_capacity(length as usize);
     for _ in 0..length {
@@ -153,11 +156,11 @@ fn read_interfaces<'a>(
     Ok(vec)
 }
 
-fn read_attribute<'a, 'b, 'c>(
-    jvm: &JVM<'a>,
-    input: &mut &'b [u8],
-    const_pool: &'c ConstPool<'a>,
-) -> JVMResult<'a, (Arc<str>, &'b [u8])> {
+fn read_attribute<'a>(
+    jvm: &Jvm,
+    input: &mut &'a [u8],
+    const_pool: &ConstPool,
+) -> JVMResult<(Arc<str>, &'a [u8])> {
     let name = const_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
     let attr_length = read_u32(jvm, input)?;
     if attr_length as usize > input.len() {
@@ -168,11 +171,11 @@ fn read_attribute<'a, 'b, 'c>(
     Ok((name, attr_bytes))
 }
 
-pub(crate) fn parse_field_descriptor<'a, 'b>(
-    jvm: &'b JVM<'a>,
-    descriptor: &'b str,
+pub(crate) fn parse_field_descriptor(
+    jvm: &Jvm,
+    descriptor: &str,
     start: usize,
-) -> JVMResult<'a, (Typ, usize)> {
+) -> JVMResult<(Typ, usize)> {
     let str = &descriptor[start..];
     if let Some(typ) = match str.chars().next() {
         Some('Z') => Some(Typ::Bool),
@@ -207,14 +210,10 @@ pub(crate) fn parse_field_descriptor<'a, 'b>(
         return Ok((typ, end));
     }
 
-    return Err(cfe(jvm, "invalid field descriptor: "));
+    Err(cfe(jvm, "invalid field descriptor: "))
 }
 
-fn read_field<'a, 'b, 'c>(
-    input: &'b mut &'c [u8],
-    constant_pool: &ConstPool<'a>,
-    jvm: &'b JVM<'a>,
-) -> JVMResult<'a, Field<'a>> {
+fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMResult<Field> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
 
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
@@ -248,18 +247,15 @@ fn read_field<'a, 'b, 'c>(
     })
 }
 
-fn read_fields<'a, 'b, 'c>(
-    input: &'b mut &'c [u8],
-    constant_pool: &ConstPool<'a>,
-    jvm: &'b JVM<'a>,
-) -> JVMResult<
-    'a,
-    (
-        HashMap<FieldNaT, Field<'a>>,
-        /*static fields size*/ usize,
-        /*object fields size*/ usize,
-    ),
-> {
+fn read_fields(
+    input: &mut &[u8],
+    constant_pool: &ConstPool,
+    jvm: &Jvm,
+) -> JVMResult<(
+    HashMap<FieldNaT, Field>,
+    /*static fields size*/ usize,
+    /*object fields size*/ usize,
+)> {
     // Read fields
     let length = read_u16(jvm, input)?;
     let mut fields = Vec::new();
@@ -290,11 +286,11 @@ fn read_fields<'a, 'b, 'c>(
     Ok((fields, static_layout.size(), object_layout.size()))
 }
 
-fn read_verification_type<'c, 'b, 'a>(
-    jvm: &JVM<'a>,
-    input: &'b mut &'c [u8],
-    const_pool: &'b ConstPool<'a>,
-) -> JVMResult<'a, VerificationType<'a>> {
+fn read_verification_type<'a>(
+    jvm: &Jvm,
+    input: &mut &'a [u8],
+    const_pool: &ConstPool,
+) -> JVMResult<VerificationType> {
     Ok(match read_u8(jvm, input)? {
         0 => VerificationType::Top,
         1 => VerificationType::Integer,
@@ -313,12 +309,12 @@ fn read_verification_type<'c, 'b, 'a>(
 
 // TODO: check how inefficient this is
 /// This is called during varification, as it is only needed then and because the const pool has been resolved by then.
-pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
-    jvm: &JVM<'a>,
-    input: Option<&'c [u8]>,
-    const_pool: &'b ConstPool<'a>,
-    initial_locals: Vec<VerificationType<'a>>,
-) -> JVMResult<'a, BTreeMap<u16, StackMapFrame<'a>>> {
+pub(crate) fn read_stack_map_table(
+    jvm: &Jvm,
+    input: Option<&[u8]>,
+    const_pool: &ConstPool,
+    initial_locals: Vec<VerificationType>,
+) -> JVMResult<BTreeMap<u16, StackMapFrame>> {
     let mut frames = BTreeMap::new();
     let mut pc = 0;
     frames.insert(
@@ -424,11 +420,7 @@ pub(crate) fn read_stack_map_table<'c, 'b, 'a>(
     Ok(frames)
 }
 
-fn read_code<'a>(
-    jvm: &JVM<'a>,
-    mut input: &[u8],
-    constant_pool: &ConstPool<'a>,
-) -> JVMResult<'a, Code> {
+fn read_code(jvm: &Jvm, mut input: &[u8], constant_pool: &ConstPool) -> JVMResult<Code> {
     let input = &mut input;
     let max_stack = read_u16(jvm, input)?;
     let max_locals = read_u16(jvm, input)?;
@@ -477,10 +469,7 @@ fn read_code<'a>(
     })
 }
 
-pub(crate) fn parse_method_descriptor<'a, 'b>(
-    jvm: &'b JVM<'a>,
-    descriptor: &str,
-) -> JVMResult<'a, MethodDescriptor> {
+pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JVMResult<MethodDescriptor> {
     if !descriptor.starts_with('(') {
         return Err(cfe(jvm, "Invalid method descriptor"));
     }
@@ -503,11 +492,11 @@ pub(crate) fn parse_method_descriptor<'a, 'b>(
     }
 }
 
-fn read_method<'a, 'b, 'c>(
+fn read_method<'b, 'c>(
     input: &'b mut &'c [u8],
-    constant_pool: &'b ConstPool<'a>,
-    jvm: &'b JVM<'a>,
-) -> JVMResult<'a, Method<'a>> {
+    constant_pool: &'b ConstPool,
+    jvm: &'b Jvm,
+) -> JVMResult<Method> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
 
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
@@ -538,11 +527,11 @@ fn read_method<'a, 'b, 'c>(
     })
 }
 
-fn read_methods<'a, 'b, 'c>(
-    input: &'b mut &'c [u8],
-    constant_pool: &ConstPool<'a>,
-    jvm: &'b JVM<'a>,
-) -> JVMResult<'a, HashMap<MethodNaT<'a>, &'a Method<'a>>> {
+fn read_methods(
+    input: &mut &[u8],
+    constant_pool: &ConstPool,
+    jvm: &Jvm,
+) -> JVMResult<HashMap<MethodNaT<'static>, &'static Method>> {
     let length = read_u16(jvm, input)?;
     let mut methods = HashMap::with_capacity(length as usize);
     for _ in 0..length {
@@ -561,10 +550,7 @@ fn read_methods<'a, 'b, 'c>(
 /// class of each field is set to the dummy,
 /// super_class is set to None,
 /// actual superclass name (which needs to be resolved) is returned alongside,
-pub(crate) fn read_class_file<'a, 'b, 'c>(
-    mut input: &'c [u8],
-    jvm: &'b JVM<'a>,
-) -> JVMResult<'a, ClassDescriptor<'a>> {
+pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JVMResult<ClassDescriptor> {
     let input = &mut input;
 
     read_magic(jvm, input)?;
@@ -618,18 +604,18 @@ pub(crate) fn read_class_file<'a, 'b, 'c>(
 }
 
 /// Represents a class with not yet resolved superclass & interfaces
-pub(crate) struct ClassDescriptor<'a> {
-    pub(crate) const_pool: ConstPool<'a>,
+pub(crate) struct ClassDescriptor {
+    pub(crate) const_pool: ConstPool,
     pub(crate) access_flags: AccessFlags,
     pub(crate) name: Arc<str>,
     pub(crate) super_class: Option<Arc<str>>,
     pub(crate) interfaces: Vec<Arc<str>>,
-    pub(crate) fields: HashMap<FieldNaT, Field<'a>>,
-    pub(crate) methods: HashMap<MethodNaT<'a>, &'a Method<'a>>,
+    pub(crate) fields: HashMap<FieldNaT, Field>,
+    pub(crate) methods: HashMap<MethodNaT<'static>, &'static Method>,
     pub(crate) static_storage: FieldStorage,
     pub(crate) object_size: usize,
 }
 
-fn cfe<'a>(jvm: &JVM<'a>, _message: &str) -> Object<'a> {
+fn cfe(jvm: &Jvm, _message: &str) -> Object {
     exception(jvm, "ClassFormatError")
 }
