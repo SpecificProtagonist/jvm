@@ -1,126 +1,107 @@
 use parking_lot::{Condvar, Mutex, RwLock};
-use std::{collections::HashMap, sync::Arc, thread::ThreadId};
+use std::{collections::HashMap, default::default, sync::Arc, thread::ThreadId};
 
 use crate::{
     const_pool::ConstPool,
-    exception,
     field::{Field, FieldNaT},
     field_storage::FieldStorage,
     heap::Heap,
+    jvm::exception,
+    jvm::JVMResult,
+    jvm::Jvm,
+    method::Method,
+    method::MethodDescriptor,
+    method::MethodNaT,
     object::Object,
+    typ::Typ,
     verification::verify,
-    AccessFlags, JVMResult, Method, MethodDescriptor, MethodNaT, Typ, JVM,
+    AccessFlags,
 };
 
 /// Represents a regular class, an array class or (in the future) an enum or an interface
-pub struct Class<'a> {
+pub(crate) struct Class {
     // TODO: use normal name, not internal name
     /// Fully qualified name
     pub(crate) name: Arc<str>,
-    pub(crate) super_class: Option<&'a Class<'a>>,
+    pub(crate) super_class: Option<&'static Class>,
     /// For array classes, this is the type of the array elements; None for normal classes
     pub(crate) element_type: Option<Typ>,
     /// When the class is initialized, write access is required for resolution.
     /// Afterward (such as when executing a function in this class), only read access is required.
-    pub(crate) const_pool: RwLock<ConstPool<'a>>,
+    pub(crate) const_pool: RwLock<ConstPool>,
     pub(crate) access_flags: AccessFlags,
     #[allow(unused)]
-    pub(crate) interfaces: Vec<&'a Class<'a>>,
+    pub(crate) interfaces: Vec<&'static Class>,
     /// As far as I can tell, JVM supports field overloading
-    pub(crate) fields: HashMap<FieldNaT, Field<'a>>,
+    pub(crate) fields: HashMap<FieldNaT, Field>,
     /// At the moment, this includes any inherited methods. Change this?
-    pub(crate) methods: HashMap<MethodNaT<'a>, &'a Method<'a>>,
+    pub(crate) methods: HashMap<MethodNaT<'static>, &'static Method>,
     pub(crate) static_storage: FieldStorage,
     /// Combined size of instance fields in normal class, 0 if array
     pub(crate) object_size: usize,
-    pub(crate) init: Mutex<ClassInitState<'a>>,
+    pub(crate) init: Mutex<ClassInitState>,
     pub(crate) init_waiter: Condvar,
 }
 
-pub(crate) enum ClassInitState<'a> {
+pub(crate) enum ClassInitState {
     Uninit,
     InProgress(ThreadId),
     Done,
-    Error(Object<'a>),
+    Error(Object),
 }
 
-impl<'a, 'b> Eq for &'b Class<'a> {}
-impl<'a, 'b> PartialEq for &'b Class<'a> {
+impl<'a> Eq for &'a Class {}
+impl<'a> PartialEq for &'a Class {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(*self, *other)
     }
 }
 
-impl<'a> Class<'a> {
-    /// Returns the fully qualified internal name (using '/' instead of '.')
-    pub fn name(&'a self) -> &str {
-        &self.name
+impl<'a> std::hash::Hash for &'a Class {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&(*self as *const Class as usize), state)
     }
+}
 
-    /// Is `Some()` for all classes except `java.lang.Object`
-    pub fn super_class(&'a self) -> Option<&'a Self> {
-        self.super_class
-    }
-
-    /// Is `Some()` for classes representing an array and `None` otherwise
-    pub fn element_type(&'a self) -> &Option<Typ> {
-        &self.element_type
-    }
-
-    pub fn field(&'a self, name: &str, typ: Typ) -> Option<&'a Field<'a>> {
+impl Class {
+    pub(crate) fn field(&self, name: &str, typ: Typ) -> Option<&Field> {
         self.field_by_nat(FieldNaT {
             name: name.into(),
             typ,
         })
     }
 
-    pub fn field_by_nat(&'a self, nat: FieldNaT) -> Option<&'a Field<'a>> {
+    pub(crate) fn field_by_nat(&self, nat: FieldNaT) -> Option<&Field> {
         self.fields
             .get(&nat)
             .or_else(|| self.super_class.and_then(|c| c.field_by_nat(nat)))
     }
 
-    pub fn method(
-        &'a self,
-        name: &str,
-        args: Vec<Typ>,
-        ret: Option<Typ>,
-    ) -> Option<&'a Method<'a>> {
-        self.method_by_nat(&MethodNaT {
-            name: name.into(),
-            typ: &MethodDescriptor(args, ret),
-        })
-    }
-
-    pub fn method_by_nat(&self, nat: &MethodNaT) -> Option<&'a Method<'a>> {
-        self.methods.get(nat).copied()
-    }
-
     // TODO: provide fields() and methods()
     // figure out how to present distinguished between inherited and not
 
-    pub fn true_subclass_of(&'a self, other: &str) -> bool {
+    pub fn true_subclass_of(&self, other: &str) -> bool {
         self.super_class
             .map(|sc| sc.assignable_to(other))
             .unwrap_or(false)
     }
 
-    pub fn assignable_to(&'a self, other: &str) -> bool {
+    pub fn assignable_to(&self, other: &str) -> bool {
         (self.name.as_ref() == other) || self.true_subclass_of(other)
     }
 
     pub(crate) fn dummy_class(heap: &Heap) -> Self {
         Class {
             element_type: None,
-            const_pool: Default::default(),
+            const_pool: default(),
             access_flags: AccessFlags::empty(),
             name: "".into(),
             super_class: None,
-            interfaces: Default::default(),
+            interfaces: default(),
             static_storage: FieldStorage::new(heap, 0),
             object_size: 0,
-            fields: Default::default(),
-            methods: Default::default(),
+            fields: default(),
+            methods: default(),
             init: ClassInitState::Uninit.into(),
             init_waiter: Condvar::new(),
         }
@@ -129,7 +110,7 @@ impl<'a> Class<'a> {
     /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.
     /// This happens automatically when a method belonging to this class is called.
     // May only be called by the library consumer or instuctions new, getstatic, putstatic or invokestatic or by being the initial class
-    pub fn ensure_init<'b>(&'b self, jvm: &'b JVM<'a>) -> JVMResult<'a, ()> {
+    pub fn ensure_init(&self, jvm: &Jvm) -> JVMResult<()> {
         let mut guard = self.init.lock();
         match *guard {
             ClassInitState::Done => Ok(()),
@@ -169,10 +150,7 @@ impl<'a> Class<'a> {
     }
 
     /// This may only be called from self.ensure_init
-    fn init<'b>(&'b self, jvm: &'b JVM<'a>) -> JVMResult<'a, ()>
-    where
-        'a: 'b,
-    {
+    fn init(&self, jvm: &Jvm) -> JVMResult<()> {
         let mut const_pool = self.const_pool.write();
         // Preparation
         for field in self.fields.values() {
@@ -245,18 +223,18 @@ impl<'a> Class<'a> {
         verify(jvm, self)?;
 
         // Initialization
-        if let Some(method) = self.methods.get(&MethodNaT {
+        if let Some(initializer) = self.methods.get(&MethodNaT {
             name: "<clinit>".into(),
             typ: &MethodDescriptor(vec![], None),
         }) {
-            crate::interp::invoke_initializer(jvm, method)?;
+            crate::interp::invoke_initializer(jvm, initializer)?;
         }
 
         Ok(())
     }
 }
 
-impl<'a> std::fmt::Debug for Class<'a> {
+impl std::fmt::Debug for Class {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name)
     }

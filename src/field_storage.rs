@@ -5,14 +5,14 @@ use std::{
 };
 
 use crate::{
-    exception,
     heap::{self, AtomicJVMPtr, Heap, JVMPtr, JVMPtrNonNull},
-    object, JVMResult, JVM,
+    jvm::{exception, JVMResult, Jvm},
+    object,
 };
 
 // TODO: use usize instead of u64 for size (consider alignment of Long/Double)
 /// Contains pointer to heap allocation containing allocation size followed by space for fields/array items
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Hash)]
 #[repr(transparent)]
 pub(crate) struct FieldStorage(JVMPtrNonNull);
 
@@ -46,7 +46,7 @@ macro_rules! access {
         }
 
         #[inline]
-        pub fn $array_read<'a>(&self, jvm: &JVM<'a>, index: i32) -> JVMResult<'a, $typ> {
+        pub fn $array_read<'a>(&self, jvm: &Jvm, index: i32) -> JVMResult<$typ> {
             let offset = object::header_size() + index as usize * std::mem::size_of::<$typ>();
             if (index < 0) | (offset >= self.size()) {
                 Err(exception(jvm, "ArrayIndexOutOfBoundsException"))
@@ -56,12 +56,7 @@ macro_rules! access {
         }
 
         #[inline]
-        pub fn $array_write<'a>(
-            &self,
-            jvm: &JVM<'a>,
-            index: i32,
-            value: $typ,
-        ) -> JVMResult<'a, ()> {
+        pub fn $array_write<'a>(&self, jvm: &Jvm, index: i32, value: $typ) -> JVMResult<()> {
             let offset = object::header_size() + index as usize * std::mem::size_of::<$typ>();
             if (index < 0) | (offset >= self.size()) {
                 Err(exception(jvm, "ArrayIndexOutOfBoundsException"))

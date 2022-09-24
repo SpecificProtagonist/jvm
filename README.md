@@ -1,7 +1,10 @@
 This is a toy embeddable JVM in writen in Rust. It is very much WIP and aims to eventually 
-implement the Java 8 JVM specification (except for the loading of classes with version <50.0).
+implement most of the Java 8 JVM specification (except for the loading of classes with version <50.0).
 As this is intended as a learning experience, the choice of which features to implement is
 not determined by practicality but by how interested I'm in doing so.
+
+Usage:
+
 
 Currently implemented:
 - class loading/initialization
@@ -17,13 +20,17 @@ Currently implemented:
 Some mayor missing features:
 - garbage collection
 - interfaces
+- some bytecodes
 - private/protected
 - a way to call native code
 
 Rough overview:
-- a `JVM` contains classes as well as interned strings
-- each fallible operation on it can return an object representing an instance of Throwable
-- classes are resolved lazily by `JVM::resolve_class` and parsed in `parse.rs`
+- a `Jvm` contains classes and objects
+- internally, a lot of static references are used that only live as long as the `Jvm` exists,
+  which Rust can't express. These are never directly made available to the library consumer.
+- instead proxies which also contain a reference to the VM are provided
+- errors returned by fallible operations are Exception objects
+- classes are resolved lazily by `Jvm::resolve_class` and parsed in `parse.rs`
 - before a method is executed, it's class will be verified (once) in verification.rs
 - methods are executed using a simple interpreter loop in `interp.rs`
 - one `FieldStorage` per class/object stores the static/instance fields 
