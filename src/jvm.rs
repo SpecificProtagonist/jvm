@@ -53,9 +53,6 @@ pub(crate) struct Jvm {
     /// Interned strings along with the corrosponding object,
     /// if String.intern has been called or CONST_String was in const pool (null otherwise)
     classes: RwLock<HashMap<Arc<str>, &'static Class>>,
-    /// Placeholder for Method.class/Field.class. Somehow removing this would be nice.
-    /// I had a static Class in parse.rs, but apparently I can't use a &'a Class<'static> as a &'a Class<'a>
-    pub(crate) dummy_class: &'static Class,
 }
 
 impl Jvm {
@@ -63,7 +60,6 @@ impl Jvm {
     /// `class_path` are searched in order.
     pub fn new(base_class_loader: Box<dyn ClassLoader>) -> Self {
         let heap = Heap::default();
-        let dummy_class = unsafe { heap.alloc_typed(Class::dummy_class(&heap)) };
         Self {
             id: NEXT_ID.fetch_add(1, Ordering::SeqCst),
             bootstrap_class_loader: base_class_loader,
@@ -72,7 +68,6 @@ impl Jvm {
             method_storage: default(),
             method_descriptor_storage: default(),
             classes: default(),
-            dummy_class,
         }
     }
 
@@ -211,10 +206,14 @@ impl Jvm {
         // While parsing, each method has their class field set to a dummy
         // We can't use class.methods directly because that also includes parent classes
         for method in new_methods.values() {
-            method.class.store(class);
+            method
+                .class
+                .store(*class as *const Class as *mut Class, Ordering::SeqCst);
         }
         for field in class.fields.values() {
-            field.class.store(class);
+            field
+                .class
+                .store(*class as *const Class as *mut Class, Ordering::SeqCst);
         }
 
         Ok(ref_type)

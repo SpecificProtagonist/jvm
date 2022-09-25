@@ -3,16 +3,23 @@ implement most of the Java 8 JVM specification (except for the loading of classe
 As this is intended as a learning experience, the choice of which features to implement is
 not determined by practicality but by how interested I'm in doing so.
 
-Usage:
-
+```rust
+let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes""]));
+let class = jvm.resolve_class("Foo").unwrap();
+let method = jvm.method("bar", vec![Typ::Int, Typ::Ref("java/lang/String".into())], None).unwrap();
+method.invoke(&[Value::from(0i32), Value::from(None)]).unwrap();
+let field = class.field("baz", Typ::Bool).unwrap();
+let field_value = field.static_get();
+```
 
 Currently implemented:
+- thread-safe access
 - class loading/initialization
 - verification by type checking (not all instructions covered yet)
 - operations on primitives
 - intra-function control flow
 - exceptions
-- calling static & object functions (except via interfaces)
+- calling static & instance functions (except via interfaces)
 - creating objects, including arrays
 - accessing fields & array elements
 - compressed pointers on x86-64 Linux
@@ -33,15 +40,14 @@ Rough overview:
 - classes are resolved lazily by `Jvm::resolve_class` and parsed in `parse.rs`
 - before a method is executed, it's class will be verified (once) in verification.rs
 - methods are executed using a simple interpreter loop in `interp.rs`
-- one `FieldStorage` per class/object stores the static/instance fields 
+- one `FieldStorage` per class/object compactly stores the static/instance fields 
 - objects contain a pointer to their class, followed by their fields
 - objects are currently not garbage collected
 
-This uses copious amounts of unsafe, namely
-- to allocate the heap
+This uses copious amounts of unsafe, such as
+- to manage the lifecycle of classes, objects, …
 - when casting type-erased local/stack values to objects
 - when accessing fields (in `fields_storage.rs` and when dereferencing pointers to objects)
-- to drop Classes, Strings, … when the JVM is dropped
 
 This is only a JVM, not including a proper class library. The problem is that the JVM
 specification depends on a number of classes, but never bothers to specify what it requires

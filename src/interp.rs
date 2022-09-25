@@ -17,7 +17,7 @@ pub(crate) fn invoke(
     method: &Method,
     args: impl IntoIterator<Item = Value>,
 ) -> JVMResult<Option<Value>> {
-    method.class.load().ensure_init(jvm)?;
+    method.class().ensure_init(jvm)?;
     let mut arg_values = Vec::new();
     for arg in args {
         match arg {
@@ -38,6 +38,10 @@ pub(crate) fn invoke(
     }
     invoke_initialized(jvm, method, &arg_values)
 }
+
+// So, this is a bit of a mess maybe.
+// TODO: Look into either rewriting references as two slots on 64bit (difficult, as that can change bytecodes)
+// or rewriting long/double as one slot (bad in 32bit like wasm32, would make quite some code simpler)
 
 /// Stack or local entry.
 /// Doesn't store type information as it was already checked during verification.
@@ -64,7 +68,7 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JVMResult<Op
     }
 
     // The class is already initialized, so we can hold the read lock for as long as we like
-    let const_pool = method.class.load().const_pool.read();
+    let const_pool = method.class().const_pool.read();
 
     let code = method.code.as_ref().unwrap();
 
@@ -687,14 +691,14 @@ fn run_until_exception_or_return(
             GETSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field(jvm, index).unwrap();
-                field.class.load().ensure_init(jvm)?;
-                get_field(frame, field, &field.class.load().static_storage);
+                field.class().ensure_init(jvm)?;
+                get_field(frame, field, &field.class().static_storage);
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field(jvm, index).unwrap();
-                field.class.load().ensure_init(jvm)?;
-                put_field(frame, field, &field.class.load().static_storage);
+                field.class().ensure_init(jvm)?;
+                put_field(frame, field, &field.class().static_storage);
             }
             GETFIELD => {
                 let index = frame.read_code_u16();
@@ -751,14 +755,10 @@ fn run_until_exception_or_return(
                 let is_instance_init = nat.name.as_ref() == "<init>";
 
                 let class = if !is_instance_init
-                    & method.class.load().true_subclass_of(&named_class.name)
-                    & method
-                        .class
-                        .load()
-                        .access_flags
-                        .contains(AccessFlags::SUPER)
+                    & method.class().true_subclass_of(&named_class.name)
+                    & method.class().access_flags.contains(AccessFlags::SUPER)
                 {
-                    method.class.load().super_class.unwrap()
+                    method.class().super_class.unwrap()
                 } else {
                     named_class
                 };
@@ -779,7 +779,7 @@ fn run_until_exception_or_return(
             INVOKESTATIC => {
                 let index = frame.read_code_u16();
                 let invoke_method = const_pool.get_static_method(jvm, index)?;
-                invoke_method.class.load().ensure_init(jvm)?;
+                invoke_method.class().ensure_init(jvm)?;
                 execute_invoke_instr(jvm, frame, invoke_method)?;
             }
             NEW => {

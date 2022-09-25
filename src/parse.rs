@@ -1,6 +1,7 @@
 use std::{
     alloc::Layout,
     collections::{BTreeMap, HashMap},
+    default::default,
     sync::Arc,
 };
 
@@ -21,7 +22,6 @@ use crate::{
     verification::{StackMapFrame, VerificationType},
     AccessFlags,
 };
-use crossbeam_utils::atomic::AtomicCell;
 
 #[inline]
 fn read_u8<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<u8> {
@@ -243,7 +243,7 @@ fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMRes
         // The correct layout is set in read_fields after field disordering
         byte_offset: 0,
         const_value_index,
-        class: AtomicCell::new(jvm.dummy_class),
+        class: default(),
     })
 }
 
@@ -522,7 +522,7 @@ fn read_method<'b, 'c>(
     Ok(Method {
         nat: MethodNaT { name, typ },
         access_flags,
-        class: AtomicCell::new(jvm.dummy_class),
+        class: default(),
         code,
     })
 }

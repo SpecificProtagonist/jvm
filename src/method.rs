@@ -1,6 +1,7 @@
-use std::sync::Arc;
-
-use crossbeam_utils::atomic::AtomicCell;
+use std::sync::{
+    atomic::{AtomicPtr, Ordering},
+    Arc,
+};
 
 use crate::{class::Class, typ::Typ, AccessFlags};
 
@@ -8,7 +9,7 @@ pub(crate) struct Method {
     pub(crate) nat: MethodNaT<'static>,
     pub(crate) access_flags: AccessFlags,
     /// Class is behind a AtomicCell to enable circular references
-    pub(crate) class: AtomicCell<&'static Class>,
+    pub(crate) class: AtomicPtr<Class>,
     pub(crate) code: Option<Code>,
 }
 
@@ -18,7 +19,9 @@ impl Method {
     }
 
     pub fn class(&self) -> &'static Class {
-        self.class.load()
+        // SAFETY: This reference will not outlive the JVM
+        // and this function will only be called after class has been set
+        unsafe { &*self.class.load(Ordering::SeqCst) }
     }
 }
 
