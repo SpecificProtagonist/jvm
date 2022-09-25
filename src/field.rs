@@ -1,6 +1,7 @@
-use std::sync::Arc;
-
-use crossbeam_utils::atomic::AtomicCell;
+use std::sync::{
+    atomic::{AtomicPtr, Ordering},
+    Arc,
+};
 
 use crate::{
     class::Class, field_storage::FieldStorage, heap::NULL_PTR, jvm::Value, object::Object,
@@ -11,7 +12,7 @@ pub(crate) struct Field {
     /// Fields within a class are uniquely identified by name and type – multiple fields of the same name may exist
     pub(crate) nat: FieldNaT,
     /// Class is behind a AtomicCell to enable circular references
-    pub(crate) class: AtomicCell<&'static Class>,
+    pub(crate) class: AtomicPtr<Class>,
     pub(crate) access_flags: AccessFlags,
     /// Offset into the FieldData of the class (static field) / instance (non-static) where this is stored
     /// Java has no multiple inheritance for fields, therefore each field can be at a set position
@@ -28,7 +29,9 @@ pub struct FieldNaT {
 
 impl Field {
     pub(crate) fn class(&self) -> &'static Class {
-        self.class.load()
+        // SAFETY: This reference will not outlive the JVM
+        // and this function will only be called after class has been set
+        unsafe { &*self.class.load(Ordering::SeqCst) }
     }
 
     /// Get the value of a static field.

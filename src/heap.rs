@@ -11,6 +11,11 @@
 
 // Currently, provenance goes ignored. This shouldn't be a problem, but TODO: check out the impact of this
 
+// This whole file (and the way I handle pointers in general) is a huge mess
+// Things to look into: single chunk with overcommit
+// - doesn't play nicely with compressed pointers
+// - probably helps with gc when it's time to implement it
+
 use parking_lot::Mutex;
 use std::{
     alloc::Layout,

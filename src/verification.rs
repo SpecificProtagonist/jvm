@@ -147,7 +147,7 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: &'b Class) -> JVMResult<()
     }
 
     for method in class.methods.values() {
-        if method.class.load() == class {
+        if method.class() == class {
             verify_method(jvm, method)?;
         }
     }
@@ -159,7 +159,7 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: &'b Class) -> JVMResult<()
 fn verify_method(jvm: &Jvm, method: &Method) -> JVMResult<()> {
     if let (false, Some(super_class)) = (
         method.access_flags.contains(AccessFlags::STATIC),
-        method.class.load().super_class,
+        method.class().super_class,
     ) {
         if let Some(super_method) = super_class.methods.get(&method.nat) {
             if super_method.access_flags.contains(AccessFlags::FINAL) {
@@ -200,7 +200,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
     ///////////////////////////////////////////
 
     let code = method.code.as_ref().unwrap();
-    let const_pool = method.class.load().const_pool.read();
+    let const_pool = method.class().const_pool.read();
 
     // The initial typestate is not stored in the class file but derive from the method signature
     let initial_locals = {
@@ -208,9 +208,9 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
         if !method.access_flags.contains(AccessFlags::STATIC) {
             locals.push(
                 if (method.nat.name.as_ref() != "<init>")
-                    || (method.class.load().name.as_ref() == "java/lang/Object")
+                    || (method.class().name.as_ref() == "java/lang/Object")
                 {
-                    VerificationType::ObjectVariable(method.class.load())
+                    VerificationType::ObjectVariable(method.class())
                 } else {
                     VerificationType::UninitializedThis
                 },

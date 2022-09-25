@@ -1,11 +1,10 @@
 use parking_lot::{Condvar, Mutex, RwLock};
-use std::{collections::HashMap, default::default, sync::Arc, thread::ThreadId};
+use std::{collections::HashMap, sync::Arc, thread::ThreadId};
 
 use crate::{
     const_pool::ConstPool,
     field::{Field, FieldNaT},
     field_storage::FieldStorage,
-    heap::Heap,
     jvm::exception,
     jvm::JVMResult,
     jvm::Jvm,
@@ -88,23 +87,6 @@ impl Class {
 
     pub fn assignable_to(&self, other: &str) -> bool {
         (self.name.as_ref() == other) || self.true_subclass_of(other)
-    }
-
-    pub(crate) fn dummy_class(heap: &Heap) -> Self {
-        Class {
-            element_type: None,
-            const_pool: default(),
-            access_flags: AccessFlags::empty(),
-            name: "".into(),
-            super_class: None,
-            interfaces: default(),
-            static_storage: FieldStorage::new(heap, 0),
-            object_size: 0,
-            fields: default(),
-            methods: default(),
-            init: ClassInitState::Uninit.into(),
-            init_waiter: Condvar::new(),
-        }
     }
 
     /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.
