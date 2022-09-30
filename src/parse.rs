@@ -178,7 +178,7 @@ pub(crate) fn parse_field_descriptor(
 ) -> JVMResult<(Typ, usize)> {
     let str = &descriptor[start..];
     if let Some(typ) = match str.chars().next() {
-        Some('Z') => Some(Typ::Bool),
+        Some('Z') => Some(Typ::Boolean),
         Some('B') => Some(Typ::Byte),
         Some('C') => Some(Typ::Char),
         Some('S') => Some(Typ::Short),

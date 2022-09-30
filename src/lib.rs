@@ -9,7 +9,7 @@ mod field;
 mod field_storage;
 mod heap;
 mod instructions;
-mod interp;
+mod interpreter;
 mod jvm;
 mod method;
 mod object;
@@ -199,7 +199,11 @@ impl<'a> Object<'a> {
     /// # Panics
     /// if the object is not an array or the index is out of bounds
     pub fn array_read(self, index: i32) -> Value<'a> {
-        Value::new(self.jvm, self.value.array_read(index))
+        Value::new(
+            self.jvm,
+            self.value.array_read(index),
+            self.class().element_type().as_ref().unwrap(),
+        )
     }
 
     /// Sets an array element. If the element type is boolean, byte, short or char, the `JVMValue::Int` is truncated
@@ -237,34 +241,12 @@ impl<'a> Class<'a> {
     }
 
     /// Is `Some()` for classes representing an array and `None` otherwise.
-    pub fn element_type(self) -> &'a Option<Typ> {
-        &self.value.element_type
+    pub fn element_type(self) -> Option<Typ> {
+        self.value.element_type.clone()
     }
 
     pub fn access_flags(self) -> AccessFlags {
         self.value.access_flags
-    }
-
-    /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.
-    /// This happens automatically when a method belonging to this class is called.
-    pub fn ensure_init(self) -> JVMResult<'a, ()> {
-        self.value
-            .ensure_init(&self.jvm.0)
-            .map_err(|value| Object::new(self.jvm, value))
-    }
-
-    /// Creates an instance of a non-array class on the heap
-    /// # Panics
-    /// Panics if this is an array class
-    pub fn create_object(self) -> Object<'a> {
-        Object::new(self.jvm, self.jvm.0.create_object(self.value))
-    }
-
-    /// Creates an instance of an array class on the heap
-    /// # Panics
-    /// Panics if class is not an array class or length < 0
-    pub fn create_array(self, length: i32) -> Object<'a> {
-        Object::new(self.jvm, self.jvm.0.create_array(self.value, length))
     }
 
     /// Look up a field by its name and type. There may be multiple fields of the same name.
@@ -298,6 +280,34 @@ impl<'a> Class<'a> {
             .get(nat)
             .map(|value| Method::new(self.jvm, value))
     }
+
+    /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.
+    /// This happens automatically when a method belonging to this class is called.
+    pub fn ensure_init(self) -> JVMResult<'a, ()> {
+        self.value
+            .ensure_init(&self.jvm.0)
+            .map_err(|value| Object::new(self.jvm, value))
+    }
+
+    /// Creates an instance of a non-array class on the heap without invoking its constructor
+    /// # Panics
+    /// Panics if this is an array class
+    pub fn create_object_uninit(self) -> Object<'a> {
+        Object::new(self.jvm, self.jvm.0.create_object(self.value))
+    }
+
+    /// Creates an instance of an array class on the heap
+    /// # Panics
+    /// Panics if class is not an array class or length < 0
+    pub fn create_array(self, length: i32) -> Object<'a> {
+        Object::new(self.jvm, self.jvm.0.create_array(self.value, length))
+    }
+
+    // TODO:
+    // /// Create a new instance of this class and call its constructor.
+    // /// Returns None if no constructor matching the args is found.
+    // /// Returns Some(Err) if the constructor threw an exception.
+    // pub fn create_object(self, args: &[Value<'a>]) -> JVMResult<'a, Option<Value<'a>>
 }
 
 define_guard!(
@@ -334,7 +344,7 @@ impl<'a> Field<'a> {
     /// # Panics
     /// Panics if the field is not static.
     pub fn static_get(&self) -> Value<'a> {
-        Value::new(self.jvm, self.value.static_get())
+        Value::new(self.jvm, self.value.static_get(), &self.name_and_type().typ)
     }
 
     /// Get the value of an object's field.
@@ -344,6 +354,7 @@ impl<'a> Field<'a> {
         Value::new(
             self.jvm,
             self.value.instance_get(object.into_inner(self.jvm)),
+            &self.name_and_type().typ,
         )
     }
 
@@ -401,12 +412,20 @@ impl<'a> Method<'a> {
     /// # Panics
     /// Panics if any of the [`Value`]s is an object created by another JVM
     pub fn invoke(&self, args: &[Value<'a>]) -> JVMResult<'a, Option<Value<'a>>> {
-        interp::invoke(
+        interpreter::invoke(
             &self.jvm.0,
             self.value,
             args.iter().map(|arg| arg.into_inner(self.jvm)),
         )
-        .map(|value| value.map(|value| Value::new(self.jvm, value)))
+        .map(|value| {
+            value.map(|value| {
+                Value::new(
+                    self.jvm,
+                    value,
+                    self.name_and_type().typ.returns.as_ref().unwrap(),
+                )
+            })
+        })
         .map_err(|value| Object::new(self.jvm, value))
     }
 }
@@ -414,7 +433,10 @@ impl<'a> Method<'a> {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Value<'a> {
     Ref(Option<Object<'a>>),
-    /// Represents boolean, byte, char, short and int
+    Boolean(bool),
+    Byte(i8),
+    Char(u16),
+    Short(i16),
     Int(i32),
     Long(i64),
     Float(f32),
@@ -422,10 +444,17 @@ pub enum Value<'a> {
 }
 
 impl<'a> Value<'a> {
-    fn new(jvm: &'a Jvm, value: jvm::Value) -> Self {
+    fn new(jvm: &'a Jvm, value: jvm::Value, typ: &Typ) -> Self {
         match value {
             jvm::Value::Ref(value) => Self::Ref(value.map(|value| Object::new(jvm, value))),
-            jvm::Value::Int(value) => Self::Int(value),
+            jvm::Value::Int(value) => match typ {
+                Typ::Boolean => Self::Boolean(value != 0),
+                Typ::Byte => Self::Byte(value as i8),
+                Typ::Short => Self::Short(value as i16),
+                Typ::Char => Self::Char(value as u16),
+                Typ::Int => Self::Int(value),
+                _ => unreachable!(),
+            },
             jvm::Value::Long(value) => Self::Long(value),
             jvm::Value::Float(value) => Self::Float(value),
             jvm::Value::Double(value) => Self::Double(value),
@@ -435,6 +464,10 @@ impl<'a> Value<'a> {
     fn into_inner(self, jvm: &Jvm) -> jvm::Value {
         match self {
             Self::Ref(value) => jvm::Value::Ref(value.map(|value| value.into_inner(jvm))),
+            Self::Boolean(value) => jvm::Value::Int(value as i32),
+            Self::Byte(value) => jvm::Value::Int(value as i32),
+            Self::Char(value) => jvm::Value::Int(value as i32),
+            Self::Short(value) => jvm::Value::Int(value as i32),
             Self::Int(value) => jvm::Value::Int(value),
             Self::Long(value) => jvm::Value::Long(value),
             Self::Float(value) => jvm::Value::Float(value),
@@ -448,6 +481,10 @@ impl<'a> Display for Value<'a> {
         match self {
             Self::Ref(None) => write!(f, "null"),
             Self::Ref(Some(obj)) => write!(f, "@{:x}", obj.value.ptr()),
+            Self::Boolean(v) => write!(f, "{}", v),
+            Self::Byte(v) => write!(f, "{}", v),
+            Self::Char(v) => write!(f, "{}", v),
+            Self::Short(v) => write!(f, "{}", v),
             Self::Int(v) => write!(f, "{}", v),
             Self::Long(v) => write!(f, "{}", v),
             Self::Float(v) => write!(f, "{}", v),
@@ -479,7 +516,11 @@ macro_rules! into_and_try_from_value {
 }
 
 into_and_try_from_value!(Ref, Option<Object<'a>>, "Not a reference");
-into_and_try_from_value!(Int, i32, "Not a boolean, byte, char, short or int");
+into_and_try_from_value!(Boolean, bool, "Not a boolean");
+into_and_try_from_value!(Byte, i8, "Not a byte");
+into_and_try_from_value!(Char, u16, "Not a char");
+into_and_try_from_value!(Short, i16, "Not a short");
+into_and_try_from_value!(Int, i32, "Not an int");
 into_and_try_from_value!(Long, i64, "Not a long");
 into_and_try_from_value!(Float, f32, "Not a float");
 into_and_try_from_value!(Double, f64, "Not a double");

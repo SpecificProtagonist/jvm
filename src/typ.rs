@@ -4,7 +4,7 @@ use crate::heap::JVMPtr;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Typ {
-    Bool,
+    Boolean,
     Byte,
     Short,
     Char,
@@ -21,7 +21,7 @@ impl Typ {
     pub fn layout(&self) -> Layout {
         use Typ::*;
         match self {
-            Bool | Byte => Layout::new::<u8>(),
+            Boolean | Byte => Layout::new::<u8>(),
             Short | Char => Layout::new::<u16>(),
             Int | Float => Layout::new::<u32>(),
             Long | Double => Layout::new::<u64>(),
@@ -40,7 +40,7 @@ impl Typ {
 impl std::fmt::Display for Typ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Typ::Bool => write!(f, "boolean"),
+            Typ::Boolean => write!(f, "boolean"),
             Typ::Byte => write!(f, "byte"),
             Typ::Short => write!(f, "short"),
             Typ::Char => write!(f, "char"),

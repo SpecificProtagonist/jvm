@@ -25,7 +25,6 @@ use crate::typ::Typ;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Value {
     Ref(Option<Object>),
-    /// Represents boolean, byte, char, short and int
     Int(i32),
     Long(i64),
     Float(f32),

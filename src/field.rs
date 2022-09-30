@@ -67,7 +67,7 @@ impl Field {
         // SAFETY: bounds, alignment & datatype unchanged after construction
         unsafe {
             match self.nat.typ {
-                Typ::Bool | Typ::Byte => {
+                Typ::Boolean | Typ::Byte => {
                     Value::Int(storage.read_i8(self.byte_offset, volatile) as i32)
                 }
                 Typ::Short | Typ::Char => {
@@ -124,7 +124,7 @@ impl Field {
         // SAFETY: bounds, alignment & datatype unchanged after construction
         unsafe {
             match (&self.nat.typ, value) {
-                (Typ::Bool | Typ::Byte, Value::Int(value)) => {
+                (Typ::Boolean | Typ::Byte, Value::Int(value)) => {
                     storage.write_i8(self.byte_offset, value as i8, volatile)
                 }
                 (Typ::Short | Typ::Char, Value::Int(value)) => {

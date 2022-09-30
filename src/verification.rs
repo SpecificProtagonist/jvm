@@ -101,7 +101,7 @@ impl VerificationType {
             (self, typ),
             (
                 Self::Integer,
-                Typ::Bool | Typ::Byte | Typ::Char | Typ::Short | Typ::Int
+                Typ::Boolean | Typ::Byte | Typ::Char | Typ::Short | Typ::Int
             ) | (Self::Long, Typ::Long)
                 | (Self::Float, Typ::Float)
                 | (Self::Double, Typ::Double)
@@ -117,7 +117,7 @@ pub(crate) fn push_type<'b>(
     typ: &Typ,
 ) -> JVMResult<()> {
     match typ {
-        Typ::Bool | Typ::Char | Typ::Byte | Typ::Short | Typ::Int => {
+        Typ::Boolean | Typ::Char | Typ::Byte | Typ::Short | Typ::Int => {
             types.push(VerificationType::Integer)
         }
         Typ::Float => types.push(VerificationType::Float),
@@ -656,7 +656,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
             IRETURN => {
                 if !(matches!(
                     method.nat.typ.returns,
-                    Some(Typ::Bool | Typ::Byte | Typ::Char | Typ::Short | Typ::Int)
+                    Some(Typ::Boolean | Typ::Byte | Typ::Char | Typ::Short | Typ::Int)
                 ) & (type_state.stack.pop() == Some(VerificationType::Integer)))
                 {
                     return Err(ve(jvm, "invalid ireturn"));
@@ -820,7 +820,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
 fn pop_type<'b>(jvm: &'b Jvm, stack: &'b mut Vec<VerificationType>, typ: &Typ) -> JVMResult<()> {
     if match (typ, stack.pop()) {
         (
-            Typ::Bool | Typ::Byte | Typ::Short | Typ::Char | Typ::Int,
+            Typ::Boolean | Typ::Byte | Typ::Short | Typ::Char | Typ::Int,
             Some(VerificationType::Integer),
         ) => true,
         (Typ::Long, Some(VerificationType::Top)) => {
@@ -932,7 +932,7 @@ fn relative_jump<'b>(
 fn small_array_type(typ: VerificationType) -> bool {
     match typ {
         VerificationType::ObjectVariable(class) => {
-            matches!(class.element_type, Some(Typ::Byte | Typ::Bool))
+            matches!(class.element_type, Some(Typ::Byte | Typ::Boolean))
         }
         VerificationType::Null => true,
         _ => false,
