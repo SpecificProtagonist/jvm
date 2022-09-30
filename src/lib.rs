@@ -23,12 +23,15 @@ use std::{
     sync::atomic::Ordering,
 };
 
-// @next: ArrayStoreException
 pub use class_loader::{ClassLoader, DefaultClassLoader};
 pub use field::FieldNaT;
 pub use method::{MethodDescriptor, MethodNaT};
 pub use typ::Typ;
 
+// @next: Test abstract methods
+
+/// Creates & manages classes and objects, which borrow from the Jvm.
+/// Multiple JVMs may exist. Mutable shared access follows Javas rules.
 pub struct Jvm(jvm::Jvm);
 
 impl Jvm {
@@ -60,11 +63,8 @@ impl Jvm {
     pub fn resolve_class<'a>(&'a self, name: &str) -> JVMResult<'a, Class<'a>> {
         self.0
             .resolve_class(name)
-            .map(|value| Class {
-                jvm: &self.0,
-                value,
-            })
-            .map_err(|value| Object::new(&self.0, value))
+            .map(|value| Class { jvm: self, value })
+            .map_err(|value| Object::new(self, value))
     }
 
     /// Convenience method.
@@ -78,18 +78,15 @@ impl Jvm {
     ) -> JVMResult<'a, Method<'a>> {
         self.0
             .resolve_class(class)
-            .map_err(|value| Object::new(&self.0, value))?
+            .map_err(|value| Object::new(self, value))?
             .methods
             .get(&MethodNaT {
                 name: method.into(),
-                typ: &MethodDescriptor(args, returns),
+                typ: &MethodDescriptor { args, returns },
             })
             .ok_or_else(|| jvm::exception(&self.0, "NoSuchMethodError"))
-            .map(|value| Method {
-                jvm: &self.0,
-                value,
-            })
-            .map_err(|value| Object::new(&self.0, value))
+            .map(|value| Method { jvm: self, value })
+            .map_err(|value| Object::new(self, value))
     }
 }
 
@@ -148,21 +145,26 @@ macro_rules! define_guard {
         $(#[$doc])*
         pub struct $guard_typ<'a> {
             value: $impl_typ,
-            jvm: &'a jvm::Jvm,
+            jvm: &'a Jvm,
         }
 
         impl<'a> $guard_typ<'a> {
-            fn new(jvm: &'a jvm::Jvm, value: $impl_typ) -> Self {
+            fn new(jvm: &'a Jvm, value: $impl_typ) -> Self {
                 Self { value, jvm }
             }
 
             #[allow(dead_code)]
-            fn into_inner(self, jvm: &jvm::Jvm) -> $impl_typ {
-                if self.jvm.id == jvm.id {
+            fn into_inner(self, jvm: &Jvm) -> $impl_typ {
+                if self.jvm.0.id == jvm.0.id {
                     self.value
                 } else {
                     panic!("Wrong JVM accessed")
                 }
+            }
+
+            /// Returns a reference to the [`Jvm`] this belongs to.
+            pub fn jvm(self) -> &'a Jvm {
+                self.jvm
             }
         }
 
@@ -188,6 +190,7 @@ impl<'a> Object<'a> {
         Class::new(self.jvm, self.value.class())
     }
 
+    /// If the object is an array return its length, None otherwise.
     pub fn array_len(self) -> Option<i32> {
         self.value.array_len()
     }
@@ -208,6 +211,7 @@ impl<'a> Object<'a> {
 }
 
 define_guard!(
+    /// A class, interface (TODO), enum or array class.
     Class,
     &'static class::Class,
     Debug,
@@ -219,66 +223,75 @@ define_guard!(
 );
 
 impl<'a> Class<'a> {
-    /// Returns the fully qualified internal name (using '/' instead of '.')
-    pub fn name(&self) -> &str {
+    // TODO: user-friendly name
+    /// Returns the fully qualified internal name (using '/' instead of '.').
+    pub fn name(self) -> &'a str {
         &self.value.name
     }
 
-    /// Is `Some()` for all classes except `java.lang.Object`
-    pub fn super_class(&self) -> Option<Self> {
+    /// Returns the super class. Is `Some()` for all classes except `java.lang.Object`.
+    pub fn super_class(self) -> Option<Self> {
         self.value
             .super_class
             .map(|value| Class::new(self.jvm, value))
     }
 
-    /// Is `Some()` for classes representing an array and `None` otherwise
-    pub fn element_type(&self) -> &Option<Typ> {
+    /// Is `Some()` for classes representing an array and `None` otherwise.
+    pub fn element_type(self) -> &'a Option<Typ> {
         &self.value.element_type
+    }
+
+    pub fn access_flags(self) -> AccessFlags {
+        self.value.access_flags
     }
 
     /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.
     /// This happens automatically when a method belonging to this class is called.
-    pub fn ensure_init(&self) -> JVMResult<'a, ()> {
+    pub fn ensure_init(self) -> JVMResult<'a, ()> {
         self.value
-            .ensure_init(self.jvm)
+            .ensure_init(&self.jvm.0)
             .map_err(|value| Object::new(self.jvm, value))
     }
 
     /// Creates an instance of a non-array class on the heap
     /// # Panics
     /// Panics if this is an array class
-    pub fn create_object(&self) -> Object {
-        Object::new(self.jvm, self.jvm.create_object(self.value))
+    pub fn create_object(self) -> Object<'a> {
+        Object::new(self.jvm, self.jvm.0.create_object(self.value))
     }
 
     /// Creates an instance of an array class on the heap
     /// # Panics
     /// Panics if class is not an array class or length < 0
-    pub fn create_array(&self, length: i32) -> Object {
-        Object::new(self.jvm, self.jvm.create_array(self.value, length))
+    pub fn create_array(self, length: i32) -> Object<'a> {
+        Object::new(self.jvm, self.jvm.0.create_array(self.value, length))
     }
 
-    pub fn field(&self, name: &str, typ: Typ) -> Option<Field<'a>> {
+    /// Look up a field by its name and type. There may be multiple fields of the same name.
+    pub fn field(self, name: &str, typ: Typ) -> Option<Field<'a>> {
         self.field_by_nat(FieldNaT {
             name: name.into(),
             typ,
         })
     }
 
-    pub fn field_by_nat(&self, nat: FieldNaT) -> Option<Field<'a>> {
+    /// Look up a field by its name and type. There may be multiple fields of the same name.
+    pub fn field_by_nat(self, nat: FieldNaT) -> Option<Field<'a>> {
         self.value
             .field_by_nat(nat)
             .map(|value| Field::new(self.jvm, value))
     }
 
+    /// Look up a method by its name and type. There may be multiple methods of the same name.
     /// Includes inherited dynamic methods.
     pub fn method(self, name: &str, args: Vec<Typ>, ret: Option<Typ>) -> Option<Method<'a>> {
         self.method_by_nat(&MethodNaT {
             name: name.into(),
-            typ: &MethodDescriptor(args, ret),
+            typ: &MethodDescriptor { args, returns: ret },
         })
     }
 
+    /// Look up a method by its name and type. There may be multiple methods of the same name.
     pub fn method_by_nat(self, nat: &MethodNaT) -> Option<Method<'a>> {
         self.value
             .methods
@@ -288,6 +301,7 @@ impl<'a> Class<'a> {
 }
 
 define_guard!(
+    /// A static or instance field.
     Field,
     &'static field::Field,
     Debug,
@@ -299,14 +313,18 @@ define_guard!(
 );
 
 impl<'a> Field<'a> {
+    /// The class this field is defined by.
     pub fn class(&self) -> Class {
         Class::new(self.jvm, self.value.class())
     }
 
+    /// Access flags, such as whether this field is static.
     pub fn access_flags(&self) -> AccessFlags {
         self.value.access_flags
     }
 
+    /// Name and type of this field. There may be multiple fields of the same name
+    /// but differing types on the same class.
     pub fn name_and_type(&self) -> &FieldNaT {
         &self.value.nat
     }
@@ -350,6 +368,7 @@ impl<'a> Field<'a> {
 }
 
 define_guard!(
+    /// A method. Does not necessarily have an implementation.
     Method,
     &'static method::Method,
     Debug,
@@ -361,12 +380,19 @@ define_guard!(
 );
 
 impl<'a> Method<'a> {
+    /// The class this method is defined by.
     pub fn class(&self) -> Class {
         Class::new(self.jvm, self.value.class())
     }
 
+    /// The name and type signature of the method. There may be multiple methods of the same
+    /// name but differing types in the same class.
     pub fn name_and_type(&self) -> MethodNaT<'a> {
         self.value.nat()
+    }
+
+    pub fn access_flags(self) -> AccessFlags {
+        self.value.access_flags
     }
 
     // TODO: publicly accessible dynamic method resolution
@@ -376,7 +402,7 @@ impl<'a> Method<'a> {
     /// Panics if any of the [`Value`]s is an object created by another JVM
     pub fn invoke(&self, args: &[Value<'a>]) -> JVMResult<'a, Option<Value<'a>>> {
         interp::invoke(
-            self.jvm,
+            &self.jvm.0,
             self.value,
             args.iter().map(|arg| arg.into_inner(self.jvm)),
         )
@@ -396,7 +422,7 @@ pub enum Value<'a> {
 }
 
 impl<'a> Value<'a> {
-    fn new(jvm: &'a jvm::Jvm, value: jvm::Value) -> Self {
+    fn new(jvm: &'a Jvm, value: jvm::Value) -> Self {
         match value {
             jvm::Value::Ref(value) => Self::Ref(value.map(|value| Object::new(jvm, value))),
             jvm::Value::Int(value) => Self::Int(value),
@@ -406,7 +432,7 @@ impl<'a> Value<'a> {
         }
     }
 
-    fn into_inner(self, jvm: &jvm::Jvm) -> jvm::Value {
+    fn into_inner(self, jvm: &Jvm) -> jvm::Value {
         match self {
             Self::Ref(value) => jvm::Value::Ref(value.map(|value| value.into_inner(jvm))),
             Self::Int(value) => jvm::Value::Int(value),
@@ -458,16 +484,53 @@ into_and_try_from_value!(Long, i64, "Not a long");
 into_and_try_from_value!(Float, f32, "Not a float");
 into_and_try_from_value!(Double, f64, "Not a double");
 
-/// Err is an object that extends Throwable
+/// Err is an object that extends Throwable.
+/// Currently no call stack is provided.
 pub type JVMResult<'a, T> = std::result::Result<T, Object<'a>>;
 
 bitflags::bitflags! {
+    /// Access flags of a class, field or method
     pub struct AccessFlags: u16 {
+        /// May be accessed from outside its package.
+        const PUBLIC = 0x0001;
+        /// May be accessed only from inside its defining class. (TODO)
+        const PRIVATE = 0x0002;
+        /// May be accessed only from inside its defining class or subclasses. (TODO)
+        const PROTECTED = 0x0004;
+        /// Declared static
         const STATIC = 0x0008;
+        /// Class: May not be subclassed.
+        ///
+        /// Field: May not be assigned to after initialization.
+        ///
+        /// Method: May not be overwritten by subclas.
         const FINAL = 0x0010;
+        /// Class: Treat superclass methods specially when invoked by the invokespecial instruction.
         const SUPER = 0x0020;
+        /// Invocation guarded by monitor (TODO).
+        const SYNCHRONIZED = 0x0020;
+        /// Reads and writes to this field are consistent across threads.
         const VOLATILE = 0x0040;
+        /// Field: Not written or read by a persistent object manager.
+        const TRANSIENT = 0x0080;
+        /// This method is implemented in native code (TODO).
         const NATIVE = 0x0100;
+        /// This class is an interface.
+        const INTERACE = 0x0200;
+        /// Class: Must not be instantiated.
+        ///
+        /// Method: Not implemented in this class; may be implemented by subclasses.
+        /// If the concrete class of the instance it is called on does not
         const ABSTRACT = 0x0400;
+        /// Method is FP-strict. This JVM always uses FP-strict mode.
+        const STRICT = 0x0800;
+        /// Not extant in source code.
+        const SYNTHETIC = 0x1000;
+        /// This class is an annotation.
+        const ANNOTATION = 0x2000;
+        /// Class: Is an enum.
+        ///
+        /// Field: Member of an enum.
+        const ENUM = 0x4000;
     }
 }

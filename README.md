@@ -48,6 +48,7 @@ This uses copious amounts of unsafe, such as
 - to manage the lifecycle of classes, objects, …
 - when casting type-erased local/stack values to objects
 - when accessing fields (in `fields_storage.rs` and when dereferencing pointers to objects)
+Unfortunately, for most of this the safety boundary is at the crate level.
 
 This is only a JVM, not including a proper class library. The problem is that the JVM
 specification depends on a number of classes, but never bothers to specify what it requires

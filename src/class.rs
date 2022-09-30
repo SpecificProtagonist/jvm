@@ -207,7 +207,10 @@ impl Class {
         // Initialization
         if let Some(initializer) = self.methods.get(&MethodNaT {
             name: "<clinit>".into(),
-            typ: &MethodDescriptor(vec![], None),
+            typ: &MethodDescriptor {
+                args: vec![],
+                returns: None,
+            },
         }) {
             crate::interp::invoke_initializer(jvm, initializer)?;
         }

@@ -216,7 +216,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                 },
             );
         }
-        for arg in &method.nat.typ.0 {
+        for arg in &method.nat.typ.args {
             push_type(jvm, &mut locals, arg)?
         }
         if locals.len() > code.max_locals as usize {
@@ -655,7 +655,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
             // TODO: check for uninitialized this on return
             IRETURN => {
                 if !(matches!(
-                    method.nat.typ.1,
+                    method.nat.typ.returns,
                     Some(Typ::Bool | Typ::Byte | Typ::Char | Typ::Short | Typ::Int)
                 ) & (type_state.stack.pop() == Some(VerificationType::Integer)))
                 {
@@ -664,7 +664,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                 connected_to_previous_block = false
             }
             LRETURN => {
-                if !((method.nat.typ.1 == Some(Typ::Long))
+                if !((method.nat.typ.returns == Some(Typ::Long))
                     & (type_state.pop(jvm)? == VerificationType::Long))
                 {
                     return Err(ve(jvm, "invalid lreturn"));
@@ -672,7 +672,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                 connected_to_previous_block = false
             }
             FRETURN => {
-                if !((method.nat.typ.1 == Some(Typ::Float))
+                if !((method.nat.typ.returns == Some(Typ::Float))
                     & (type_state.pop(jvm)? == VerificationType::Float))
                 {
                     return Err(ve(jvm, "invalid freturn"));
@@ -680,7 +680,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                 connected_to_previous_block = false
             }
             DRETURN => {
-                if !((method.nat.typ.1 == Some(Typ::Double))
+                if !((method.nat.typ.returns == Some(Typ::Double))
                     & (type_state.pop(jvm)? == VerificationType::Double))
                 {
                     return Err(ve(jvm, "invalid dreturn"));
@@ -688,7 +688,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                 connected_to_previous_block = false
             }
             RETURN => {
-                if method.nat.typ.1.is_some() {
+                if method.nat.typ.returns.is_some() {
                     return Err(ve(jvm, "invalid return"));
                 }
                 connected_to_previous_block = false
@@ -720,10 +720,10 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let method = const_pool.get_static_method(jvm, index)?;
                 let mut valid = true;
-                for arg in method.nat.typ.0.iter().rev() {
+                for arg in method.nat.typ.args.iter().rev() {
                     valid &= type_state.pop(jvm)?.matches(arg);
                 }
-                if let Some(return_type) = &method.nat.typ.1 {
+                if let Some(return_type) = &method.nat.typ.returns {
                     push_type(jvm, &mut type_state.stack, return_type)?
                 }
                 if !valid
