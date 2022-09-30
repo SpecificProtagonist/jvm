@@ -215,6 +215,9 @@ pub(crate) fn parse_field_descriptor(
 
 fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMResult<Field> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
+    if access_flags.contains(AccessFlags::FINAL | AccessFlags::VOLATILE) {
+        return Err(cfe(jvm, "Field may not be final and volatile"));
+    }
 
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
 
@@ -482,13 +485,19 @@ pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JVMResult<
     }
     start += 1;
     if &descriptor[start..] == "V" {
-        Ok(MethodDescriptor(args, None))
+        Ok(MethodDescriptor {
+            args,
+            returns: None,
+        })
     } else {
         let (return_type, start) = parse_field_descriptor(jvm, descriptor, start)?;
         if start < descriptor.len() {
             return Err(cfe(jvm, "Invalid method descriptor"));
         }
-        Ok(MethodDescriptor(args, Some(return_type)))
+        Ok(MethodDescriptor {
+            args,
+            returns: Some(return_type),
+        })
     }
 }
 

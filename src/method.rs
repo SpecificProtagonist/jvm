@@ -31,13 +31,16 @@ pub struct MethodNaT<'a> {
     pub typ: &'a MethodDescriptor,
 }
 
-/// Argument and return types
+/// A method signature type signature
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct MethodDescriptor(pub Vec<Typ>, pub Option<Typ>);
+pub struct MethodDescriptor {
+    pub args: Vec<Typ>,
+    pub returns: Option<Typ>,
+}
 
 impl MethodDescriptor {
     pub(crate) fn arg_slots(&self) -> usize {
-        self.0
+        self.args
             .iter()
             .map(|typ| match typ {
                 Typ::Long | Typ::Double => 2,
@@ -84,14 +87,14 @@ impl std::fmt::Debug for Method {
 
 impl<'a> std::fmt::Display for MethodNaT<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(ret) = &self.typ.1 {
+        if let Some(ret) = &self.typ.returns {
             write!(f, "{}", ret)?;
         } else {
             write!(f, "void")?;
         }
         write!(f, " {}(", self.name)?;
         let mut first = true;
-        for arg in &self.typ.0 {
+        for arg in &self.typ.args {
             if !first {
                 write!(f, ", ")?;
             }
