@@ -228,9 +228,9 @@ fn run_until_exception_or_return(
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                frame.stack.push(IVal::from_int(
-                    obj.ptr.array_read_i8(jvm, index)? as u8 as i32
-                ));
+                frame
+                    .stack
+                    .push(IVal::from_int(obj.ptr.array_read_i8(jvm, index)? as i32));
             }
             CALOAD => {
                 let index = frame.pop().as_int();
@@ -244,9 +244,9 @@ fn run_until_exception_or_return(
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                frame.stack.push(IVal::from_int(
-                    obj.ptr.array_read_i16(jvm, index)? as u16 as i32
-                ));
+                frame
+                    .stack
+                    .push(IVal::from_int(obj.ptr.array_read_i16(jvm, index)? as i32));
             }
             ISTORE | FSTORE | ASTORE => {
                 let index = frame.read_code_u8() as u16;
@@ -874,7 +874,7 @@ fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
     unsafe {
         match field.nat.typ {
-            Typ::Bool | Typ::Byte => frame.stack.push(IVal::from_int(
+            Typ::Boolean | Typ::Byte => frame.stack.push(IVal::from_int(
                 storage.read_i8(field.byte_offset, volatile) as i32,
             )),
             Typ::Short | Typ::Char => frame.stack.push(IVal::from_int(
@@ -899,7 +899,7 @@ fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
     unsafe {
         match field.nat.typ {
-            Typ::Bool | Typ::Byte => {
+            Typ::Boolean | Typ::Byte => {
                 storage.write_i8(field.byte_offset, frame.pop().as_int() as i8, volatile)
             }
             Typ::Short | Typ::Char => {

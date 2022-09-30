@@ -49,7 +49,7 @@ impl Object {
     pub fn array_read(self, index: i32) -> Value {
         match self.class().element_type {
             None => panic!("not an array"),
-            Some(Typ::Bool) | Some(Typ::Byte) => {
+            Some(Typ::Boolean) | Some(Typ::Byte) => {
                 (self.ptr.array_read_i8_freestanding(index) as u8 as i32).into()
             }
             Some(Typ::Short) | Some(Typ::Char) => {
@@ -70,7 +70,7 @@ impl Object {
     pub fn array_write(self, index: i32, value: Value) {
         if let Some(element_type) = &self.class().element_type {
             match (element_type, value) {
-                (Typ::Bool | Typ::Byte, Value::Int(value)) => self
+                (Typ::Boolean | Typ::Byte, Value::Int(value)) => self
                     .ptr
                     .array_write_i8_freestanding(index, value as u8 as i8),
                 (Typ::Short | Typ::Char, Value::Int(value)) => self
@@ -159,7 +159,7 @@ impl std::fmt::Debug for Object {
                 write!(f, "{}: ", field.nat.name)?;
                 unsafe {
                     match field.nat.typ {
-                        Typ::Bool | Typ::Byte => {
+                        Typ::Boolean | Typ::Byte => {
                             write!(f, "{}", self.ptr.read_i8(field.byte_offset, false))?
                         }
                         Typ::Short => write!(f, "{}", self.ptr.read_i16(field.byte_offset, false))?,
@@ -189,4 +189,12 @@ pub fn header_size() -> usize {
     // Afaik the alignment of 64-bit ints is usize even on 32-bit systems,
     // but better make sure of this (as there would be unaligned accesses elsewise):
     size_of::<JVMPtr>().max(align_of::<u64>())
+}
+
+#[test]
+fn object_reference_niche() {
+    assert_eq!(
+        std::mem::size_of::<Object>(),
+        std::mem::size_of::<Option<Object>>()
+    )
 }

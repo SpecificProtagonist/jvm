@@ -138,7 +138,7 @@ impl Class {
         for field in self.fields.values() {
             if let Some(index) = field.const_value_index {
                 match &field.nat.typ {
-                    Typ::Bool | Typ::Byte => unsafe {
+                    Typ::Boolean | Typ::Byte => unsafe {
                         self.static_storage.write_i8(
                             field.byte_offset as usize,
                             const_pool.get_int(jvm, index)? as i8,
@@ -212,7 +212,7 @@ impl Class {
                 returns: None,
             },
         }) {
-            crate::interp::invoke_initializer(jvm, initializer)?;
+            crate::interpreter::invoke_initializer(jvm, initializer)?;
         }
 
         Ok(())

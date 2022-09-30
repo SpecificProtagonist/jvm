@@ -13,9 +13,9 @@ fn circular_loading() {
 fn initialization() {
     let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     let method = jvm
-        .resolve_method("Initialization", "check_init", vec![], Some(Typ::Bool))
+        .resolve_method("Initialization", "check_init", vec![], Some(Typ::Boolean))
         .unwrap();
-    assert_eq!(method.invoke(&[]).unwrap(), Some(1.into()));
+    assert_eq!(method.invoke(&[]).unwrap(), Some(true.into()));
 }
 
 #[test]
@@ -25,8 +25,8 @@ fn init_lock() {
     std::thread::scope(|s| {
         for _ in 0..100 {
             s.spawn(|| {
-                let method = class.method("check", vec![], Some(Typ::Bool)).unwrap();
-                assert_eq!(method.invoke(&[]).unwrap(), Some(1.into()));
+                let method = class.method("check", vec![], Some(Typ::Boolean)).unwrap();
+                assert_eq!(method.invoke(&[]).unwrap(), Some(true.into()));
             });
         }
     });
@@ -35,13 +35,13 @@ fn init_lock() {
 #[test]
 fn control_flow() {
     let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
-    let method = jvm
-        .resolve_method("ControlFlow", "is_even", vec![Typ::Int], Some(Typ::Bool))
+    let is_even = jvm
+        .resolve_method("ControlFlow", "is_even", vec![Typ::Int], Some(Typ::Boolean))
         .unwrap();
-    let even_10 = method.invoke(&[10.into()]).unwrap();
-    assert_eq!(even_10, Some(1.into()));
-    let even_13 = method.invoke(&[13.into()]).unwrap();
-    assert_eq!(even_13, Some(0.into()));
+    let even_10 = is_even.invoke(&[10.into()]).unwrap();
+    assert_eq!(even_10, Some(true.into()));
+    let even_13 = is_even.invoke(&[13.into()]).unwrap();
+    assert_eq!(even_13, Some(false.into()));
 }
 
 #[test]
@@ -69,13 +69,13 @@ fn invoke_static() {
         .resolve_method(
             "InvokeStatic",
             "test",
-            vec![Typ::Bool, Typ::Bool],
-            Some(Typ::Bool),
+            vec![Typ::Boolean, Typ::Boolean],
+            Some(Typ::Boolean),
         )
         .unwrap();
     assert_eq!(
-        method.invoke(&[1.into(), 0.into()]).unwrap(),
-        Some(1.into())
+        method.invoke(&[true.into(), false.into()]).unwrap(),
+        Some(true.into())
     );
 }
 
@@ -87,9 +87,9 @@ fn invoke_virtual() {
         jvm.disable_verification_by_type_checking()
     }
     let method = jvm
-        .resolve_method("InvokeVirtual", "test", vec![], Some(Typ::Bool))
+        .resolve_method("InvokeVirtual", "test", vec![], Some(Typ::Boolean))
         .unwrap();
-    assert_eq!(method.invoke(&[]).unwrap(), Some(1.into()));
+    assert_eq!(method.invoke(&[]).unwrap(), Some(true.into()));
 }
 
 #[test]
@@ -100,9 +100,9 @@ fn arrays() {
         jvm.disable_verification_by_type_checking()
     }
     let method = jvm
-        .resolve_method("Arrays", "test", vec![], Some(Typ::Bool))
+        .resolve_method("Arrays", "test", vec![], Some(Typ::Boolean))
         .unwrap();
-    assert_eq!(method.invoke(&[]).unwrap(), Some(1.into()));
+    assert_eq!(method.invoke(&[]).unwrap(), Some(true.into()));
 }
 
 /// Lazy resolution isn't mandatory for the spec, but I still want it
@@ -120,7 +120,7 @@ fn lazy_init() {
         jvm.disable_verification_by_type_checking()
     }
     let method = jvm
-        .resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))
+        .resolve_method("LazyInit", "test", vec![Typ::Boolean], Some(Typ::Int))
         .unwrap();
     assert_eq!(method.invoke(&[0.into()]).unwrap(), Some(1.into()));
 
@@ -130,9 +130,9 @@ fn lazy_init() {
         jvm.disable_verification_by_type_checking()
     }
     let method = jvm
-        .resolve_method("LazyInit", "test", vec![Typ::Bool], Some(Typ::Int))
+        .resolve_method("LazyInit", "test", vec![Typ::Boolean], Some(Typ::Int))
         .unwrap();
-    assert_eq!(method.invoke(&[1.into()]).unwrap(), Some(2.into()));
+    assert_eq!(method.invoke(&[true.into()]).unwrap(), Some(2.into()));
 }
 
 #[test]
@@ -156,10 +156,10 @@ fn exceptions() {
         jvm.disable_verification_by_type_checking()
     }
     let method = jvm
-        .resolve_method("Exceptions", "test", vec![Typ::Bool], Some(Typ::Bool))
+        .resolve_method("Exceptions", "test", vec![Typ::Boolean], Some(Typ::Boolean))
         .unwrap();
-    assert_eq!(method.invoke(&[0.into()]).unwrap(), Some(0.into()));
-    assert_eq!(method.invoke(&[1.into()]).unwrap(), Some(1.into()));
+    assert_eq!(method.invoke(&[false.into()]).unwrap(), Some(false.into()));
+    assert_eq!(method.invoke(&[true.into()]).unwrap(), Some(true.into()));
 }
 
 #[test]
@@ -190,14 +190,6 @@ fn strings() {
         _ => panic!(),
     };
     assert_eq!(format!("{:?}", chars), "\"bar\"");
-}
-
-#[test]
-fn object_reference_niche() {
-    assert_eq!(
-        std::mem::size_of::<Object>(),
-        std::mem::size_of::<Option<Object>>()
-    )
 }
 
 // TODO: Compile-fail test for interacting with objects of one JVM via another
