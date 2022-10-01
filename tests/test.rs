@@ -59,6 +59,20 @@ fn field_access() {
 }
 
 #[test]
+fn field_access_inheritance() {
+    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let class = jvm.resolve_class("FieldAccessInheritance").unwrap();
+    let super_class = class.super_class().unwrap();
+    let a = super_class.field("a", Typ::Int).unwrap();
+    let b = class.field("b", Typ::Int).unwrap();
+    let instance = class.create_object_uninit();
+    a.instance_set(instance, 1.into());
+    b.instance_set(instance, 2.into());
+    assert_eq!(a.instance_get(instance), 1.into());
+    assert_eq!(b.instance_get(instance), 2.into());
+}
+
+#[test]
 fn invoke_static() {
     let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {

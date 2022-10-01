@@ -1,5 +1,4 @@
 use std::{
-    alloc::Layout,
     collections::{BTreeMap, HashMap},
     default::default,
     sync::Arc,
@@ -8,7 +7,6 @@ use std::{
 use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     field::{Field, FieldNaT},
-    field_storage::FieldStorage,
     jvm::exception,
     jvm::JVMResult,
     jvm::Jvm,
@@ -17,7 +15,7 @@ use crate::{
     method::Method,
     method::MethodDescriptor,
     method::MethodNaT,
-    object::{header_size, Object},
+    object::Object,
     typ::Typ,
     verification::{StackMapFrame, VerificationType},
     AccessFlags,
@@ -250,15 +248,7 @@ fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMRes
     })
 }
 
-fn read_fields(
-    input: &mut &[u8],
-    constant_pool: &ConstPool,
-    jvm: &Jvm,
-) -> JVMResult<(
-    HashMap<FieldNaT, Field>,
-    /*static fields size*/ usize,
-    /*object fields size*/ usize,
-)> {
+fn read_fields(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMResult<Vec<Field>> {
     // Read fields
     let length = read_u16(jvm, input)?;
     let mut fields = Vec::new();
@@ -266,27 +256,7 @@ fn read_fields(
         let field = read_field(input, constant_pool, jvm)?;
         fields.push(field);
     }
-    // Decide layout
-    fields.sort_by_key(|field| field.nat.typ.layout().align());
-    let mut static_layout = Layout::new::<()>();
-    let mut object_layout = Layout::from_size_align(header_size(), 8).unwrap();
-    let fields = fields
-        .into_iter()
-        .map(|mut field| {
-            let layout = field.nat.typ.layout();
-            let fields_layout = if field.access_flags.contains(AccessFlags::STATIC) {
-                &mut static_layout
-            } else {
-                &mut object_layout
-            };
-            let result = fields_layout.extend(layout).unwrap();
-            *fields_layout = result.0;
-            field.byte_offset = result.1;
-            (field.nat.clone(), field)
-        })
-        .collect();
-
-    Ok((fields, static_layout.size(), object_layout.size()))
+    Ok(fields)
 }
 
 fn read_verification_type<'a>(
@@ -585,10 +555,8 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JVMResult<ClassDes
     };
 
     let interfaces = read_interfaces(jvm, input, &const_pool)?;
-    let (fields, static_layout, object_size) = read_fields(input, &const_pool, jvm)?;
+    let fields = read_fields(input, &const_pool, jvm)?;
     let methods = read_methods(input, &const_pool, jvm)?;
-
-    let static_storage = FieldStorage::new(&jvm.heap, static_layout);
 
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
@@ -605,8 +573,6 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JVMResult<ClassDes
         name: this_class,
         super_class,
         interfaces,
-        static_storage,
-        object_size,
         fields,
         methods,
     })
@@ -619,10 +585,8 @@ pub(crate) struct ClassDescriptor {
     pub(crate) name: Arc<str>,
     pub(crate) super_class: Option<Arc<str>>,
     pub(crate) interfaces: Vec<Arc<str>>,
-    pub(crate) fields: HashMap<FieldNaT, Field>,
+    pub(crate) fields: Vec<Field>,
     pub(crate) methods: HashMap<MethodNaT<'static>, &'static Method>,
-    pub(crate) static_storage: FieldStorage,
-    pub(crate) object_size: usize,
 }
 
 fn cfe(jvm: &Jvm, _message: &str) -> Object {
