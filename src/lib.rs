@@ -249,7 +249,9 @@ impl<'a> Class<'a> {
         self.value.access_flags
     }
 
-    /// Look up a field by its name and type. There may be multiple fields of the same name.
+    /// Look up a field in this class by its name and type.
+    /// Does not search the inheritance hierarchy.
+    /// There may be multiple fields of the same name.
     pub fn field(self, name: &str, typ: Typ) -> Option<Field<'a>> {
         self.field_by_nat(FieldNaT {
             name: name.into(),
@@ -257,7 +259,9 @@ impl<'a> Class<'a> {
         })
     }
 
-    /// Look up a field by its name and type. There may be multiple fields of the same name.
+    /// Look up a field in this class by its name and type.
+    /// Does not search the inheritance hierarchy.
+    /// There may be multiple fields of the same name.
     pub fn field_by_nat(self, nat: FieldNaT) -> Option<Field<'a>> {
         self.value
             .field_by_nat(nat)

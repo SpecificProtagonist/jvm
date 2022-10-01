@@ -1,0 +1,3 @@
+class FieldAccessInheritanceSuper {
+    int a;
+}

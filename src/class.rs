@@ -1,5 +1,5 @@
 use parking_lot::{Condvar, Mutex, RwLock};
-use std::{collections::HashMap, sync::Arc, thread::ThreadId};
+use std::{alloc::Layout, collections::HashMap, sync::Arc, thread::ThreadId};
 
 use crate::{
     const_pool::ConstPool,
@@ -11,13 +11,14 @@ use crate::{
     method::Method,
     method::MethodDescriptor,
     method::MethodNaT,
-    object::Object,
+    object::{self, Object},
     typ::Typ,
     verification::verify,
     AccessFlags,
 };
 
-/// Represents a regular class, an array class or (in the future) an enum or an interface
+/// Represents a regular class, array class, enum or (in the future) or an interface.
+/// Does not store its defining loader as the Jvm currently may only have one.
 pub(crate) struct Class {
     // TODO: use normal name, not internal name
     /// Fully qualified name
@@ -31,7 +32,8 @@ pub(crate) struct Class {
     pub(crate) access_flags: AccessFlags,
     #[allow(unused)]
     pub(crate) interfaces: Vec<&'static Class>,
-    /// As far as I can tell, JVM supports field overloading
+    /// Does not contain inherited fields.
+    /// As far as I can tell, JVM supports field overloading.
     pub(crate) fields: HashMap<FieldNaT, Field>,
     /// At the moment, this includes any inherited methods. Change this?
     pub(crate) methods: HashMap<MethodNaT<'static>, &'static Method>,
@@ -63,6 +65,43 @@ impl<'a> std::hash::Hash for &'a Class {
 }
 
 impl Class {
+    pub(crate) fn set_layouts(
+        super_class: Option<&Class>,
+        mut fields: Vec<Field>,
+    ) -> (
+        HashMap<FieldNaT, Field>,
+        /*static size*/ usize,
+        /*instance size*/ usize,
+    ) {
+        fields.sort_by_key(|field| field.nat.typ.layout().align());
+        let mut static_layout = Layout::new::<()>();
+        let mut object_layout = Layout::from_size_align(
+            match super_class {
+                Some(super_class) => super_class.object_size,
+                None => object::header_size(),
+            },
+            8,
+        )
+        .unwrap();
+        let fields = fields
+            .into_iter()
+            .map(|mut field| {
+                let layout = field.nat.typ.layout();
+                let fields_layout = if field.access_flags.contains(AccessFlags::STATIC) {
+                    &mut static_layout
+                } else {
+                    &mut object_layout
+                };
+                let result = fields_layout.extend(layout).unwrap();
+                *fields_layout = result.0;
+                field.byte_offset = result.1;
+                (field.nat.clone(), field)
+            })
+            .collect();
+
+        (fields, static_layout.size(), object_layout.size())
+    }
+
     pub(crate) fn field(&self, name: &str, typ: Typ) -> Option<&Field> {
         self.field_by_nat(FieldNaT {
             name: name.into(),

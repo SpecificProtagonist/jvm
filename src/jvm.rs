@@ -39,7 +39,9 @@ pub(crate) type JVMResult<T> = std::result::Result<T, Object>;
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) struct Jvm {
+    /// Uniquely identifies the Jvm to prevent mixing of objects between Jvms
     pub(crate) id: u64,
+    /// Currently there's a single class loader per Jvm.
     pub bootstrap_class_loader: Box<dyn ClassLoader>,
     /// Bypasses verification by type checking. This is unsafe!
     pub(crate) verification_type_checking_disabled: AtomicBool,
@@ -49,8 +51,6 @@ pub(crate) struct Jvm {
     pub(crate) method_storage: Mutex<ManuallyDropArena<Method, 128>>,
     /// Implementation detail of const_pool, maybe remove in the future
     pub(crate) method_descriptor_storage: Mutex<ManuallyDropArena<MethodDescriptor, 128>>,
-    /// Interned strings along with the corrosponding object,
-    /// if String.intern has been called or CONST_String was in const pool (null otherwise)
     classes: RwLock<HashMap<Arc<str>, &'static Class>>,
 }
 
@@ -175,6 +175,9 @@ impl Jvm {
             None
         };
 
+        let (fields, static_size, object_size) = Class::set_layouts(super_class, class_desc.fields);
+        let static_storage = FieldStorage::new(&self.heap, static_size);
+
         let interfaces = class_desc.interfaces.into_iter().map(|_| todo!()).collect();
 
         let ref_type = unsafe {
@@ -185,10 +188,10 @@ impl Jvm {
                 const_pool: RwLock::new(class_desc.const_pool),
                 access_flags: class_desc.access_flags,
                 interfaces,
-                fields: class_desc.fields,
+                fields,
                 methods: class_desc.methods,
-                static_storage: class_desc.static_storage,
-                object_size: class_desc.object_size,
+                static_storage,
+                object_size,
                 init: ClassInitState::Uninit.into(),
                 init_waiter: default(),
             })
