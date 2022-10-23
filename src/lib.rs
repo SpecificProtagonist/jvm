@@ -23,15 +23,26 @@ use std::{
     sync::atomic::Ordering,
 };
 
-pub use class_loader::{ClassLoader, DefaultClassLoader};
+pub use class_loader::{ClassLoader, FolderClassLoader};
 pub use field::FieldNaT;
 pub use method::{MethodDescriptor, MethodNaT};
 pub use typ::Typ;
 
 // @next: Test abstract methods
 
+// This file represents most of the public interface.
+// It defines wrapper types that ensure types don't outlive the Jvm
+// they belong to or get used with a different Jvm.
+
 /// Creates & manages classes and objects, which borrow from the Jvm.
-/// Multiple JVMs may exist. Mutable shared access follows Javas rules.
+/// Multiple independent JVMs may exist.
+/// Mutable shared access follows Javas rules.
+///
+/// To operate correctly, the JVM requires a class library. The minimal
+/// version necessary to implement this is available under the `classes`
+/// folder of this repository. These aren't loaded automatically, your
+/// class library needs to be provided by the class loader. Missing or
+/// invalid classes may cause the thread to hang or crash.
 pub struct Jvm(jvm::Jvm);
 
 impl Jvm {
@@ -40,7 +51,8 @@ impl Jvm {
     }
 
     /// Bypasses bytecode verification. This is currently necessary
-    /// because it is not yet implemented for all opcodes.
+    /// because veryfication is not yet implemented for all opcodes and
+    /// will be removed afterwards.
     /// # Safety
     /// Undefined behavior if any invalid class gets initialized
     pub unsafe fn disable_verification_by_type_checking(&self) {
@@ -59,7 +71,7 @@ impl Jvm {
     /// Returns the class, loading it if it wasn't already loaded.
     /// This also loads its superclass and any interfaces it implements, but not any other class it refers to.
     /// Does not initialize this class, nor load any other class referenced.
-    /// The class name is in the internal form, which uses / to define hierarchies.
+    /// The class name is in the internal form (see [`Class::name`])
     pub fn resolve_class<'a>(&'a self, name: &str) -> JVMResult<'a, Class<'a>> {
         self.0
             .resolve_class(name)
@@ -186,6 +198,7 @@ define_guard!(
 );
 
 impl<'a> Object<'a> {
+    /// The class this is an instance of.
     pub fn class(self) -> Class<'a> {
         Class::new(self.jvm, self.value.class())
     }
@@ -195,7 +208,7 @@ impl<'a> Object<'a> {
         self.value.array_len()
     }
 
-    /// Returns either the value at index
+    /// Returns either the value at index.
     /// # Panics
     /// if the object is not an array or the index is out of bounds
     pub fn array_read(self, index: i32) -> Value<'a> {
@@ -206,8 +219,10 @@ impl<'a> Object<'a> {
         )
     }
 
-    /// Sets an array element. If the element type is boolean, byte, short or char, the `JVMValue::Int` is truncated
-    /// Panics if object is not an array, the element type mismatches, the index is out of bounds
+    /// Sets an array element. If the element type is boolean, byte, short or char,
+    /// the `JVMValue::Int` is truncated
+    /// # Panics
+    /// if object is not an array, the element type mismatches, the index is out of bounds
     /// or the value is an object created by another JVM
     pub fn array_write(self, index: i32, value: Value<'a>) {
         self.value.array_write(index, value.into_inner(self.jvm))
@@ -228,7 +243,9 @@ define_guard!(
 
 impl<'a> Class<'a> {
     // TODO: user-friendly name
-    /// Returns the fully qualified internal name (using '/' instead of '.').
+    /// Returns the fully qualified internal name, which uses `/` for hierarchy and
+    /// `[` for arrays.  
+    /// For example, the class representing an array of strings has the name `[java/lang/String`
     pub fn name(self) -> &'a str {
         &self.value.name
     }
@@ -238,6 +255,17 @@ impl<'a> Class<'a> {
         self.value
             .super_class
             .map(|value| Class::new(self.jvm, value))
+    }
+
+    /// Returns the array class which has this class as its element type.
+    pub fn array_class(self) -> Self {
+        Class::new(
+            self.jvm,
+            self.jvm
+                .0
+                .resolve_class(&format!("[{}", self.name()))
+                .unwrap(),
+        )
     }
 
     /// Is `Some()` for classes representing an array and `None` otherwise.
