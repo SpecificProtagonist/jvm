@@ -1036,10 +1036,11 @@ impl<'jvm> Frame<'jvm> {
         self.stack.push(high);
     }
 
-    /// This always succeeds because bounds were already checked during verification
     fn read_code_u8(&mut self) -> u8 {
+        // SAFETY: This always succeeds because bounds were already checked during verification
+        let byte = unsafe { *self.code_bytes.get_unchecked(self.pc as usize) };
         self.pc += 1;
-        self.code_bytes[self.pc as usize - 1]
+        byte
     }
 
     fn read_code_u16(&mut self) -> u16 {

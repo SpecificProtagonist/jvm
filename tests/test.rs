@@ -2,7 +2,7 @@ use jvm::*;
 
 #[test]
 fn circular_loading() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     assert_eq!(
         jvm.resolve_class("CircularA").unwrap_err().class().name(),
         "java/lang/ClassCircularityError"
@@ -11,7 +11,7 @@ fn circular_loading() {
 
 #[test]
 fn initialization() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     let method = jvm
         .resolve_method("Initialization", "check_init", vec![], Some(Typ::Boolean))
         .unwrap();
@@ -20,7 +20,7 @@ fn initialization() {
 
 #[test]
 fn init_lock() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     let class = Jvm::resolve_class(&jvm, "InitLock").unwrap();
     std::thread::scope(|s| {
         for _ in 0..100 {
@@ -34,7 +34,7 @@ fn init_lock() {
 
 #[test]
 fn control_flow() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     let is_even = jvm
         .resolve_method("ControlFlow", "is_even", vec![Typ::Int], Some(Typ::Boolean))
         .unwrap();
@@ -46,7 +46,7 @@ fn control_flow() {
 
 #[test]
 fn field_access() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -60,7 +60,7 @@ fn field_access() {
 
 #[test]
 fn field_access_inheritance() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     let class = jvm.resolve_class("FieldAccessInheritance").unwrap();
     let super_class = class.super_class().unwrap();
     let a = super_class.field("a", Typ::Int).unwrap();
@@ -74,7 +74,7 @@ fn field_access_inheritance() {
 
 #[test]
 fn invoke_static() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -95,7 +95,7 @@ fn invoke_static() {
 
 #[test]
 fn invoke_virtual() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -108,7 +108,7 @@ fn invoke_virtual() {
 
 #[test]
 fn arrays() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -122,13 +122,13 @@ fn arrays() {
 /// Lazy resolution isn't mandatory for the spec, but I still want it
 #[test]
 fn lazy_resolve() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     jvm.resolve_class("LazyResolve").unwrap();
 }
 
 #[test]
 fn lazy_init() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -138,7 +138,7 @@ fn lazy_init() {
         .unwrap();
     assert_eq!(method.invoke(&[0.into()]).unwrap(), Some(1.into()));
 
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -151,7 +151,7 @@ fn lazy_init() {
 
 #[test]
 fn many_allocs() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -164,7 +164,7 @@ fn many_allocs() {
 
 #[test]
 fn exceptions() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -178,7 +178,7 @@ fn exceptions() {
 
 #[test]
 fn strings() {
-    let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()

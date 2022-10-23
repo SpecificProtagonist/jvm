@@ -7,11 +7,11 @@ pub trait ClassLoader: Send + Sync {
 
 /// Class loader that loads classes from a folder, falling back to other folders if
 /// the class wasn't found
-pub struct DefaultClassLoader {
+pub struct FolderClassLoader {
     pub class_path: Vec<PathBuf>,
 }
 
-impl DefaultClassLoader {
+impl FolderClassLoader {
     pub fn new_boxed<P: Into<PathBuf>>(paths: impl IntoIterator<Item = P>) -> Box<dyn ClassLoader> {
         Box::new(Self {
             class_path: paths.into_iter().map(Into::into).collect(),
@@ -19,7 +19,7 @@ impl DefaultClassLoader {
     }
 }
 
-impl ClassLoader for DefaultClassLoader {
+impl ClassLoader for FolderClassLoader {
     fn load(&self, name: &str) -> Option<Vec<u8>> {
         for path in &self.class_path {
             let mut path = path.clone();

@@ -4,11 +4,17 @@ As this is intended as a learning experience, the choice of which features to im
 not determined by practicality but by how interested I'm in doing so.
 
 ```rust
-let jvm = Jvm::new(DefaultClassLoader::new_boxed(["classes""]));
+// Create a new JVM that loads classes from a folder called `classes`
+let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes""]));
+// Load class `Foo`
 let class = jvm.resolve_class("Foo").unwrap();
-let method = jvm.method("bar", vec![Typ::Int, Typ::Ref("java/lang/String".into())], None).unwrap();
-method.invoke(&[Value::from(0i32), Value::from(None)]).unwrap();
+// Resolve its method `void bar(int _, String _)`
+let method = class.method("bar", vec![Typ::Int, Typ::Ref("java/lang/String".into())], None).unwrap();
+// And call it: `Foo.bar(0, null)`
+method.invoke(&[Value::from(0i32), Value::from(None)]).expect("bar threw an exception");
+// Resolve field `Foo.baz` of type bool
 let field = class.field("baz", Typ::Bool).unwrap();
+// And read its value (panicking if it's not a static field)
 let field_value = field.static_get();
 ```
 
