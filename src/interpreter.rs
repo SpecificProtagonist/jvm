@@ -311,14 +311,13 @@ fn run_until_exception_or_return(
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                if let Some(Typ::Ref(component)) = &obj.class().element_type {
-                    if !obj.class().assignable_to(component) {
-                        return Err(exception(jvm, "ArrayStoreException"));
-                    }
-                    obj.ptr.array_write_ptr(jvm, index, value.0)?
-                } else {
-                    unreachable!()
+                let Some(Typ::Ref(component)) = &obj.class().element_type else {
+                    unreachable!("checked during verification")
+                };
+                if !obj.class().assignable_to(component) {
+                    return Err(exception(jvm, "ArrayStoreException"));
                 }
+                obj.ptr.array_write_ptr(jvm, index, value.0)?
             }
             BASTORE => {
                 let value = frame.pop().as_int();
@@ -827,11 +826,10 @@ fn run_until_exception_or_return(
             ARRAYLENGTH => {
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                if let Some(length) = obj.array_len() {
-                    frame.stack.push(IVal::from_int(length));
-                } else {
+                let Some(length) = obj.array_len()  else {
                     unreachable!()
-                }
+                };
+                frame.stack.push(IVal::from_int(length));
             }
             ATHROW => {
                 let obj = unsafe { frame.pop().as_ref() }

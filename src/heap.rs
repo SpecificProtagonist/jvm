@@ -1,3 +1,8 @@
+// This whole file (and the way I handle pointers in general) is a huge mess
+// Things to look into: single chunk with overcommit
+// - doesn't play nicely with compressed pointers
+// - probably helps with gc when it's time to implement it
+
 //! This module is responsible for managing the jvm heap and providing 32-bit pointers.
 //! On 32-bit platforms we can just use normal pointers.
 //! On amd64 Linux, we can use mmap with MAP_32BIT.
@@ -10,11 +15,6 @@
 //! There's no GC (for now), so just this is a simple (but threadsafe) bump allocator.
 
 // Currently, provenance goes ignored. This shouldn't be a problem, but TODO: check out the impact of this
-
-// This whole file (and the way I handle pointers in general) is a huge mess
-// Things to look into: single chunk with overcommit
-// - doesn't play nicely with compressed pointers
-// - probably helps with gc when it's time to implement it
 
 use parking_lot::Mutex;
 use std::{
