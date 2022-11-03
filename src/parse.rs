@@ -186,29 +186,27 @@ pub(crate) fn parse_field_descriptor(
         Some('J') => Some(Typ::Long),
         _ => None,
     } {
-        return Ok((typ, start + 1));
-    }
-
-    if let Some(stripped) = str.strip_prefix('L') {
-        if let Some((class_name, _)) = stripped.split_once(';') {
-            let start = start + 1 + class_name.len() + 1;
-            let typ = Typ::Ref(class_name.into());
-            return Ok((typ, start));
-        } else {
+        // Primitive
+        Ok((typ, start + 1))
+    } else if let Some(stripped) = str.strip_prefix('L') {
+        let Some((class_name, _)) = stripped.split_once(';') else {
             return Err(cfe(jvm, "invalid field descriptor"));
-        }
-    }
-
-    if str.starts_with('[') {
+        };
+        let start = start + 1 + class_name.len() + 1;
+        let typ = Typ::Ref(class_name.into());
+        // Class
+        Ok((typ, start))
+    } else if str.starts_with('[') {
         let (_, end) = parse_field_descriptor(jvm, descriptor, start + 1)?;
         let typ = Typ::Ref(str[..end].into());
         if typ.array_dimensions() > 255 {
             return Err(cfe(jvm, "too many array dimensions"));
         }
-        return Ok((typ, end));
+        // Array
+        Ok((typ, end))
+    } else {
+        Err(cfe(jvm, "invalid field descriptor"))
     }
-
-    Err(cfe(jvm, "invalid field descriptor: "))
 }
 
 fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMResult<Field> {
@@ -297,9 +295,7 @@ pub(crate) fn read_stack_map_table(
             locals: initial_locals,
         },
     );
-    let mut input = if let Some(input) = input {
-        input
-    } else {
+    let Some(mut input) = input else {
         return Ok(frames);
     };
     let input = &mut input;
@@ -308,10 +304,10 @@ pub(crate) fn read_stack_map_table(
         let prev_frame = frames.iter().rev().next().unwrap().1;
         let frame_type = read_u8(jvm, input)?;
         let (offset, current_frame) = if frame_type < 64 {
-            // same
+            // Same
             (frame_type as u16, prev_frame.clone())
         } else if frame_type < 128 {
-            // same locals 1 stack item
+            // Same locals 1 stack item
             (
                 frame_type as u16 - 64,
                 StackMapFrame {
@@ -320,7 +316,7 @@ pub(crate) fn read_stack_map_table(
                 },
             )
         } else if frame_type == 247 {
-            // same locals 1 stack item extended
+            // Same locals 1 stack item extended
             (
                 read_u16(jvm, input)?,
                 StackMapFrame {
@@ -329,7 +325,7 @@ pub(crate) fn read_stack_map_table(
                 },
             )
         } else if (frame_type > 247) & (frame_type < 251) {
-            // chop
+            // Chop
             let k = 251 - frame_type;
             (
                 read_u16(jvm, input)?,
@@ -343,10 +339,10 @@ pub(crate) fn read_stack_map_table(
                 },
             )
         } else if frame_type == 251 {
-            // same extended
+            // Same extended
             (read_u16(jvm, input)?, prev_frame.clone())
         } else if (frame_type > 251) & (frame_type < 255) {
-            // append
+            // Append
             let k = frame_type - 251;
             (
                 read_u16(jvm, input)?,
@@ -366,7 +362,7 @@ pub(crate) fn read_stack_map_table(
                 },
             )
         } else if frame_type == 255 {
-            // full
+            // Full
             let offset_delta = read_u16(jvm, input)?;
             let num_locals = read_u16(jvm, input)?;
             let mut locals = Vec::with_capacity(num_locals as usize);

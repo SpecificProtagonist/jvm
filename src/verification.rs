@@ -500,69 +500,61 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
             }
             DUP_X2 => {
                 let first = type_state.pop(jvm)?;
-                if let (Some(second), Some(third)) =
-                    (type_state.stack.pop(), type_state.stack.pop())
-                {
-                    type_state.stack.push(first);
-                    type_state.stack.push(third);
-                    type_state.stack.push(second);
-                    type_state.stack.push(first);
-                } else {
+                let (Some(second), Some(third)) = (type_state.stack.pop(), type_state.stack.pop()) else {
                     return Err(ve(jvm, "invalid dup_x2"));
-                }
+                };
+                type_state.stack.push(first);
+                type_state.stack.push(third);
+                type_state.stack.push(second);
+                type_state.stack.push(first);
             }
             DUP2 => {
-                if let (Some(first), Some(second)) =
-                    (type_state.stack.pop(), type_state.stack.pop())
-                {
-                    if second == VerificationType::Top {
-                        return Err(ve(jvm, "invalid dup2"));
-                    }
-                    type_state.stack.push(second);
-                    type_state.stack.push(first);
-                    type_state.stack.push(second);
-                    type_state.stack.push(first);
-                } else {
+                let (Some(first), Some(second)) = (type_state.stack.pop(), type_state.stack.pop()) else {
+                    return Err(ve(jvm, "invalid dup2"));
+                };
+                if second == VerificationType::Top {
                     return Err(ve(jvm, "invalid dup2"));
                 }
+                type_state.stack.push(second);
+                type_state.stack.push(first);
+                type_state.stack.push(second);
+                type_state.stack.push(first);
             }
             DUP2_X1 => {
-                if let (Some(first), Some(second), Some(third)) = (
+                let (Some(first), Some(second), Some(third)) = (
                     type_state.stack.pop(),
                     type_state.stack.pop(),
                     type_state.stack.pop(),
-                ) {
-                    if (second == VerificationType::Top) | (third == VerificationType::Top) {
-                        return Err(ve(jvm, "invalid dup2_x1"));
-                    }
-                    type_state.stack.push(second);
-                    type_state.stack.push(first);
-                    type_state.stack.push(third);
-                    type_state.stack.push(second);
-                    type_state.stack.push(first);
-                } else {
+                ) else {
+                    return Err(ve(jvm, "invalid dup2_x1"));
+                };
+                if (second == VerificationType::Top) | (third == VerificationType::Top) {
                     return Err(ve(jvm, "invalid dup2_x1"));
                 }
+                type_state.stack.push(second);
+                type_state.stack.push(first);
+                type_state.stack.push(third);
+                type_state.stack.push(second);
+                type_state.stack.push(first);
             }
             DUP2_X2 => {
-                if let (Some(first), Some(second), Some(third), Some(fourth)) = (
+                let (Some(first), Some(second), Some(third), Some(fourth)) = (
                     type_state.stack.pop(),
                     type_state.stack.pop(),
                     type_state.stack.pop(),
                     type_state.stack.pop(),
-                ) {
-                    if (second == VerificationType::Top) | (fourth == VerificationType::Top) {
-                        return Err(ve(jvm, "invalid dup2_x2"));
-                    }
-                    type_state.stack.push(second);
-                    type_state.stack.push(first);
-                    type_state.stack.push(fourth);
-                    type_state.stack.push(third);
-                    type_state.stack.push(second);
-                    type_state.stack.push(first);
-                } else {
+                ) else {
+                    return Err(ve(jvm, "invalid dup2_x2"));
+                };
+                if (second == VerificationType::Top) | (fourth == VerificationType::Top) {
                     return Err(ve(jvm, "invalid dup2_x2"));
                 }
+                type_state.stack.push(second);
+                type_state.stack.push(first);
+                type_state.stack.push(fourth);
+                type_state.stack.push(third);
+                type_state.stack.push(second);
+                type_state.stack.push(first);
             }
             SWAP => {
                 let first = type_state.pop(jvm)?;
@@ -574,23 +566,20 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                 type_state.stack.push(second);
             }
             IADD | ISUB | IMUL | IDIV | IREM | ISHL | ISHR | IUSHR | IAND | IOR | IXOR => {
-                if let (Some(VerificationType::Integer), Some(VerificationType::Integer)) =
-                    (type_state.stack.pop(), type_state.stack.pop())
-                {
-                    type_state.stack.push(VerificationType::Integer)
-                } else {
+                let (Some(VerificationType::Integer), Some(VerificationType::Integer)) =
+                    (type_state.stack.pop(), type_state.stack.pop()) else {
                     return Err(ve(jvm, "invalid integer arithmetic"));
-                }
+                };
+                type_state.stack.push(VerificationType::Integer)
             }
             DADD | DSUB | DMUL | DDIV => {
-                if let (Ok(VerificationType::Double), Ok(VerificationType::Double)) =
-                    (type_state.pop(jvm), type_state.pop(jvm))
+                if (type_state.pop(jvm), type_state.pop(jvm))
+                    != (Ok(VerificationType::Double), Ok(VerificationType::Double))
                 {
-                    type_state.stack.push(VerificationType::Double);
-                    type_state.stack.push(VerificationType::Top);
-                } else {
                     return Err(ve(jvm, "invalid double arithmetic"));
-                }
+                };
+                type_state.stack.push(VerificationType::Double);
+                type_state.stack.push(VerificationType::Top);
             }
             INEG | I2B | I2C | I2S => {
                 top_of_stack(jvm, &mut type_state, VerificationType::Integer)?
@@ -603,34 +592,30 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                 }
             }
             I2F => {
-                if type_state.pop(jvm)? == VerificationType::Integer {
-                    type_state.stack.push(VerificationType::Float)
-                } else {
+                if type_state.pop(jvm)? != VerificationType::Integer {
                     return Err(ve(jvm, "invalid i2f"));
                 }
+                type_state.stack.push(VerificationType::Float)
             }
             I2D => {
-                if type_state.pop(jvm)? == VerificationType::Integer {
-                    type_state.stack.push(VerificationType::Double);
-                    type_state.stack.push(VerificationType::Top)
-                } else {
+                if type_state.pop(jvm)? != VerificationType::Integer {
                     return Err(ve(jvm, "invalid i2d"));
                 }
+                type_state.stack.push(VerificationType::Double);
+                type_state.stack.push(VerificationType::Top)
             }
             I2L => {
-                if type_state.pop(jvm)? == VerificationType::Integer {
-                    type_state.stack.push(VerificationType::Long);
-                    type_state.stack.push(VerificationType::Top)
-                } else {
+                if type_state.pop(jvm)? != VerificationType::Integer {
                     return Err(ve(jvm, "invalid i2l"));
                 }
+                type_state.stack.push(VerificationType::Long);
+                type_state.stack.push(VerificationType::Top)
             }
             D2I => {
-                if type_state.pop(jvm)? == VerificationType::Double {
-                    type_state.stack.push(VerificationType::Integer);
-                } else {
+                if type_state.pop(jvm)? != VerificationType::Double {
                     return Err(ve(jvm, "invalid d2i"));
                 }
+                type_state.stack.push(VerificationType::Integer);
             }
             IFEQ | IFNE | IFLT | IFGE | IFGT | IFLE => {
                 if type_state.pop(jvm)? != VerificationType::Integer {
