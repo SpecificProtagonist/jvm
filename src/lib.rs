@@ -1,5 +1,4 @@
 #![feature(hash_set_entry)]
-#![feature(map_first_last)]
 #![feature(default_free_fn)]
 
 mod class;
@@ -394,8 +393,8 @@ impl<'a> Field<'a> {
     /// # Panics
     /// Panics if the field is not static or the value is not assignable to the field's type
     /// or the value is an object created by a different JVM
-    pub fn static_set(&self, value: Value<'a>) {
-        self.value.static_set(value.into_inner(self.jvm))
+    pub fn static_set(&self, value: impl Into<Value<'a>>) {
+        self.value.static_set(value.into().into_inner(self.jvm))
     }
 
     /// Get the value of an object's field.
@@ -404,9 +403,11 @@ impl<'a> Field<'a> {
     /// the object is not an instance of the class corresponding to this field,
     /// the value is not assignable to the field's type
     /// or the value is an object created by a different JVM
-    pub fn instance_set(&self, object: Object, value: Value<'a>) {
-        self.value
-            .instance_set(object.into_inner(self.jvm), value.into_inner(self.jvm))
+    pub fn instance_set(&self, object: Object, value: impl Into<Value<'a>>) {
+        self.value.instance_set(
+            object.into_inner(self.jvm),
+            value.into().into_inner(self.jvm),
+        )
     }
 }
 
@@ -525,7 +526,7 @@ impl<'a> Display for Value<'a> {
     }
 }
 
-macro_rules! into_and_try_from_value {
+macro_rules! partialeq_into_and_try_from_value {
     ($variant:ident, $typ:ty, $err:literal) => {
         impl<'a> From<$typ> for Value<'a> {
             fn from(value: $typ) -> Self {
@@ -544,18 +545,33 @@ macro_rules! into_and_try_from_value {
                 }
             }
         }
+
+        // Can't do
+        // `impl<'a, T: Into<Value<'a>>> PartialEq<T> for Value<'a>`
+        // because that would conflict for T = Value
+        impl<'a> PartialEq<$typ> for Value<'a> {
+            fn eq(&self, other: &$typ) -> bool {
+                self == &Into::<Value<'a>>::into(*other)
+            }
+        }
+
+        impl<'a> PartialEq<Value<'a>> for $typ {
+            fn eq(&self, other: &Value) -> bool {
+                other == self
+            }
+        }
     };
 }
 
-into_and_try_from_value!(Ref, Option<Object<'a>>, "Not a reference");
-into_and_try_from_value!(Boolean, bool, "Not a boolean");
-into_and_try_from_value!(Byte, i8, "Not a byte");
-into_and_try_from_value!(Char, u16, "Not a char");
-into_and_try_from_value!(Short, i16, "Not a short");
-into_and_try_from_value!(Int, i32, "Not an int");
-into_and_try_from_value!(Long, i64, "Not a long");
-into_and_try_from_value!(Float, f32, "Not a float");
-into_and_try_from_value!(Double, f64, "Not a double");
+partialeq_into_and_try_from_value!(Ref, Option<Object<'a>>, "Not a reference");
+partialeq_into_and_try_from_value!(Boolean, bool, "Not a boolean");
+partialeq_into_and_try_from_value!(Byte, i8, "Not a byte");
+partialeq_into_and_try_from_value!(Char, u16, "Not a char");
+partialeq_into_and_try_from_value!(Short, i16, "Not a short");
+partialeq_into_and_try_from_value!(Int, i32, "Not an int");
+partialeq_into_and_try_from_value!(Long, i64, "Not a long");
+partialeq_into_and_try_from_value!(Float, f32, "Not a float");
+partialeq_into_and_try_from_value!(Double, f64, "Not a double");
 
 /// Err is an object that extends Throwable.
 /// Currently no call stack is provided.
