@@ -15,7 +15,7 @@ fn initialization() {
     let method = jvm
         .resolve_method("Initialization", "check_init", vec![], Some(Typ::Boolean))
         .unwrap();
-    assert_eq!(method.invoke(&[]).unwrap(), Some(true.into()));
+    assert_eq!(method.invoke(&[]).unwrap().unwrap(), true);
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn init_lock() {
         for _ in 0..100 {
             s.spawn(|| {
                 let method = class.method("check", vec![], Some(Typ::Boolean)).unwrap();
-                assert_eq!(method.invoke(&[]).unwrap(), Some(true.into()));
+                assert_eq!(method.invoke(&[]).unwrap().unwrap(), true);
             });
         }
     });
@@ -55,7 +55,7 @@ fn field_access() {
     let set_method = class.method("set", vec![Typ::Int], None).unwrap();
     let get_method = class.method("get", vec![], Some(Typ::Int)).unwrap();
     assert_eq!(set_method.invoke(&[42.into()]).unwrap(), None);
-    assert_eq!(get_method.invoke(&[]).unwrap(), Some(42.into()));
+    assert_eq!(get_method.invoke(&[]).unwrap().unwrap(), 42);
 }
 
 #[test]
@@ -66,10 +66,10 @@ fn field_access_inheritance() {
     let a = super_class.field("a", Typ::Int).unwrap();
     let b = class.field("b", Typ::Int).unwrap();
     let instance = class.create_object_uninit();
-    a.instance_set(instance, 1.into());
-    b.instance_set(instance, 2.into());
-    assert_eq!(a.instance_get(instance), 1.into());
-    assert_eq!(b.instance_get(instance), 2.into());
+    a.instance_set(instance, 1);
+    b.instance_set(instance, 2);
+    assert_eq!(a.instance_get(instance), 1);
+    assert_eq!(b.instance_get(instance), 2);
 }
 
 #[test]
