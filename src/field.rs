@@ -21,6 +21,7 @@ pub(crate) struct Field {
     pub(crate) const_value_index: Option<u16>,
 }
 
+/// Contains a field's name and type.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct FieldNaT {
     pub name: Arc<str>,

@@ -378,7 +378,7 @@ pub(crate) fn read_stack_map_table(
         } else {
             return Err(cfe(jvm, "invalid stack map frame type"));
         };
-        pc += offset as u16;
+        pc += offset;
         frames.insert(pc, current_frame);
         // This is not applied if the previous frame was the initial (implicit) frame
         pc += 1;

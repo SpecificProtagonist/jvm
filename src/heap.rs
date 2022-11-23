@@ -133,7 +133,7 @@ impl Heap {
             // Ensure alignment
             // For compressed pointers and a >4gb heap, leave the last three bits unset
             let align = layout.align().max(8);
-            let addr = round_to_multiple(start as usize, align);
+            let addr = round_to_multiple(start, align);
             let next = addr.wrapping_add(layout.size());
             assert!(next > start);
             // Does the allocation fit inside the current block?

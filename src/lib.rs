@@ -1,5 +1,6 @@
 #![feature(hash_set_entry)]
 #![feature(default_free_fn)]
+#![doc = include_str!("../README.md")]
 
 mod class;
 mod class_loader;
@@ -32,6 +33,25 @@ pub use typ::Typ;
 // This file represents most of the public interface.
 // It defines wrapper types that ensure types don't outlive the Jvm
 // they belong to or get used with a different Jvm.
+
+// Rough overview:
+// - a `Jvm` contains classes and objects
+// - internally, a lot of static references are used that only live as long as the `Jvm` exists,
+//   which Rust can't express. These are never directly made available to the library consumer.
+// - instead proxies which also contain a reference to the VM are provided
+// - errors returned by fallible operations are Exception objects
+// - classes are resolved lazily by `Jvm::resolve_class` and parsed in `parse.rs`
+// - before a method is executed, it's class will be verified (once) in verification.rs
+// - methods are executed using a simple interpreter loop in `interp.rs`
+// - one `FieldStorage` per class/object compactly stores the static/instance fields
+// - objects contain a pointer to their class, followed by their fields
+// - objects are currently not garbage collected
+
+// This uses copious amounts of unsafe, such as
+// - to manage the lifecycle of classes, objects, …
+// - when casting type-erased local/stack values to objects
+// - when accessing fields (in `fields_storage.rs` and when dereferencing pointers to objects)
+// Unfortunately, for most of this the safety boundary is at the crate level.
 
 /// Creates & manages classes and objects, which borrow from the Jvm.
 /// Multiple independent JVMs may exist.
@@ -214,7 +234,7 @@ impl<'a> Object<'a> {
         Value::new(
             self.jvm,
             self.value.array_read(index),
-            self.class().element_type().as_ref().unwrap(),
+            self.class().element_type().as_ref(),
         )
     }
 
@@ -243,7 +263,8 @@ define_guard!(
 impl<'a> Class<'a> {
     // TODO: user-friendly name
     /// Returns the fully qualified internal name, which uses `/` for hierarchy and
-    /// `[` for arrays.  
+    /// `[` for arrays. Does not include generic parameters, as they only exist on
+    /// the source code level.
     /// For example, the class representing an array of strings has the name `[java/lang/String`
     pub fn name(self) -> &'a str {
         &self.value.name
@@ -375,7 +396,11 @@ impl<'a> Field<'a> {
     /// # Panics
     /// Panics if the field is not static.
     pub fn static_get(&self) -> Value<'a> {
-        Value::new(self.jvm, self.value.static_get(), &self.name_and_type().typ)
+        Value::new(
+            self.jvm,
+            self.value.static_get(),
+            Some(&self.name_and_type().typ),
+        )
     }
 
     /// Get the value of an object's field.
@@ -385,7 +410,7 @@ impl<'a> Field<'a> {
         Value::new(
             self.jvm,
             self.value.instance_get(object.into_inner(self.jvm)),
-            &self.name_and_type().typ,
+            Some(&self.name_and_type().typ),
         )
     }
 
@@ -444,27 +469,22 @@ impl<'a> Method<'a> {
     /// Returns either the function's return value or the exception that was thrown
     /// # Panics
     /// Panics if any of the [`Value`]s is an object created by another JVM
-    pub fn invoke(&self, args: &[Value<'a>]) -> JVMResult<'a, Option<Value<'a>>> {
+    pub fn invoke(&self, args: &[Value<'a>]) -> JVMResult<'a, Value<'a>> {
+        // TODO: Check for argument type mismatch
         interpreter::invoke(
             &self.jvm.0,
             self.value,
             args.iter().map(|arg| arg.into_inner(self.jvm)),
         )
-        .map(|value| {
-            value.map(|value| {
-                Value::new(
-                    self.jvm,
-                    value,
-                    self.name_and_type().typ.returns.as_ref().unwrap(),
-                )
-            })
-        })
+        .map(|value| Value::new(self.jvm, value, self.name_and_type().typ.returns.as_ref()))
         .map_err(|value| Object::new(self.jvm, value))
     }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Value<'a> {
+    /// Lack of a value, only used for return types.
+    Void,
     Ref(Option<Object<'a>>),
     Boolean(bool),
     Byte(i8),
@@ -477,15 +497,16 @@ pub enum Value<'a> {
 }
 
 impl<'a> Value<'a> {
-    fn new(jvm: &'a Jvm, value: jvm::Value, typ: &Typ) -> Self {
+    fn new(jvm: &'a Jvm, value: jvm::Value, typ: Option<&Typ>) -> Self {
         match value {
+            jvm::Value::Void => Self::Void,
             jvm::Value::Ref(value) => Self::Ref(value.map(|value| Object::new(jvm, value))),
             jvm::Value::Int(value) => match typ {
-                Typ::Boolean => Self::Boolean(value != 0),
-                Typ::Byte => Self::Byte(value as i8),
-                Typ::Short => Self::Short(value as i16),
-                Typ::Char => Self::Char(value as u16),
-                Typ::Int => Self::Int(value),
+                Some(Typ::Boolean) => Self::Boolean(value != 0),
+                Some(Typ::Byte) => Self::Byte(value as i8),
+                Some(Typ::Short) => Self::Short(value as i16),
+                Some(Typ::Char) => Self::Char(value as u16),
+                Some(Typ::Int) => Self::Int(value),
                 _ => unreachable!(),
             },
             jvm::Value::Long(value) => Self::Long(value),
@@ -496,6 +517,7 @@ impl<'a> Value<'a> {
 
     fn into_inner(self, jvm: &Jvm) -> jvm::Value {
         match self {
+            Self::Void => jvm::Value::Void,
             Self::Ref(value) => jvm::Value::Ref(value.map(|value| value.into_inner(jvm))),
             Self::Boolean(value) => jvm::Value::Int(value as i32),
             Self::Byte(value) => jvm::Value::Int(value as i32),
@@ -512,6 +534,7 @@ impl<'a> Value<'a> {
 impl<'a> Display for Value<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Void => write!(f, "void"),
             Self::Ref(None) => write!(f, "null"),
             Self::Ref(Some(obj)) => write!(f, "@{:x}", obj.value.ptr()),
             Self::Boolean(v) => write!(f, "{}", v),
@@ -572,6 +595,36 @@ partialeq_into_and_try_from_value!(Int, i32, "Not an int");
 partialeq_into_and_try_from_value!(Long, i64, "Not a long");
 partialeq_into_and_try_from_value!(Float, f32, "Not a float");
 partialeq_into_and_try_from_value!(Double, f64, "Not a double");
+
+impl<'a> From<()> for Value<'a> {
+    fn from(_: ()) -> Self {
+        Self::Void
+    }
+}
+
+impl<'a> TryFrom<Value<'a>> for () {
+    type Error = &'static str;
+
+    fn try_from(value: Value<'a>) -> Result<Self, Self::Error> {
+        if value == Value::Void {
+            Ok(())
+        } else {
+            Err("Hold a value")
+        }
+    }
+}
+
+impl<'a> PartialEq<()> for Value<'a> {
+    fn eq(&self, _: &()) -> bool {
+        self == &Self::Void
+    }
+}
+
+impl<'a> PartialEq<Value<'a>> for () {
+    fn eq(&self, other: &Value) -> bool {
+        other == self
+    }
+}
 
 /// Err is an object that extends Throwable.
 /// Currently no call stack is provided.

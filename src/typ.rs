@@ -2,6 +2,7 @@ use std::{alloc::Layout, sync::Arc};
 
 use crate::heap::JVMPtr;
 
+/// A Java type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Typ {
     Boolean,
@@ -12,8 +13,9 @@ pub enum Typ {
     Long,
     Float,
     Double,
-    /// Classes are represented unresolved so we can talk about classes without
-    /// having all classes resolved already (which wouldn't work as the graph can be cyclic)
+    // Classes are represented unresolved so we can talk about classes without
+    // having all classes resolved already (which wouldn't work as the graph can be cyclic)
+    /// A reference type (class, interface (TODO), enum or array). Uses the inter path form (see `Class::name`).
     Ref(Arc<str>),
 }
 
