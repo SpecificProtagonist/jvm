@@ -179,42 +179,42 @@ impl Class {
                 match &field.nat.typ {
                     Typ::Boolean | Typ::Byte => unsafe {
                         self.static_storage.write_i8(
-                            field.byte_offset as usize,
+                            field.byte_offset,
                             const_pool.get_int(jvm, index)? as i8,
                             true,
                         )
                     },
                     Typ::Short | Typ::Char => unsafe {
                         self.static_storage.write_i16(
-                            field.byte_offset as usize,
+                            field.byte_offset,
                             const_pool.get_int(jvm, index)? as i16,
                             true,
                         )
                     },
                     Typ::Int => unsafe {
                         self.static_storage.write_i32(
-                            field.byte_offset as usize,
+                            field.byte_offset,
                             const_pool.get_int(jvm, index)?,
                             true,
                         )
                     },
                     Typ::Float => unsafe {
                         self.static_storage.write_f32(
-                            field.byte_offset as usize,
+                            field.byte_offset,
                             const_pool.get_float(jvm, index)?,
                             true,
                         )
                     },
                     Typ::Double => unsafe {
                         self.static_storage.write_f64(
-                            field.byte_offset as usize,
+                            field.byte_offset,
                             const_pool.get_double(jvm, index)?,
                             true,
                         )
                     },
                     Typ::Long => unsafe {
                         self.static_storage.write_i64(
-                            field.byte_offset as usize,
+                            field.byte_offset,
                             const_pool.get_long(jvm, index)?,
                             true,
                         )
@@ -223,7 +223,7 @@ impl Class {
                         if name.as_ref() == "java/lang/String" {
                             unsafe {
                                 self.static_storage.write_ptr(
-                                    field.byte_offset as usize,
+                                    field.byte_offset,
                                     const_pool.get_string(jvm, index)?.ptr().into(),
                                     true,
                                 )

@@ -25,6 +25,7 @@ impl Method {
     }
 }
 
+/// Contains a method's name and type.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MethodNaT<'a> {
     pub name: Arc<str>,

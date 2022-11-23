@@ -24,6 +24,7 @@ use crate::typ::Typ;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Value {
+    Void,
     Ref(Option<Object>),
     Int(i32),
     Long(i64),
@@ -296,6 +297,7 @@ fn _assert_jvm_send_sync<T: Send + Sync>() {
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Void => write!(f, "void"),
             Self::Ref(None) => write!(f, "null"),
             Self::Ref(Some(obj)) => write!(f, "@{:x}", obj.ptr()),
             Self::Int(v) => write!(f, "{}", v),

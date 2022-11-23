@@ -16,11 +16,12 @@ pub(crate) fn invoke(
     jvm: &Jvm,
     method: &Method,
     args: impl IntoIterator<Item = Value>,
-) -> JVMResult<Option<Value>> {
+) -> JVMResult<Value> {
     method.class().ensure_init(jvm)?;
     let mut arg_values = Vec::new();
     for arg in args {
         match arg {
+            Value::Void => panic!("invoke with void argument"),
             Value::Ref(object) => arg_values.push(IVal::from_ref(object)),
             Value::Int(value) => arg_values.push(IVal::from_int(value)),
             Value::Long(value) => {
@@ -62,7 +63,7 @@ pub(crate) fn invoke_initializer(jvm: &Jvm, initializer: &Method) -> JVMResult<(
 }
 
 /// Requires that the class is already initialized, or method is the initializer
-fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JVMResult<Option<Value>> {
+fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JVMResult<Value> {
     if method.code.is_none() {
         todo!("Methods without code attribute");
     }
@@ -127,7 +128,7 @@ fn run_until_exception_or_return(
     method: &Method,
     const_pool: &ConstPool,
     frame: &mut Frame,
-) -> JVMResult<Option<Value>> {
+) -> JVMResult<Value> {
     loop {
         match frame.read_code_u8() {
             NOP => {}
@@ -681,12 +682,12 @@ fn run_until_exception_or_return(
                 }
                 frame.jump_relative(base, target);
             }
-            IRETURN => return Ok(Some(frame.pop().as_int().into())),
-            LRETURN => return Ok(Some(frame.pop_long().into())),
-            FRETURN => return Ok(Some(frame.pop().as_float().into())),
-            DRETURN => return Ok(Some(frame.pop_double().into())),
-            ARETURN => return Ok(Some(unsafe { frame.pop().as_ref() }.into())),
-            RETURN => return Ok(None),
+            IRETURN => return Ok(frame.pop().as_int().into()),
+            LRETURN => return Ok(frame.pop_long().into()),
+            FRETURN => return Ok(frame.pop().as_float().into()),
+            DRETURN => return Ok(frame.pop_double().into()),
+            ARETURN => return Ok(unsafe { frame.pop().as_ref() }.into()),
+            RETURN => return Ok(Value::Void),
             GETSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field(jvm, index).unwrap();
@@ -923,12 +924,12 @@ fn execute_invoke_instr(jvm: &Jvm, frame: &mut Frame, method: &Method) -> JVMRes
     let result = invoke_initialized(jvm, method, args)?;
     frame.stack.truncate(frame.stack.len() - arg_slots);
     match result {
-        None => (),
-        Some(Value::Ref(object)) => frame.stack.push(IVal::from_ref(object)),
-        Some(Value::Int(value)) => frame.stack.push(IVal::from_int(value)),
-        Some(Value::Float(value)) => frame.stack.push(IVal::from_float(value)),
-        Some(Value::Long(value)) => frame.push_long(value),
-        Some(Value::Double(value)) => frame.push_double(value),
+        Value::Void => (),
+        Value::Ref(object) => frame.stack.push(IVal::from_ref(object)),
+        Value::Int(value) => frame.stack.push(IVal::from_int(value)),
+        Value::Float(value) => frame.stack.push(IVal::from_float(value)),
+        Value::Long(value) => frame.push_long(value),
+        Value::Double(value) => frame.push_double(value),
     };
     Ok(())
 }
@@ -967,19 +968,19 @@ impl IVal {
     }
 
     fn as_int(self) -> i32 {
-        self.0 as u32 as i32
+        self.0 as i32
     }
 
     fn as_float(self) -> f32 {
-        f32::from_bits(self.0 as u32)
+        f32::from_bits(self.0)
     }
 
     fn as_long(low: IVal, high: IVal) -> i64 {
-        (low.0 as u32 as u64 + ((high.0 as u64) << 32)) as i64
+        (low.0 as u64 + ((high.0 as u64) << 32)) as i64
     }
 
     fn as_double(low: IVal, high: IVal) -> f64 {
-        f64::from_bits(low.0 as u32 as u64 + ((high.0 as u64) << 32))
+        f64::from_bits(low.0 as u64 + ((high.0 as u64) << 32))
     }
 
     unsafe fn as_ref(self) -> Option<Object> {
@@ -997,7 +998,7 @@ struct Frame<'a> {
 
 impl<'jvm> Frame<'jvm> {
     fn jump_relative(&mut self, base: u16, target_offset: i32) {
-        self.pc = (base as i32 + target_offset as i32) as u16;
+        self.pc = (base as i32 + target_offset) as u16;
     }
 
     fn load_long(&self, index: u16) -> i64 {

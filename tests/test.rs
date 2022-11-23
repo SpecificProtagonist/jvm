@@ -1,8 +1,12 @@
 use jvm::*;
 
+fn make_jvm() -> Jvm {
+    Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]))
+}
+
 #[test]
 fn circular_loading() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     assert_eq!(
         jvm.resolve_class("CircularA").unwrap_err().class().name(),
         "java/lang/ClassCircularityError"
@@ -11,22 +15,22 @@ fn circular_loading() {
 
 #[test]
 fn initialization() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     let method = jvm
         .resolve_method("Initialization", "check_init", vec![], Some(Typ::Boolean))
         .unwrap();
-    assert_eq!(method.invoke(&[]).unwrap().unwrap(), true);
+    assert_eq!(method.invoke(&[]).unwrap(), true);
 }
 
 #[test]
 fn init_lock() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     let class = Jvm::resolve_class(&jvm, "InitLock").unwrap();
     std::thread::scope(|s| {
         for _ in 0..100 {
             s.spawn(|| {
                 let method = class.method("check", vec![], Some(Typ::Boolean)).unwrap();
-                assert_eq!(method.invoke(&[]).unwrap().unwrap(), true);
+                assert_eq!(method.invoke(&[]).unwrap(), true);
             });
         }
     });
@@ -34,19 +38,19 @@ fn init_lock() {
 
 #[test]
 fn control_flow() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     let is_even = jvm
         .resolve_method("ControlFlow", "is_even", vec![Typ::Int], Some(Typ::Boolean))
         .unwrap();
     let even_10 = is_even.invoke(&[10.into()]).unwrap();
-    assert_eq!(even_10, Some(true.into()));
+    assert_eq!(even_10, true);
     let even_13 = is_even.invoke(&[13.into()]).unwrap();
-    assert_eq!(even_13, Some(false.into()));
+    assert_eq!(even_13, false);
 }
 
 #[test]
-fn field_access() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+fn field_access_simple() {
+    let jvm = make_jvm();
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -54,13 +58,13 @@ fn field_access() {
     let class = jvm.resolve_class("FieldAccess").unwrap();
     let set_method = class.method("set", vec![Typ::Int], None).unwrap();
     let get_method = class.method("get", vec![], Some(Typ::Int)).unwrap();
-    assert_eq!(set_method.invoke(&[42.into()]).unwrap(), None);
-    assert_eq!(get_method.invoke(&[]).unwrap().unwrap(), 42);
+    assert_eq!(set_method.invoke(&[42.into()]).unwrap(), ());
+    assert_eq!(get_method.invoke(&[]).unwrap(), 42);
 }
 
 #[test]
 fn field_access_inheritance() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     let class = jvm.resolve_class("FieldAccessInheritance").unwrap();
     let super_class = class.super_class().unwrap();
     let a = super_class.field("a", Typ::Int).unwrap();
@@ -74,7 +78,7 @@ fn field_access_inheritance() {
 
 #[test]
 fn invoke_static() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -87,15 +91,12 @@ fn invoke_static() {
             Some(Typ::Boolean),
         )
         .unwrap();
-    assert_eq!(
-        method.invoke(&[true.into(), false.into()]).unwrap(),
-        Some(true.into())
-    );
+    assert_eq!(method.invoke(&[true.into(), false.into()]).unwrap(), true);
 }
 
 #[test]
 fn invoke_virtual() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -103,12 +104,12 @@ fn invoke_virtual() {
     let method = jvm
         .resolve_method("InvokeVirtual", "test", vec![], Some(Typ::Boolean))
         .unwrap();
-    assert_eq!(method.invoke(&[]).unwrap(), Some(true.into()));
+    assert_eq!(method.invoke(&[]).unwrap(), true);
 }
 
 #[test]
 fn arrays() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -116,19 +117,19 @@ fn arrays() {
     let method = jvm
         .resolve_method("Arrays", "test", vec![], Some(Typ::Boolean))
         .unwrap();
-    assert_eq!(method.invoke(&[]).unwrap(), Some(true.into()));
+    assert_eq!(method.invoke(&[]).unwrap(), true);
 }
 
 /// Lazy resolution isn't mandatory for the spec, but I still want it
 #[test]
 fn lazy_resolve() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     jvm.resolve_class("LazyResolve").unwrap();
 }
 
 #[test]
 fn lazy_init() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -136,9 +137,9 @@ fn lazy_init() {
     let method = jvm
         .resolve_method("LazyInit", "test", vec![Typ::Boolean], Some(Typ::Int))
         .unwrap();
-    assert_eq!(method.invoke(&[0.into()]).unwrap(), Some(1.into()));
+    assert_eq!(method.invoke(&[false.into()]).unwrap(), 1);
 
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -146,12 +147,12 @@ fn lazy_init() {
     let method = jvm
         .resolve_method("LazyInit", "test", vec![Typ::Boolean], Some(Typ::Int))
         .unwrap();
-    assert_eq!(method.invoke(&[true.into()]).unwrap(), Some(2.into()));
+    assert_eq!(method.invoke(&[true.into()]).unwrap(), 2);
 }
 
 #[test]
 fn many_allocs() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -159,12 +160,12 @@ fn many_allocs() {
     let method = jvm
         .resolve_method("ManyAllocs", "test", vec![], None)
         .unwrap();
-    assert_eq!(method.invoke(&[]).unwrap(), None);
+    assert_eq!(method.invoke(&[]).unwrap(), ());
 }
 
 #[test]
 fn exceptions() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -172,13 +173,13 @@ fn exceptions() {
     let method = jvm
         .resolve_method("Exceptions", "test", vec![Typ::Boolean], Some(Typ::Boolean))
         .unwrap();
-    assert_eq!(method.invoke(&[false.into()]).unwrap(), Some(false.into()));
-    assert_eq!(method.invoke(&[true.into()]).unwrap(), Some(true.into()));
+    assert_eq!(method.invoke(&[false.into()]).unwrap(), false);
+    assert_eq!(method.invoke(&[true.into()]).unwrap(), true);
 }
 
 #[test]
 fn strings() {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = make_jvm();
     unsafe {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
@@ -206,4 +207,38 @@ fn strings() {
     assert_eq!(format!("{:?}", chars), "\"bar\"");
 }
 
-// TODO: Compile-fail test for interacting with objects of one JVM via another
+#[test]
+#[should_panic]
+fn cross_jvms_field() {
+    let jvm_1 = make_jvm();
+    let jvm_2 = make_jvm();
+
+    let object_from_1 = jvm_1
+        .resolve_class("java/lang/Object")
+        .unwrap()
+        .create_object_uninit();
+
+    let class_from_2 = jvm_2.resolve_class("CrossJvm").unwrap();
+    let field = class_from_2
+        .field("field", Typ::Ref("java/lang/Object".into()))
+        .unwrap();
+    field.static_set(Some(object_from_1));
+}
+
+#[test]
+#[should_panic]
+fn cross_jvms_method() {
+    let jvm_1 = make_jvm();
+    let jvm_2 = make_jvm();
+
+    let object_from_1 = jvm_1
+        .resolve_class("java/lang/Object")
+        .unwrap()
+        .create_object_uninit();
+
+    let class_from_2 = jvm_2.resolve_class("CrossJvm").unwrap();
+    let method = class_from_2
+        .method("method", vec![Typ::Ref("java/lang/Object".into())], None)
+        .unwrap();
+    _ = method.invoke(&[Some(object_from_1).into()]);
+}
