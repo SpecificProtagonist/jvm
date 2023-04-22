@@ -86,11 +86,9 @@ impl Jvm {
             .store(false, Ordering::SeqCst)
     }
 
-    // TODO: don't use internal name
     /// Returns the class, loading it if it wasn't already loaded.
-    /// This also loads its superclass and any interfaces it implements, but not any other class it refers to.
+    /// This also loads its superclass and any interfaces it implements.
     /// Does not initialize this class, nor load any other class referenced.
-    /// The class name is in the internal form (see [`Class::name`])
     pub fn resolve_class<'a>(&'a self, name: &str) -> JVMResult<'a, Class<'a>> {
         self.0
             .resolve_class(name)
@@ -104,7 +102,7 @@ impl Jvm {
         &'a self,
         class: &str,
         method: &str,
-        args: Vec<Typ>,
+        args: impl IntoIterator<Item = Typ>,
         returns: Option<Typ>,
     ) -> JVMResult<'a, Method<'a>> {
         self.0
@@ -113,11 +111,21 @@ impl Jvm {
             .methods
             .get(&MethodNaT {
                 name: method.into(),
-                typ: &MethodDescriptor { args, returns },
+                typ: &MethodDescriptor {
+                    args: args.into_iter().collect(),
+                    returns,
+                },
             })
             .ok_or_else(|| jvm::exception(&self.0, "NoSuchMethodError"))
             .map(|value| Method { jvm: self, value })
             .map_err(|value| Object::new(self, value))
+    }
+
+    /// Creates an array on the heap
+    /// # Panics
+    /// Panics if length < 0
+    pub fn create_array<'a>(&'a self, typ: &Typ, length: i32) -> Object<'a> {
+        Object::new(self, self.0.create_array(typ, length))
     }
 }
 
@@ -261,11 +269,7 @@ define_guard!(
 );
 
 impl<'a> Class<'a> {
-    // TODO: user-friendly name
-    /// Returns the fully qualified internal name, which uses `/` for hierarchy and
-    /// `[` for arrays. Does not include generic parameters, as they only exist on
-    /// the source code level.
-    /// For example, the class representing an array of strings has the name `[java/lang/String`
+    /// Returns the fully qualified internal name
     pub fn name(self) -> &'a str {
         &self.value.name
     }
@@ -279,13 +283,12 @@ impl<'a> Class<'a> {
 
     /// Returns the array class which has this class as its element type.
     pub fn array_class(self) -> Self {
-        Class::new(
-            self.jvm,
-            self.jvm
-                .0
-                .resolve_class(&format!("[{}", self.name()))
-                .unwrap(),
-        )
+        Class::new(self.jvm, self.jvm.0.resolve_array_of(&self.typ()).unwrap())
+    }
+
+    /// Convenience method for getting this class' type
+    pub(crate) fn typ(&self) -> Typ {
+        self.value.typ()
     }
 
     /// Is `Some()` for classes representing an array and `None` otherwise.
@@ -318,10 +321,18 @@ impl<'a> Class<'a> {
 
     /// Look up a method by its name and type. There may be multiple methods of the same name.
     /// Includes inherited dynamic methods.
-    pub fn method(self, name: &str, args: Vec<Typ>, ret: Option<Typ>) -> Option<Method<'a>> {
+    pub fn method(
+        self,
+        name: &str,
+        args: impl IntoIterator<Item = Typ>,
+        ret: Option<Typ>,
+    ) -> Option<Method<'a>> {
         self.method_by_nat(&MethodNaT {
             name: name.into(),
-            typ: &MethodDescriptor { args, returns: ret },
+            typ: &MethodDescriptor {
+                args: args.into_iter().collect(),
+                returns: ret,
+            },
         })
     }
 
@@ -346,13 +357,6 @@ impl<'a> Class<'a> {
     /// Panics if this is an array class
     pub fn create_object_uninit(self) -> Object<'a> {
         Object::new(self.jvm, self.jvm.0.create_object(self.value))
-    }
-
-    /// Creates an instance of an array class on the heap
-    /// # Panics
-    /// Panics if class is not an array class or length < 0
-    pub fn create_array(self, length: i32) -> Object<'a> {
-        Object::new(self.jvm, self.jvm.0.create_array(self.value, length))
     }
 
     // TODO:

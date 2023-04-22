@@ -20,8 +20,7 @@ use crate::{
 /// Represents a regular class, array class, enum or (in the future) or an interface.
 /// Does not store its defining loader as the Jvm currently may only have one.
 pub(crate) struct Class {
-    // TODO: use normal name, not internal name
-    /// Fully qualified name
+    /// Fully qualified name, e.g. "java.lang.Object[]"
     pub(crate) name: Arc<str>,
     pub(crate) super_class: Option<&'static Class>,
     /// For array classes, this is the type of the array elements; None for normal classes
@@ -100,6 +99,11 @@ impl Class {
             .collect();
 
         (fields, static_layout.size(), object_layout.size())
+    }
+
+    /// Convenience method for getting this class' type
+    pub(crate) fn typ(&self) -> Typ {
+        Typ::Ref(self.name.clone())
     }
 
     pub(crate) fn field(&self, name: &str, typ: Typ) -> Option<&Field> {
@@ -220,7 +224,7 @@ impl Class {
                         )
                     },
                     Typ::Ref(name) => {
-                        if name.as_ref() == "java/lang/String" {
+                        if name.as_ref() == "java.lang.String" {
                             unsafe {
                                 self.static_storage.write_ptr(
                                     field.byte_offset,

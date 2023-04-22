@@ -9,7 +9,7 @@ fn circular_loading() {
     let jvm = make_jvm();
     assert_eq!(
         jvm.resolve_class("CircularA").unwrap_err().class().name(),
-        "java/lang/ClassCircularityError"
+        "java.lang.ClassCircularityError"
     )
 }
 
@@ -17,7 +17,7 @@ fn circular_loading() {
 fn initialization() {
     let jvm = make_jvm();
     let method = jvm
-        .resolve_method("Initialization", "check_init", vec![], Some(Typ::Boolean))
+        .resolve_method("Initialization", "check_init", [], Some(Typ::Boolean))
         .unwrap();
     assert_eq!(method.invoke(&[]).unwrap(), true);
 }
@@ -29,7 +29,7 @@ fn init_lock() {
     std::thread::scope(|s| {
         for _ in 0..100 {
             s.spawn(|| {
-                let method = class.method("check", vec![], Some(Typ::Boolean)).unwrap();
+                let method = class.method("check", [], Some(Typ::Boolean)).unwrap();
                 assert_eq!(method.invoke(&[]).unwrap(), true);
             });
         }
@@ -40,7 +40,7 @@ fn init_lock() {
 fn control_flow() {
     let jvm = make_jvm();
     let is_even = jvm
-        .resolve_method("ControlFlow", "is_even", vec![Typ::Int], Some(Typ::Boolean))
+        .resolve_method("ControlFlow", "is_even", [Typ::Int], Some(Typ::Boolean))
         .unwrap();
     let even_10 = is_even.invoke(&[10.into()]).unwrap();
     assert_eq!(even_10, true);
@@ -56,8 +56,8 @@ fn field_access_simple() {
         jvm.disable_verification_by_type_checking()
     }
     let class = jvm.resolve_class("FieldAccess").unwrap();
-    let set_method = class.method("set", vec![Typ::Int], None).unwrap();
-    let get_method = class.method("get", vec![], Some(Typ::Int)).unwrap();
+    let set_method = class.method("set", [Typ::Int], None).unwrap();
+    let get_method = class.method("get", [], Some(Typ::Int)).unwrap();
     assert_eq!(set_method.invoke(&[42.into()]).unwrap(), ());
     assert_eq!(get_method.invoke(&[]).unwrap(), 42);
 }
@@ -87,7 +87,7 @@ fn invoke_static() {
         .resolve_method(
             "InvokeStatic",
             "test",
-            vec![Typ::Boolean, Typ::Boolean],
+            [Typ::Boolean, Typ::Boolean],
             Some(Typ::Boolean),
         )
         .unwrap();
@@ -102,7 +102,7 @@ fn invoke_virtual() {
         jvm.disable_verification_by_type_checking()
     }
     let method = jvm
-        .resolve_method("InvokeVirtual", "test", vec![], Some(Typ::Boolean))
+        .resolve_method("InvokeVirtual", "test", [], Some(Typ::Boolean))
         .unwrap();
     assert_eq!(method.invoke(&[]).unwrap(), true);
 }
@@ -115,7 +115,7 @@ fn arrays() {
         jvm.disable_verification_by_type_checking()
     }
     let method = jvm
-        .resolve_method("Arrays", "test", vec![], Some(Typ::Boolean))
+        .resolve_method("Arrays", "test", [], Some(Typ::Boolean))
         .unwrap();
     assert_eq!(method.invoke(&[]).unwrap(), true);
 }
@@ -135,7 +135,7 @@ fn lazy_init() {
         jvm.disable_verification_by_type_checking()
     }
     let method = jvm
-        .resolve_method("LazyInit", "test", vec![Typ::Boolean], Some(Typ::Int))
+        .resolve_method("LazyInit", "test", [Typ::Boolean], Some(Typ::Int))
         .unwrap();
     assert_eq!(method.invoke(&[false.into()]).unwrap(), 1);
 
@@ -145,7 +145,7 @@ fn lazy_init() {
         jvm.disable_verification_by_type_checking()
     }
     let method = jvm
-        .resolve_method("LazyInit", "test", vec![Typ::Boolean], Some(Typ::Int))
+        .resolve_method("LazyInit", "test", [Typ::Boolean], Some(Typ::Int))
         .unwrap();
     assert_eq!(method.invoke(&[true.into()]).unwrap(), 2);
 }
@@ -157,9 +157,7 @@ fn many_allocs() {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
     }
-    let method = jvm
-        .resolve_method("ManyAllocs", "test", vec![], None)
-        .unwrap();
+    let method = jvm.resolve_method("ManyAllocs", "test", [], None).unwrap();
     assert_eq!(method.invoke(&[]).unwrap(), ());
 }
 
@@ -171,7 +169,7 @@ fn exceptions() {
         jvm.disable_verification_by_type_checking()
     }
     let method = jvm
-        .resolve_method("Exceptions", "test", vec![Typ::Boolean], Some(Typ::Boolean))
+        .resolve_method("Exceptions", "test", [Typ::Boolean], Some(Typ::Boolean))
         .unwrap();
     assert_eq!(method.invoke(&[false.into()]).unwrap(), false);
     assert_eq!(method.invoke(&[true.into()]).unwrap(), true);
@@ -185,25 +183,19 @@ fn strings() {
         jvm.disable_verification_by_type_checking()
     }
     let class = jvm.resolve_class("Strings").unwrap();
-    // Ensure the class is initialized
     class.ensure_init().unwrap();
-    let string = match class
-        .field("foo", Typ::Ref("java/lang/String".into()))
+    let Value::Ref(Some(string)) = class
+        .field("foo", Typ::Ref("java.lang.String".into()))
         .unwrap()
         .static_get()
-    {
-        Value::Ref(Some(string)) => string,
-        _ => panic!(),
-    };
+        else { panic!() };
     let backing_field = jvm
-        .resolve_class("java/lang/String")
+        .resolve_class("java.lang.String")
         .unwrap()
-        .field("chars", Typ::Ref("[C".into()))
+        .field("chars", Typ::Ref("char[]".into()))
         .unwrap();
-    let chars = match backing_field.instance_get(string) {
-        Value::Ref(Some(chars)) => chars,
-        _ => panic!(),
-    };
+    let Value::Ref(Some(chars)) = backing_field.instance_get(string)
+        else { panic!() };
     assert_eq!(format!("{:?}", chars), "\"bar\"");
 }
 
@@ -214,13 +206,13 @@ fn cross_jvms_field() {
     let jvm_2 = make_jvm();
 
     let object_from_1 = jvm_1
-        .resolve_class("java/lang/Object")
+        .resolve_class("java.lang.Object")
         .unwrap()
         .create_object_uninit();
 
     let class_from_2 = jvm_2.resolve_class("CrossJvm").unwrap();
     let field = class_from_2
-        .field("field", Typ::Ref("java/lang/Object".into()))
+        .field("field", Typ::Ref("java.lang.Object".into()))
         .unwrap();
     field.static_set(Some(object_from_1));
 }
@@ -232,13 +224,13 @@ fn cross_jvms_method() {
     let jvm_2 = make_jvm();
 
     let object_from_1 = jvm_1
-        .resolve_class("java/lang/Object")
+        .resolve_class("java.lang.Object")
         .unwrap()
         .create_object_uninit();
 
     let class_from_2 = jvm_2.resolve_class("CrossJvm").unwrap();
     let method = class_from_2
-        .method("method", vec![Typ::Ref("java/lang/Object".into())], None)
+        .method("method", [Typ::Ref("java.lang.Object".into())], None)
         .unwrap();
     _ = method.invoke(&[Some(object_from_1).into()]);
 }

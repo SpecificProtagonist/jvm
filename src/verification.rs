@@ -111,11 +111,7 @@ impl VerificationType {
     }
 }
 
-pub(crate) fn push_type<'b>(
-    jvm: &'b Jvm,
-    types: &'b mut Vec<VerificationType>,
-    typ: &Typ,
-) -> JVMResult<()> {
+pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Typ) -> JVMResult<()> {
     match typ {
         Typ::Boolean | Typ::Char | Typ::Byte | Typ::Short | Typ::Int => {
             types.push(VerificationType::Integer)
@@ -142,7 +138,7 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: &'b Class) -> JVMResult<()
     if let Some(super_class) = class.super_class {
         verify(jvm, super_class)?;
         // Check whether the super class is final (as described in spec) is redundant (has to already be checked during loading)
-    } else if class.name.as_ref() != "java/lang/Object" {
+    } else if class.name.as_ref() != "java.lang.Object" {
         return Err(ve(jvm, "class has no superclass"));
     }
 
@@ -208,7 +204,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
         if !method.access_flags.contains(AccessFlags::STATIC) {
             locals.push(
                 if (method.nat.name.as_ref() != "<init>")
-                    || (method.class().name.as_ref() == "java/lang/Object")
+                    || (method.class().name.as_ref() == "java.lang.Object")
                 {
                     VerificationType::ObjectVariable(method.class())
                 } else {
@@ -260,7 +256,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
 
     let pc = &mut pc;
 
-    let any_object = VerificationType::ObjectVariable(jvm.resolve_class("java/lang/Object")?);
+    let any_object = VerificationType::ObjectVariable(jvm.resolve_class("java.lang.Object")?);
 
     // Iterate over all instructions
     // TODO: switch result to bool
@@ -296,7 +292,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                     }
                     Some(ConstPoolItem::Float(_)) => type_state.stack.push(VerificationType::Float),
                     Some(ConstPoolItem::RawString(_)) => type_state.stack.push(
-                        VerificationType::ObjectVariable(jvm.resolve_class("java/lang/String")?),
+                        VerificationType::ObjectVariable(jvm.resolve_class("java.lang.String")?),
                     ),
                     Some(ConstPoolItem::Class(class)) => type_state
                         .stack
@@ -312,7 +308,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                     }
                     Some(ConstPoolItem::Float(_)) => type_state.stack.push(VerificationType::Float),
                     Some(ConstPoolItem::RawString(_)) => type_state.stack.push(
-                        VerificationType::ObjectVariable(jvm.resolve_class("java/lang/String")?),
+                        VerificationType::ObjectVariable(jvm.resolve_class("java.lang.String")?),
                     ),
                     Some(ConstPoolItem::Class(class)) => type_state
                         .stack
@@ -729,20 +725,20 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
             }
             NEWARRAY => {
                 pop_type(jvm, &mut type_state.stack, &Typ::Int)?;
-                let typ = match read_code_u8(jvm, bytes, pc)? {
-                    4 => "[Z",
-                    5 => "[C",
-                    6 => "[F",
-                    7 => "[D",
-                    8 => "[B",
-                    9 => "[S",
-                    10 => "[I",
-                    11 => "[J",
+                let component = match read_code_u8(jvm, bytes, pc)? {
+                    4 => Typ::Boolean,
+                    5 => Typ::Byte,
+                    6 => Typ::Char,
+                    7 => Typ::Short,
+                    8 => Typ::Double,
+                    9 => Typ::Float,
+                    10 => Typ::Int,
+                    11 => Typ::Long,
                     _ => return Err(ve(jvm, "invalid array type")),
                 };
-                type_state
-                    .stack
-                    .push(VerificationType::ObjectVariable(jvm.resolve_class(typ)?));
+                type_state.stack.push(VerificationType::ObjectVariable(
+                    jvm.resolve_array_of(&component)?,
+                ));
             }
             ANEWARRAY => {
                 if type_state.stack.pop() != Some(VerificationType::Integer) {
@@ -750,7 +746,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                 }
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let component = const_pool.get_class(jvm, index)?;
-                let typ = jvm.resolve_class(&format!("[L{};", component.name))?;
+                let typ = jvm.resolve_array_of(&component.typ())?;
                 type_state.stack.push(VerificationType::ObjectVariable(typ));
             }
             ARRAYLENGTH => {

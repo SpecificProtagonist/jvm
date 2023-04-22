@@ -15,7 +15,7 @@ pub enum Typ {
     Double,
     // Classes are represented unresolved so we can talk about classes without
     // having all classes resolved already (which wouldn't work as the graph can be cyclic)
-    /// A reference type (class, interface (TODO), enum or array). Uses the inter path form (see `Class::name`).
+    /// A reference type (class, interface (TODO), enum or array).
     Ref(Arc<str>),
 }
 
@@ -33,7 +33,7 @@ impl Typ {
 
     pub fn array_dimensions(&self) -> usize {
         match self {
-            Self::Ref(name) => name.find(|c| c != '[').unwrap_or(0),
+            Self::Ref(name) => name.chars().filter(|&c| c == '[').count(),
             _ => 0,
         }
     }
@@ -51,6 +51,22 @@ impl std::fmt::Display for Typ {
             Typ::Float => write!(f, "float"),
             Typ::Double => write!(f, "double"),
             Typ::Ref(name) => write!(f, "{}", name),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for Typ {
+    fn from(value: &'a str) -> Self {
+        match value {
+            "boolean" => Typ::Boolean,
+            "byte" => Typ::Byte,
+            "short" => Typ::Short,
+            "char" => Typ::Char,
+            "int" => Typ::Int,
+            "long" => Typ::Long,
+            "float" => Typ::Float,
+            "double" => Typ::Double,
+            class => Typ::Ref(class.into()),
         }
     }
 }

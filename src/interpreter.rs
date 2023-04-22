@@ -40,6 +40,11 @@ pub(crate) fn invoke(
     invoke_initialized(jvm, method, &arg_values)
 }
 
+/// Called on <clinit> during class initialization
+pub(crate) fn invoke_initializer(jvm: &Jvm, initializer: &Method) -> JVMResult<()> {
+    invoke_initialized(jvm, initializer, &[]).map(|_| ())
+}
+
 // So, this is a bit of a mess maybe.
 // TODO: Look into either rewriting references as two slots on 64bit (difficult, as that can change bytecodes)
 // or rewriting long/double as one slot (bad in 32bit like wasm32, would make quite some code simpler)
@@ -48,19 +53,15 @@ pub(crate) fn invoke(
 /// Doesn't store type information as it was already checked during verification.
 /// Ideally we don't want to use 64 bits if we can avoid this, so
 /// use the size of a possibly compressed pointer (but at least 32 bits).
-#[cfg(not(any(target_pointer_width = "8", target_pointer_width = "16")))]
+#[cfg(target_pointer_width = "64")]
 type SlotSize = JVMPtr;
-#[cfg(any(target_pointer_width = "8", target_pointer_width = "16"))]
+#[cfg(any(target_pointer_width = "16", target_pointer_width = "32"))]
 type SlotSize = u32;
 
 /// Interpreter value
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 struct IVal(SlotSize);
-
-pub(crate) fn invoke_initializer(jvm: &Jvm, initializer: &Method) -> JVMResult<()> {
-    invoke_initialized(jvm, initializer, &[]).map(|_| ())
-}
 
 /// Requires that the class is already initialized, or method is the initializer
 fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JVMResult<Value> {
@@ -795,34 +796,31 @@ fn run_until_exception_or_return(
                 if length < 0 {
                     return Err(exception(jvm, "NegativeArraySizeException"));
                 }
-                let typ = match frame.read_code_u8() {
-                    4 => "[Z",
-                    5 => "[C",
-                    6 => "[F",
-                    7 => "[D",
-                    8 => "[B",
-                    9 => "[S",
-                    10 => "[I",
-                    11 => "[J",
+                let component = match frame.read_code_u8() {
+                    4 => Typ::Boolean,
+                    5 => Typ::Byte,
+                    6 => Typ::Char,
+                    7 => Typ::Short,
+                    8 => Typ::Double,
+                    9 => Typ::Float,
+                    10 => Typ::Int,
+                    11 => Typ::Long,
                     _ => unreachable!(),
                 };
-                let typ = jvm.resolve_class(typ)?;
                 frame
                     .stack
-                    .push(IVal::from_object(jvm.create_array(typ, length)));
+                    .push(IVal::from_object(jvm.create_array(&component, length)));
             }
             ANEWARRAY => {
                 let length = frame.pop().as_int();
                 let index = frame.read_code_u16();
-                let component = const_pool.get_class(jvm, index)?;
-                // TODO: make it easier to refer to array types
-                let typ = jvm.resolve_class(&format!("[L{};", component.name))?;
+                let component = Typ::Ref(const_pool.get_class(jvm, index)?.name.clone());
                 if length < 0 {
                     return Err(exception(jvm, "NegativeArraySizeException"));
                 }
                 frame
                     .stack
-                    .push(IVal::from_object(jvm.create_array(typ, length)));
+                    .push(IVal::from_object(jvm.create_array(&component, length)));
             }
             ARRAYLENGTH => {
                 let obj = unsafe { frame.pop().as_ref() }
