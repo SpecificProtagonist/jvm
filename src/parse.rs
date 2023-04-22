@@ -22,7 +22,7 @@ use crate::{
 };
 
 #[inline]
-fn read_u8<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<u8> {
+fn read_u8(jvm: &Jvm, input: &mut &[u8]) -> JVMResult<u8> {
     if let Some(u8) = input.first() {
         *input = &input[1..];
         Ok(*u8)
@@ -31,25 +31,25 @@ fn read_u8<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<u8> {
     }
 }
 
-fn read_u16<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<u16> {
+fn read_u16(jvm: &Jvm, input: &mut &[u8]) -> JVMResult<u16> {
     let high = read_u8(jvm, input)?;
     let low = read_u8(jvm, input)?;
     Ok(((high as u16) << 8) + low as u16)
 }
 
-fn read_u32<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<u32> {
+fn read_u32(jvm: &Jvm, input: &mut &[u8]) -> JVMResult<u32> {
     let high = read_u16(jvm, input)?;
     let low = read_u16(jvm, input)?;
     Ok(((high as u32) << 16) + low as u32)
 }
 
-fn read_u64<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<u64> {
+fn read_u64(jvm: &Jvm, input: &mut &[u8]) -> JVMResult<u64> {
     let high = read_u32(jvm, input)?;
     let low = read_u32(jvm, input)?;
     Ok(((high as u64) << 32) + low as u64)
 }
 
-fn read_magic<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<()> {
+fn read_magic(jvm: &Jvm, input: &mut &[u8]) -> JVMResult<()> {
     if 0xCAFEBABE == read_u32(jvm, input)? {
         Ok(())
     } else {
@@ -57,7 +57,7 @@ fn read_magic<'a>(jvm: &Jvm, input: &mut &'a [u8]) -> JVMResult<()> {
     }
 }
 
-fn read_const_pool_item<'a>(input: &mut &'a [u8], jvm: &Jvm) -> JVMResult<ConstPoolItem> {
+fn read_const_pool_item(input: &mut &[u8], jvm: &Jvm) -> JVMResult<ConstPoolItem> {
     use ConstPoolItem::*;
     match read_u8(jvm, input)? {
         1 => {
@@ -97,7 +97,7 @@ fn read_const_pool_item<'a>(input: &mut &'a [u8], jvm: &Jvm) -> JVMResult<ConstP
     }
 }
 
-fn read_const_pool<'a>(input: &mut &'a [u8], jvm: &Jvm) -> JVMResult<ConstPool> {
+fn read_const_pool(input: &mut &[u8], jvm: &Jvm) -> JVMResult<ConstPool> {
     let length = read_u16(jvm, input)? as usize;
     let mut items = Vec::with_capacity(length);
     items.push(ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero);
@@ -149,7 +149,11 @@ fn read_interfaces(
     let length = read_u16(jvm, input)?;
     let mut vec = Vec::with_capacity(length as usize);
     for _ in 0..length {
-        vec.push(const_pool.get_unresolved_class(jvm, read_u16(jvm, input)?)?);
+        vec.push(
+            const_pool
+                .get_unresolved_class(jvm, read_u16(jvm, input)?)?
+                .into(),
+        );
     }
     Ok(vec)
 }
@@ -169,7 +173,7 @@ fn read_attribute<'a>(
     Ok((name, attr_bytes))
 }
 
-pub(crate) fn parse_field_descriptor(
+pub(crate) fn parse_typ_descriptor(
     jvm: &Jvm,
     descriptor: &str,
     start: usize,
@@ -189,20 +193,26 @@ pub(crate) fn parse_field_descriptor(
         // Primitive
         Ok((typ, start + 1))
     } else if let Some(stripped) = str.strip_prefix('L') {
+        // Class
         let Some((class_name, _)) = stripped.split_once(';') else {
             return Err(cfe(jvm, "invalid field descriptor"));
         };
+        let class_name = class_name.replace('/', ".");
         let start = start + 1 + class_name.len() + 1;
         let typ = Typ::Ref(class_name.into());
-        // Class
         Ok((typ, start))
     } else if str.starts_with('[') {
-        let (_, end) = parse_field_descriptor(jvm, descriptor, start + 1)?;
-        let typ = Typ::Ref(str[..end].into());
-        if typ.array_dimensions() > 255 {
+        // Array
+        let mut dimensions = 0;
+        while descriptor[start + dimensions..].starts_with('[') {
+            dimensions += 1
+        }
+        if dimensions > 255 {
             return Err(cfe(jvm, "too many array dimensions"));
         }
-        // Array
+        let (component, end) = parse_typ_descriptor(jvm, descriptor, start + dimensions)?;
+        let name = format!("{component}{}", "[]".repeat(dimensions));
+        let typ = Typ::Ref(name.into());
         Ok((typ, end))
     } else {
         Err(cfe(jvm, "invalid field descriptor"))
@@ -218,7 +228,7 @@ fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMRes
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
 
     let descriptor = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
-    let (typ, end) = parse_field_descriptor(jvm, &descriptor, 0)?;
+    let (typ, end) = parse_typ_descriptor(jvm, &descriptor, 0)?;
     if end < descriptor.len() {
         return Err(cfe(jvm, "Invalid type descriptor"));
     }
@@ -257,9 +267,9 @@ fn read_fields(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMRe
     Ok(fields)
 }
 
-fn read_verification_type<'a>(
+fn read_verification_type(
     jvm: &Jvm,
-    input: &mut &'a [u8],
+    input: &mut &[u8],
     const_pool: &ConstPool,
 ) -> JVMResult<VerificationType> {
     Ok(match read_u8(jvm, input)? {
@@ -445,7 +455,7 @@ pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JVMResult<
     let mut start = 1;
     let mut args = Vec::new();
     while !descriptor[start..].starts_with(')') {
-        let (arg, next_start) = parse_field_descriptor(jvm, descriptor, start)?;
+        let (arg, next_start) = parse_typ_descriptor(jvm, descriptor, start)?;
         args.push(arg);
         start = next_start;
     }
@@ -456,7 +466,7 @@ pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JVMResult<
             returns: None,
         })
     } else {
-        let (return_type, start) = parse_field_descriptor(jvm, descriptor, start)?;
+        let (return_type, start) = parse_typ_descriptor(jvm, descriptor, start)?;
         if start < descriptor.len() {
             return Err(cfe(jvm, "Invalid method descriptor"));
         }
@@ -467,11 +477,7 @@ pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JVMResult<
     }
 }
 
-fn read_method<'b, 'c>(
-    input: &'b mut &'c [u8],
-    constant_pool: &'b ConstPool,
-    jvm: &'b Jvm,
-) -> JVMResult<Method> {
+fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMResult<Method> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
 
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
@@ -540,11 +546,13 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JVMResult<ClassDes
 
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
 
-    let this_class = const_pool.get_unresolved_class(jvm, read_u16(jvm, input)?)?;
+    let this_class = const_pool
+        .get_unresolved_class(jvm, read_u16(jvm, input)?)?
+        .into();
     let super_class = {
         let index = read_u16(jvm, input)?;
         if index > 0 {
-            Some(const_pool.get_unresolved_class(jvm, index)?)
+            Some(const_pool.get_unresolved_class(jvm, index)?.into())
         } else {
             None
         }

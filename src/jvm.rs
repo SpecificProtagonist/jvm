@@ -33,7 +33,7 @@ pub(crate) enum Value {
 }
 
 // TODO: what to do if trying to throw an exception retursively throws infinite exceptions
-// (e.g. java/lang/Object is missing/corrupt)? Currently stackoverflow
+// (e.g. java.lang.Object is missing/corrupt)? Currently stackoverflow
 /// Err is an object that extends Throwable
 pub(crate) type JVMResult<T> = std::result::Result<T, Object>;
 
@@ -71,9 +71,60 @@ impl Jvm {
         }
     }
 
+    /// Returns the class representing arrays of the given component.
+    /// If the component is a class, this also loads it, its superclass (recursively) and any interfaces it implements.
+    /// Does not initialize this class nor load any other class referenced.
+    pub fn resolve_array_of(&self, component: &Typ) -> JVMResult<&'static Class> {
+        println!("Resolve array of: {:?}", component);
+        // Arrays of primitives inherit from objects,
+        // other arrays inherit from arrays of the superclass of their component type
+        let super_class = if let Typ::Ref(component) = &component {
+            let component = self.resolve_class(component)?;
+            if let Some(comp_super) = component.super_class {
+                self.resolve_array_of(&comp_super.typ())?
+            } else {
+                self.resolve_class("java.lang.Object")?
+            }
+        } else {
+            self.resolve_class("java.lang.Object")?
+        };
+
+        let name: Arc<str> = format!("{component}[]").into();
+
+        let array = Class {
+            name: name.clone(),
+            super_class: Some(super_class),
+            element_type: Some(component.clone()),
+            const_pool: default(),
+            // TODO: correct access flags
+            access_flags: AccessFlags::empty(),
+            interfaces: vec![],
+            // TODO: implement interfaces
+            /*vec![
+                self.resolve_class("Clonable")?,
+                self.resolve_class("java.io.Serializable")?,
+            ]*/
+            fields: default(),
+            methods: super_class.methods.clone(),
+            static_storage: FieldStorage::new(&self.heap, 0),
+            object_size: 0,
+            init: ClassInitState::Uninit.into(),
+            init_waiter: default(),
+        };
+        let array = unsafe { self.heap.alloc_typed(array) };
+        let mut guard = self.classes.write();
+        // Check if loaded by another thread in the meantime
+        if let Some(array) = guard.get(&name) {
+            return Ok(*array);
+        }
+        guard.insert(name, array);
+        Ok(array)
+    }
+
     /// Returns the class, loading it if it wasn't already loaded.
-    /// This also loads its superclass and any interfaces it implements, but not any other class it refers to.
-    /// Does not initialize this class, nor load any other class referenced.
+    /// This also loads its superclass and any interfaces it implements.
+    /// Does not initialize this class nor load any other class referenced.
+    /// `name` must be fully qualified and may be a binary class name (https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.2.1) or describe an array.
     pub fn resolve_class(&self, name: &str) -> JVMResult<&'static Class> {
         self.resolve_class_impl(name, Vec::new())
     }
@@ -88,65 +139,34 @@ impl Jvm {
             return Ok(*class);
         }
 
-        // Do we want to load an array?
+        println!("Resolve class: {}", name);
+
+        // Do we want to load an array (binary class name)?
         if name.starts_with('[') {
-            let (base, end) = parse::parse_field_descriptor(self, name, 1)?;
+            let (component, end) = parse::parse_typ_descriptor(self, name, 1)?;
             if end != name.len() {
                 return Err(exception(self, "ClassFormatError"));
             }
-
-            // Arrays of primitives inherit from objects,
-            // other arrays inherit from arrays of the superclass of their component type
-            let super_class = if let Typ::Ref(component) = &base {
-                let component = self.resolve_class(component)?;
-                if let Some(comp_super) = component.super_class {
-                    self.resolve_class(&format!("[{}", comp_super.name))?
-                } else {
-                    self.resolve_class("java/lang/Object")?
-                }
-            } else {
-                self.resolve_class("java/lang/Object")?
-            };
-
-            //let array = RefType::Array { base, super_class };
-            let array = Class {
-                name: name.into(),
-                super_class: Some(super_class),
-                element_type: Some(base),
-                const_pool: default(),
-                // TODO: correct access flags
-                access_flags: AccessFlags::empty(),
-                interfaces: vec![],
-                // TODO: implement interfaces
-                /*vec![
-                    self.resolve_class("Clonable")?,
-                    self.resolve_class("java/io/Serializable")?,
-                ]*/
-                fields: default(),
-                methods: super_class.methods.clone(),
-                static_storage: FieldStorage::new(&self.heap, 0),
-                object_size: 0,
-                init: ClassInitState::Uninit.into(),
-                init_waiter: default(),
-            };
-            let array = unsafe { self.heap.alloc_typed(array) };
-            let mut guard = self.classes.write();
-            // Check if loaded by another thread in the meantime
-            if let Some(array) = guard.get(name) {
-                return Ok(*array);
-            }
-            guard.insert(name.into(), array);
-            return Ok(array);
+            return self.resolve_array_of(&component);
         }
+
+        // Do we want to load an array (normal name)?
+        if let Some(component) = name.strip_suffix("[]") {
+            return self.resolve_array_of(&component.into());
+        }
+
+        // Normalize binary class names
+        let name = name.replace('/', ".");
 
         // We want to load a normal class
         let bytes = self
             .bootstrap_class_loader
-            .load(name)
+            .load(&name)
             .ok_or_else(|| exception(self, "NoClassDefFoundError"))?;
 
         let mut class_desc = parse::read_class_file(&bytes, self)?;
 
+        println!("Parsed");
         if name != class_desc.name.as_ref() {
             return Err(exception(self, "NoClassDefFoundError"));
         }
@@ -200,11 +220,11 @@ impl Jvm {
 
         let mut guard = self.classes.write();
         // Check if loaded by another thread in the meantime
-        if let Some(class) = guard.get(name) {
+        if let Some(class) = guard.get(name.as_str()) {
             return Ok(*class);
         }
-        guard.insert(name.into(), ref_type);
-        let class = guard.get(name).unwrap();
+        guard.insert(name.as_str().into(), ref_type);
+        let class = guard.get(name.as_str()).unwrap();
 
         // While parsing, each method has their class field set to a dummy
         // We can't use class.methods directly because that also includes parent classes
@@ -222,7 +242,7 @@ impl Jvm {
         Ok(ref_type)
     }
 
-    /// Creates an instance of a non-array class on the heap
+    /// Creates an instance of a non-array class on the heap.
     /// # Panics
     /// Panics if class is an array class
     pub fn create_object(&self, class: &'static Class) -> Object {
@@ -235,11 +255,10 @@ impl Jvm {
         Object { ptr }
     }
 
-    /// Creates an instance of an array class on the heap
+    /// Creates an array on the heap.
     /// # Panics
-    /// Panics if class is not an array class or length < 0
-    pub fn create_array(&self, class: &'static Class, length: i32) -> Object {
-        let component = class.element_type.as_ref().expect("non-array class");
+    /// Panics if length < 0 or the component is a class that fails to load.
+    pub fn create_array(&self, component: &Typ, length: i32) -> Object {
         if length < 0 {
             panic!("array length < 0")
         }
@@ -247,8 +266,17 @@ impl Jvm {
             &self.heap,
             object::header_size() + component.layout().size() * length as usize,
         );
+        let array_class = self
+            .resolve_array_of(component)
+            .expect("Failed to resolve class");
         // SAFETY: object_size takes object head into account
-        unsafe { data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true) };
+        unsafe {
+            data.write_ptr(
+                0,
+                heap::ptr_encode(array_class as *const Class as *mut u8),
+                true,
+            )
+        };
         Object { ptr: data }
     }
 }
@@ -274,9 +302,9 @@ impl Drop for Jvm {
 }
 
 /// For exceptions and errors thrown by the JVM (instead of by athrow).
-/// `name` doesn't include `java/lang` prefix
+/// `name` is unqualified.
 pub(crate) fn exception(jvm: &Jvm, name: &str) -> Object {
-    match jvm.resolve_class(&format!("java/lang/{name}")) {
+    match jvm.resolve_class(&format!("java.lang.{name}")) {
         Ok(class) => {
             if let Err(thrown) = class.ensure_init(jvm) {
                 thrown
@@ -288,9 +316,10 @@ pub(crate) fn exception(jvm: &Jvm, name: &str) -> Object {
     }
 }
 
-fn _assert_jvm_send_sync<T: Send + Sync>() {
+#[allow(clippy::extra_unused_type_parameters)]
+fn _assert_jvm_is_send_sync<T: Send + Sync>() {
     if false {
-        _assert_jvm_send_sync::<Jvm>()
+        _assert_jvm_is_send_sync::<Jvm>()
     }
 }
 

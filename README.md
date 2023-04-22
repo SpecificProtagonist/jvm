@@ -10,9 +10,9 @@ let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes"]));
 // Load class `Foo`
 let class = jvm.resolve_class("Foo").unwrap();
 // Resolve its method `void bar(int _, String _)`
-let method = class.method("bar", vec![Typ::Int, Typ::Ref("java/lang/String".into())], None).unwrap();
+let method = class.method("bar", vec![Typ::Int, "java.lang.String".into()], None).unwrap();
 // And call it: `Foo.bar(0, null)`
-method.invoke(&[Value::from(0i32), Value::from(None)]).expect("bar threw an exception");
+method.invoke(&[0.into(), None.into()]).expect("bar threw an exception");
 // Resolve field `Foo.baz` of type bool
 let field = class.field("baz", Typ::Boolean).unwrap();
 // And read its value (panicking if it's not a static field)
@@ -45,5 +45,5 @@ to an instance of the class `String` that contains the codepoints. Leaving aside
 that the correct class is `java.lang.String`, how does the JVM pass the data to the string /
 read it back? Not specified. As a result, JVMs and class libraries are tied together. There's
 a stub in the `java` directory but it's deliberately kept minimal to the point of uselessness,
-serving only to describe the API the JVM depends on. Violating said API may cause exceptions, 
+serving only to describe the API this JVM depends on. Violating said API may cause exceptions, 
 panics or infinite loops.

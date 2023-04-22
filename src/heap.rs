@@ -22,6 +22,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+// TODO: grow downwards
+
 use backend::{alloc_block, dealloc_block};
 pub use backend::{ptr_decode, ptr_encode, AtomicJVMPtr, JVMPtr, JVMPtrNonNull, NULL_PTR};
 

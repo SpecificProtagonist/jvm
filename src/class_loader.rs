@@ -24,10 +24,12 @@ impl ClassLoader for FolderClassLoader {
     fn load(&self, name: &str) -> Option<Vec<u8>> {
         for path in &self.class_path {
             let mut path = path.clone();
-            path.push(name);
+            path.push(name.replace('.', "/"));
             path.set_extension("class");
+            println!("Trying to load {name} at {path:?}");
 
             if path.exists() {
+                println!("Success");
                 let mut bytes = Vec::new();
                 let error = "Failed to read class. TODO: What error to throw when the class is found but could not be read?";
                 std::fs::File::open(path)

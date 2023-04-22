@@ -46,7 +46,7 @@ macro_rules! access {
         }
 
         #[inline]
-        pub fn $array_read<'a>(&self, jvm: &Jvm, index: i32) -> JVMResult<$typ> {
+        pub fn $array_read(&self, jvm: &Jvm, index: i32) -> JVMResult<$typ> {
             let offset = object::header_size() + index as usize * std::mem::size_of::<$typ>();
             if (index < 0) | (offset >= self.size()) {
                 Err(exception(jvm, "ArrayIndexOutOfBoundsException"))
@@ -56,7 +56,7 @@ macro_rules! access {
         }
 
         #[inline]
-        pub fn $array_write<'a>(&self, jvm: &Jvm, index: i32, value: $typ) -> JVMResult<()> {
+        pub fn $array_write(&self, jvm: &Jvm, index: i32, value: $typ) -> JVMResult<()> {
             let offset = object::header_size() + index as usize * std::mem::size_of::<$typ>();
             if (index < 0) | (offset >= self.size()) {
                 Err(exception(jvm, "ArrayIndexOutOfBoundsException"))
@@ -66,7 +66,7 @@ macro_rules! access {
         }
 
         #[inline]
-        pub fn $array_read_freestanding<'a>(&self, index: i32) -> $typ {
+        pub fn $array_read_freestanding(&self, index: i32) -> $typ {
             let offset = object::header_size() + index as usize * std::mem::size_of::<$typ>();
             if (index < 0) | (offset >= self.size()) {
                 panic!("Array index out of bounds")
@@ -77,7 +77,7 @@ macro_rules! access {
 
         #[inline]
         #[allow(unused)]
-        pub fn $array_write_freestanding<'a>(&self, index: i32, value: $typ) {
+        pub fn $array_write_freestanding(&self, index: i32, value: $typ) {
             let offset = object::header_size() + index as usize * std::mem::size_of::<$typ>();
             if (index < 0) | (offset >= self.size()) {
                 panic!("Array index out of bounds")

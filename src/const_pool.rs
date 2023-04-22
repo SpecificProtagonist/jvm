@@ -73,7 +73,7 @@ impl ConstPool {
                     if method.access_flags.contains(AccessFlags::STATIC) {
                         self.items[i] = ConstPoolItem::StaticMethod(method);
                     } else {
-                        // TODO: check if returning java/lang/Object for arrays is correct for invokespecial
+                        // TODO: check if returning java.lang.Object for arrays is correct for invokespecial
                         self.items[i] =
                             ConstPoolItem::VirtualMethod(class, MethodNaT { name, typ });
                     }
@@ -81,7 +81,7 @@ impl ConstPool {
                 ConstPoolItem::FieldRef { class, nat } => {
                     let class = self.get_class(jvm, class)?;
                     let (name, typ) = self.get_raw_nat(jvm, nat)?;
-                    let (typ, _) = parse::parse_field_descriptor(jvm, &typ, 0)?;
+                    let (typ, _) = parse::parse_typ_descriptor(jvm, &typ, 0)?;
                     if let Some(field) = class.fields.get(&FieldNaT { name, typ }) {
                         self.items[i] = ConstPoolItem::Field(field);
                     } else {
@@ -93,17 +93,16 @@ impl ConstPool {
                     let string = self.get_utf8(jvm, index)?;
                     // TODO: move string object creation routine to jvm (for interning)
                     let length = string.encode_utf16().count();
-                    let char_array = jvm.resolve_class("[C")?;
-                    let backing_array = jvm.create_array(char_array, length as i32);
+                    let backing_array = jvm.create_array(&Typ::Char, length as i32);
                     for (index, char) in string.encode_utf16().enumerate() {
                         backing_array
                             .ptr
                             .array_write_i16(jvm, index as i32, char as i16)?
                     }
-                    let string_class = jvm.resolve_class("java/lang/String")?;
+                    let string_class = jvm.resolve_class("java.lang.String")?;
                     let obj = jvm.create_object(string_class);
                     let field =
-                        string_class.field("chars", Typ::Ref(char_array.name.clone())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
+                        string_class.field("chars", Typ::Ref("char[]".into())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
                     field.instance_set(obj, Some(backing_array).into());
                     self.items[i] = ConstPoolItem::String(obj)
                 }
@@ -156,9 +155,12 @@ impl ConstPool {
     }
 
     /// Cannot be called after resolution
-    pub fn get_unresolved_class(&self, jvm: &Jvm, index: u16) -> JVMResult<Arc<str>> {
+    /// Converts binary to normal names
+    pub fn get_unresolved_class(&self, jvm: &Jvm, index: u16) -> JVMResult<String> {
         match self.items.get(index as usize) {
-            Some(ConstPoolItem::RawClass(index)) => self.get_utf8(jvm, *index),
+            Some(ConstPoolItem::RawClass(index)) => self
+                .get_utf8(jvm, *index)
+                .map(|name| name.replace('/', ".")),
             _ => Err(cfe(jvm)),
         }
     }
