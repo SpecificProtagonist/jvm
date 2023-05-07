@@ -52,7 +52,7 @@ pub(crate) struct Jvm {
     pub(crate) method_storage: Mutex<ManuallyDropArena<Method, 128>>,
     /// Implementation detail of const_pool, maybe remove in the future
     pub(crate) method_descriptor_storage: Mutex<ManuallyDropArena<MethodDescriptor, 128>>,
-    classes: RwLock<HashMap<Arc<str>, &'static Class>>,
+    classes: RwLock<HashMap<Arc<str>, ClassPtr>>,
 }
 
 impl Jvm {
@@ -74,8 +74,7 @@ impl Jvm {
     /// Returns the class representing arrays of the given component.
     /// If the component is a class, this also loads it, its superclass (recursively) and any interfaces it implements.
     /// Does not initialize this class nor load any other class referenced.
-    pub fn resolve_array_of(&self, component: &Typ) -> JVMResult<&'static Class> {
-        println!("Resolve array of: {:?}", component);
+    pub fn resolve_array_of(&self, component: &Typ) -> JVMResult<ClassPtr> {
         // Arrays of primitives inherit from objects,
         // other arrays inherit from arrays of the superclass of their component type
         let super_class = if let Typ::Ref(component) = &component {
@@ -125,7 +124,7 @@ impl Jvm {
     /// This also loads its superclass and any interfaces it implements.
     /// Does not initialize this class nor load any other class referenced.
     /// `name` must be fully qualified and may be a binary class name (https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.2.1) or describe an array.
-    pub fn resolve_class(&self, name: &str) -> JVMResult<&'static Class> {
+    pub fn resolve_class(&self, name: &str) -> JVMResult<ClassPtr> {
         self.resolve_class_impl(name, Vec::new())
     }
 
@@ -134,13 +133,10 @@ impl Jvm {
         &self,
         name: &str,
         mut check_circular: Vec<Arc<str>>,
-    ) -> JVMResult<&'static Class> {
+    ) -> JVMResult<ClassPtr> {
         if let Some(class) = self.classes.read().get(name) {
             return Ok(*class);
         }
-
-        println!("Resolve class: {}", name);
-
         // Do we want to load an array (binary class name)?
         if name.starts_with('[') {
             let (component, end) = parse::parse_typ_descriptor(self, name, 1)?;
@@ -166,7 +162,6 @@ impl Jvm {
 
         let mut class_desc = parse::read_class_file(&bytes, self)?;
 
-        println!("Parsed");
         if name != class_desc.name.as_ref() {
             return Err(exception(self, "NoClassDefFoundError"));
         }
@@ -182,7 +177,9 @@ impl Jvm {
             let super_class = self.resolve_class_impl(&super_class_name, check_circular)?;
 
             if super_class.element_type.is_some()
-                | super_class.access_flags.contains(AccessFlags::FINAL)
+                | super_class
+                    .access_flags
+                    .intersects(AccessFlags::FINAL | AccessFlags::INTERACE)
             {
                 return Err(exception(self, "IncompatibleClassChangeError"));
             }
@@ -195,6 +192,16 @@ impl Jvm {
         } else {
             None
         };
+
+        // Interfaces must directly inherit from object (5.3.5)
+        if class_desc.access_flags.contains(AccessFlags::INTERACE)
+            && match &super_class {
+                None => true,
+                Some(s) => *s.name != *"java.lang.Object",
+            }
+        {
+            return Err(exception(self, "IncompatibleClassChangeError"));
+        }
 
         let (fields, static_size, object_size) = Class::set_layouts(super_class, class_desc.fields);
         let static_storage = FieldStorage::new(&self.heap, static_size);
@@ -245,7 +252,7 @@ impl Jvm {
     /// Creates an instance of a non-array class on the heap.
     /// # Panics
     /// Panics if class is an array class
-    pub fn create_object(&self, class: &'static Class) -> Object {
+    pub fn create_object(&self, class: ClassPtr) -> Object {
         if class.element_type.is_some() {
             panic!("{} is an array type", class.name)
         }

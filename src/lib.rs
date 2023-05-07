@@ -337,6 +337,7 @@ impl<'a> Class<'a> {
     }
 
     /// Look up a method by its name and type. There may be multiple methods of the same name.
+    /// Includes inherited dynamic methods.
     pub fn method_by_nat(self, nat: &MethodNaT) -> Option<Method<'a>> {
         self.value
             .methods

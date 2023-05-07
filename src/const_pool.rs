@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::{
-    class::Class,
+    class::ClassPtr,
     field::{Field, FieldNaT},
     jvm::{exception, JVMResult, Jvm},
-    method::Method,
     method::MethodNaT,
+    method::MethodPtr,
     object::Object,
     parse,
     typ::Typ,
@@ -27,11 +27,11 @@ pub(crate) enum ConstPoolItem {
     Long(i64),
     Double(f64),
     String(Object),
-    Class(&'static Class),
+    Class(ClassPtr),
     Field(&'static Field),
-    StaticMethod(&'static Method),
+    StaticMethod(MethodPtr),
     // Class is neccessary for invoke_special
-    VirtualMethod(&'static Class, MethodNaT<'static>),
+    VirtualMethod(ClassPtr, MethodNaT<'static>),
     InterfaceMethodRef { class: u16, nat: u16 },
     NameAndType { name: u16, descriptor: u16 },
     FieldRef { class: u16, nat: u16 },
@@ -166,7 +166,7 @@ impl ConstPool {
     }
 
     /// Requires resolution first
-    pub fn get_class(&self, jvm: &Jvm, index: u16) -> JVMResult<&'static Class> {
+    pub fn get_class(&self, jvm: &Jvm, index: u16) -> JVMResult<ClassPtr> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Class(class)) => Ok(class),
             _ => Err(cfe(jvm)),
@@ -174,7 +174,7 @@ impl ConstPool {
     }
 
     /// Requires resolution first
-    pub fn get_static_method(&self, jvm: &Jvm, index: u16) -> JVMResult<&'static Method> {
+    pub fn get_static_method(&self, jvm: &Jvm, index: u16) -> JVMResult<MethodPtr> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::StaticMethod(method)) => Ok(method),
             _ => Err(cfe(jvm)),
@@ -182,11 +182,7 @@ impl ConstPool {
     }
 
     /// Requires resolution first
-    pub fn get_virtual_method(
-        &self,
-        jvm: &Jvm,
-        index: u16,
-    ) -> JVMResult<(&'static Class, MethodNaT)> {
+    pub fn get_virtual_method(&self, jvm: &Jvm, index: u16) -> JVMResult<(ClassPtr, MethodNaT)> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, nat.clone())),
             _ => Err(cfe(jvm)),

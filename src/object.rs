@@ -1,7 +1,7 @@
 use std::mem::{align_of, size_of};
 
 use crate::{
-    class::Class,
+    class::{Class, ClassPtr},
     field_storage::FieldStorage,
     heap::{self, JVMPtr, JVMPtrNonNull},
     jvm::Value,
@@ -22,7 +22,7 @@ pub(crate) struct Object {
 }
 
 impl Object {
-    pub fn class(self) -> &'static Class {
+    pub fn class(self) -> ClassPtr {
         unsafe { &*(heap::ptr_decode(self.ptr.read_ptr(0, false)) as *const Class) }
     }
 

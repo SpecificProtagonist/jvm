@@ -11,10 +11,10 @@ use crate::{
     jvm::JVMResult,
     jvm::Jvm,
     method::Code,
-    method::ExceptionHandler,
     method::Method,
     method::MethodDescriptor,
     method::MethodNaT,
+    method::{ExceptionHandler, MethodPtr},
     object::Object,
     typ::Typ,
     verification::{StackMapFrame, VerificationType},
@@ -512,7 +512,7 @@ fn read_methods(
     input: &mut &[u8],
     constant_pool: &ConstPool,
     jvm: &Jvm,
-) -> JVMResult<HashMap<MethodNaT<'static>, &'static Method>> {
+) -> JVMResult<HashMap<MethodNaT<'static>, MethodPtr>> {
     let length = read_u16(jvm, input)?;
     let mut methods = HashMap::with_capacity(length as usize);
     for _ in 0..length {
@@ -590,7 +590,7 @@ pub(crate) struct ClassDescriptor {
     pub(crate) super_class: Option<Arc<str>>,
     pub(crate) interfaces: Vec<Arc<str>>,
     pub(crate) fields: Vec<Field>,
-    pub(crate) methods: HashMap<MethodNaT<'static>, &'static Method>,
+    pub(crate) methods: HashMap<MethodNaT<'static>, MethodPtr>,
 }
 
 fn cfe(jvm: &Jvm, _message: &str) -> Object {
