@@ -4,8 +4,13 @@ use std::sync::{
 };
 
 use crate::{
-    class::Class, field_storage::FieldStorage, heap::NULL_PTR, jvm::Value, object::Object,
-    typ::Typ, AccessFlags,
+    class::{Class, ClassPtr},
+    field_storage::FieldStorage,
+    heap::NULL_PTR,
+    jvm::Value,
+    object::Object,
+    typ::Typ,
+    AccessFlags,
 };
 
 pub(crate) struct Field {
@@ -29,7 +34,7 @@ pub struct FieldNaT {
 }
 
 impl Field {
-    pub(crate) fn class(&self) -> &'static Class {
+    pub(crate) fn class(&self) -> ClassPtr {
         // SAFETY: This reference will not outlive the JVM
         // and this function will only be called after class has been set
         unsafe { &*self.class.load(Ordering::SeqCst) }

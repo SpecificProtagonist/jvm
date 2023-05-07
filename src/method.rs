@@ -3,7 +3,11 @@ use std::sync::{
     Arc,
 };
 
-use crate::{class::Class, typ::Typ, AccessFlags};
+use crate::{
+    class::{Class, ClassPtr},
+    typ::Typ,
+    AccessFlags,
+};
 
 pub(crate) struct Method {
     pub(crate) nat: MethodNaT<'static>,
@@ -18,13 +22,14 @@ impl Method {
         self.nat.clone()
     }
 
-    pub fn class(&self) -> &'static Class {
+    pub fn class(&self) -> ClassPtr {
         // SAFETY: This reference will not outlive the JVM
         // and this function will only be called after class has been set
         unsafe { &*self.class.load(Ordering::SeqCst) }
     }
 }
 
+// Ownership situation of this is ugly. Remove lifetime (always 'static)? Make owning?
 /// Contains a method's name and type.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MethodNaT<'a> {
@@ -67,14 +72,16 @@ pub(crate) struct ExceptionHandler {
     pub catch_type: u16,
 }
 
-impl Eq for &'static Method {}
-impl PartialEq for &'static Method {
+pub(crate) type MethodPtr = &'static Method;
+
+impl Eq for MethodPtr {}
+impl PartialEq for MethodPtr {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(*self, *other)
     }
 }
 
-impl<'a> std::hash::Hash for &'a Method {
+impl std::hash::Hash for MethodPtr {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::hash::Hash::hash(&(*self as *const _ as usize), state)
     }

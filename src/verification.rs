@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 use crate::{
-    class::Class,
+    class::{Class, ClassPtr},
     const_pool::ConstPoolItem,
     instructions::*,
     jvm::{exception, JVMResult, Jvm},
@@ -62,7 +62,7 @@ pub(crate) enum VerificationType {
     Integer,
     Float,
     Null,
-    ObjectVariable(&'static Class),
+    ObjectVariable(ClassPtr),
     UninitializedThis,
     UninitializedVariable { offset: u16 },
     Long,
@@ -134,7 +134,7 @@ pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Typ)
 // TODO: Exception handlers
 /// Verification by type checking
 /// (Verification by type inference is not planned)
-pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: &'b Class) -> JVMResult<()> {
+pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassPtr) -> JVMResult<()> {
     if let Some(super_class) = class.super_class {
         verify(jvm, super_class)?;
         // Check whether the super class is final (as described in spec) is redundant (has to already be checked during loading)

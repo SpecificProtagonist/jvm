@@ -8,34 +8,31 @@ use crate::{
     jvm::exception,
     jvm::JVMResult,
     jvm::Jvm,
-    method::Method,
-    method::MethodDescriptor,
-    method::MethodNaT,
+    method::{MethodDescriptor, MethodNaT, MethodPtr},
     object::{self, Object},
     typ::Typ,
     verification::verify,
     AccessFlags,
 };
 
-/// Represents a regular class, array class, enum or (in the future) or an interface.
+/// Represents an interface, regular class, array class or enum.
 /// Does not store its defining loader as the Jvm currently may only have one.
 pub(crate) struct Class {
     /// Fully qualified name, e.g. "java.lang.Object[]"
     pub(crate) name: Arc<str>,
-    pub(crate) super_class: Option<&'static Class>,
+    pub(crate) super_class: Option<ClassPtr>,
     /// For array classes, this is the type of the array elements; None for normal classes
     pub(crate) element_type: Option<Typ>,
     /// When the class is initialized, write access is required for resolution.
     /// Afterward (such as when executing a function in this class), only read access is required.
     pub(crate) const_pool: RwLock<ConstPool>,
     pub(crate) access_flags: AccessFlags,
-    #[allow(unused)]
-    pub(crate) interfaces: Vec<&'static Class>,
+    pub(crate) interfaces: Vec<ClassPtr>,
     /// Does not contain inherited fields.
     /// As far as I can tell, JVM supports field overloading.
     pub(crate) fields: HashMap<FieldNaT, Field>,
     /// At the moment, this includes any inherited methods. Change this?
-    pub(crate) methods: HashMap<MethodNaT<'static>, &'static Method>,
+    pub(crate) methods: HashMap<MethodNaT<'static>, MethodPtr>,
     pub(crate) static_storage: FieldStorage,
     /// Combined size of instance fields in normal class, 0 if array
     pub(crate) object_size: usize,
@@ -46,18 +43,22 @@ pub(crate) struct Class {
 pub(crate) enum ClassInitState {
     Uninit,
     InProgress(ThreadId),
+    /// Initialization succeeded.
     Done,
+    /// Initialization failed; holds the exception thrown.
     Error(Object),
 }
 
-impl<'a> Eq for &'a Class {}
-impl<'a> PartialEq for &'a Class {
+pub(crate) type ClassPtr = &'static Class;
+
+impl Eq for ClassPtr {}
+impl PartialEq for ClassPtr {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(*self, *other)
     }
 }
 
-impl<'a> std::hash::Hash for &'a Class {
+impl std::hash::Hash for ClassPtr {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::hash::Hash::hash(&(*self as *const Class as usize), state)
     }
@@ -101,6 +102,10 @@ impl Class {
         (fields, static_layout.size(), object_layout.size())
     }
 
+    pub(crate) fn interface(&self) -> bool {
+        self.access_flags.contains(AccessFlags::INTERACE)
+    }
+
     /// Convenience method for getting this class' type
     pub(crate) fn typ(&self) -> Typ {
         Typ::Ref(self.name.clone())
@@ -135,7 +140,7 @@ impl Class {
     /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.
     /// This happens automatically when a method belonging to this class is called.
     // May only be called by the library consumer or instuctions new, getstatic, putstatic or invokestatic or by being the initial class
-    pub fn ensure_init(&self, jvm: &Jvm) -> JVMResult<()> {
+    pub fn ensure_init(&'static self, jvm: &Jvm) -> JVMResult<()> {
         let mut guard = self.init.lock();
         match *guard {
             ClassInitState::Done => Ok(()),
@@ -175,7 +180,7 @@ impl Class {
     }
 
     /// This may only be called from self.ensure_init
-    fn init(&self, jvm: &Jvm) -> JVMResult<()> {
+    fn init(&'static self, jvm: &Jvm) -> JVMResult<()> {
         let mut const_pool = self.const_pool.write();
         // Preparation
         for field in self.fields.values() {
