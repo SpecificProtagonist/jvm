@@ -1,5 +1,4 @@
 #![feature(hash_set_entry)]
-#![feature(default_free_fn)]
 #![doc = include_str!("../README.md")]
 
 mod class;
@@ -28,6 +27,10 @@ pub use field::FieldNaT;
 pub use method::{MethodDescriptor, MethodNaT};
 pub use typ::Typ;
 
+fn default<T: Default>() -> T {
+    Default::default()
+}
+
 // @next: Test abstract methods
 
 // This file represents most of the public interface.
@@ -55,7 +58,7 @@ pub use typ::Typ;
 
 /// Creates & manages classes and objects, which borrow from the Jvm.
 /// Multiple independent JVMs may exist.
-/// Mutable shared access follows Javas rules.
+/// Mutable shared access follows Java's rules.
 ///
 /// To operate correctly, the JVM requires a class library. The minimal
 /// version necessary to implement this is available under the `classes`
@@ -125,62 +128,12 @@ impl Jvm {
     /// # Panics
     /// Panics if length < 0
     pub fn create_array<'a>(&'a self, typ: &Typ, length: i32) -> Object<'a> {
-        Object::new(self, self.0.create_array(typ, length))
+        Object::new(self, self.0.create_array_of(typ, length))
     }
 }
 
-macro_rules! guard_impl_trait {
-    ($guard_typ:ident, Debug) => {
-        impl<'a> Debug for $guard_typ<'a> {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                Debug::fmt(&self.value, f)
-            }
-        }
-    };
-    ($guard_typ:ident, Display) => {
-        impl<'a> Display for $guard_typ<'a> {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                Display::fmt(&self.value, f)
-            }
-        }
-    };
-    ($guard_typ:ident, Hash) => {
-        impl<'a> Hash for $guard_typ<'a> {
-            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-                self.value.hash(state);
-            }
-        }
-    };
-    ($guard_typ:ident, Eq) => {
-        impl<'a> Eq for $guard_typ<'a> {
-            fn assert_receiver_is_total_eq(&self) {}
-        }
-    };
-
-    ($guard_typ:ident, PartialEq) => {
-        impl<'a> PartialEq for $guard_typ<'a> {
-            fn eq(&self, other: &Self) -> bool {
-                self.value == other.value
-            }
-        }
-    };
-    ($guard_typ:ident, Copy) => {
-        impl<'a> Copy for $guard_typ<'a> {}
-    };
-    ($guard_typ:ident, Clone) => {
-        impl<'a> Clone for $guard_typ<'a> {
-            fn clone(&self) -> Self {
-                Self {
-                    value: self.value.clone(),
-                    jvm: self.jvm,
-                }
-            }
-        }
-    };
-}
-
 macro_rules! define_guard {
-    ($(#[$doc:meta])* $guard_typ:ident, $impl_typ:ty, $($t:ident),*) => {
+    ($(#[$doc:meta])* $guard_typ:ident, $impl_typ:ty) => {
         $(#[$doc])*
         pub struct $guard_typ<'a> {
             value: $impl_typ,
@@ -207,7 +160,30 @@ macro_rules! define_guard {
             }
         }
 
-        $(guard_impl_trait!($guard_typ, $t);)*
+        impl<'a> Debug for $guard_typ<'a> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                Debug::fmt(&self.value, f)
+            }
+        }
+        impl<'a> Hash for $guard_typ<'a> {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                self.value.hash(state);
+            }
+        }
+        impl<'a> PartialEq for $guard_typ<'a> {
+            fn eq(&self, other: &Self) -> bool {
+                self.value == other.value
+            }
+        }
+        impl<'a> Eq for $guard_typ<'a> {
+            fn assert_receiver_is_total_eq(&self) {}
+        }
+        impl<'a> Copy for $guard_typ<'a> {}
+        impl<'a> Clone for $guard_typ<'a> {
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
     };
 }
 
@@ -215,13 +191,7 @@ define_guard!(
     /// A Java object, guaranteed to be non-null.
     /// An object may only be used with the jvm by which it was created.
     Object,
-    object::Object,
-    Debug,
-    Copy,
-    Clone,
-    Eq,
-    PartialEq,
-    Hash
+    object::Object
 );
 
 impl<'a> Object<'a> {
@@ -237,7 +207,7 @@ impl<'a> Object<'a> {
 
     /// Returns either the value at index.
     /// # Panics
-    /// if the object is not an array or the index is out of bounds
+    /// if the object is not an array or the index is out of bounds.
     pub fn array_read(self, index: i32) -> Value<'a> {
         Value::new(
             self.jvm,
@@ -250,7 +220,7 @@ impl<'a> Object<'a> {
     /// the `JVMValue::Int` is truncated
     /// # Panics
     /// if object is not an array, the element type mismatches, the index is out of bounds
-    /// or the value is an object created by another JVM
+    /// or the value is an object created by another JVM.
     pub fn array_write(self, index: i32, value: Value<'a>) {
         self.value.array_write(index, value.into_inner(self.jvm))
     }
@@ -259,13 +229,7 @@ impl<'a> Object<'a> {
 define_guard!(
     /// A class, interface (TODO), enum or array class.
     Class,
-    &'static class::Class,
-    Debug,
-    Copy,
-    Clone,
-    Eq,
-    PartialEq,
-    Hash
+    &'static class::Class
 );
 
 impl<'a> Class<'a> {
@@ -355,7 +319,7 @@ impl<'a> Class<'a> {
 
     /// Creates an instance of a non-array class on the heap without invoking its constructor
     /// # Panics
-    /// Panics if this is an array class
+    /// Panics if this is an array class.
     pub fn create_object_uninit(self) -> Object<'a> {
         Object::new(self.jvm, self.jvm.0.create_object(self.value))
     }
@@ -370,13 +334,7 @@ impl<'a> Class<'a> {
 define_guard!(
     /// A static or instance field.
     Field,
-    &'static field::Field,
-    Debug,
-    Copy,
-    Clone,
-    Eq,
-    PartialEq,
-    Hash
+    &'static field::Field
 );
 
 impl<'a> Field<'a> {
@@ -444,13 +402,7 @@ impl<'a> Field<'a> {
 define_guard!(
     /// A method. Does not necessarily have an implementation.
     Method,
-    &'static method::Method,
-    Debug,
-    Copy,
-    Clone,
-    Eq,
-    PartialEq,
-    Hash
+    &'static method::Method
 );
 
 impl<'a> Method<'a> {

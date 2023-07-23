@@ -5,7 +5,6 @@ use parking_lot::{Mutex, RwLock};
 use std::{
     // TODO: posibly exchange for different hasher (benchmark)
     collections::HashMap,
-    default::default,
     fmt::Display,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -13,7 +12,6 @@ use std::{
     },
 };
 
-use crate::class::*;
 use crate::field_storage::FieldStorage;
 use crate::heap;
 use crate::method::*;
@@ -21,6 +19,7 @@ use crate::object;
 use crate::object::Object;
 use crate::parse;
 use crate::typ::Typ;
+use crate::{class::*, default};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Value {
@@ -252,6 +251,7 @@ impl Jvm {
     /// Creates an instance of a non-array class on the heap.
     /// # Panics
     /// Panics if class is an array class
+    #[track_caller]
     pub fn create_object(&self, class: ClassPtr) -> Object {
         if class.element_type.is_some() {
             panic!("{} is an array type", class.name)
@@ -264,8 +264,32 @@ impl Jvm {
 
     /// Creates an array on the heap.
     /// # Panics
+    /// Panics if length < 0 or class is not an array class.
+    #[track_caller]
+    pub fn create_array(&self, class: ClassPtr, length: i32) -> Object {
+        self.create_array_impl(
+            class,
+            class
+                .element_type
+                .as_ref()
+                .expect("Class is not an array class"),
+            length,
+        )
+    }
+
+    /// Creates an bdcvbmn, n vdcn bmf,.vn dc.,m-nön-nnnon the heap.
+    /// # Panics
     /// Panics if length < 0 or the component is a class that fails to load.
-    pub fn create_array(&self, component: &Typ, length: i32) -> Object {
+    #[track_caller]
+    pub fn create_array_of(&self, component: &Typ, length: i32) -> Object {
+        let class = self
+            .resolve_array_of(component)
+            .expect("Failed to resolve class");
+        self.create_array_impl(class, component, length)
+    }
+
+    #[track_caller]
+    fn create_array_impl(&self, class: ClassPtr, component: &Typ, length: i32) -> Object {
         if length < 0 {
             panic!("array length < 0")
         }
@@ -273,17 +297,8 @@ impl Jvm {
             &self.heap,
             object::header_size() + component.layout().size() * length as usize,
         );
-        let array_class = self
-            .resolve_array_of(component)
-            .expect("Failed to resolve class");
         // SAFETY: object_size takes object head into account
-        unsafe {
-            data.write_ptr(
-                0,
-                heap::ptr_encode(array_class as *const Class as *mut u8),
-                true,
-            )
-        };
+        unsafe { data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true) };
         Object { ptr: data }
     }
 }

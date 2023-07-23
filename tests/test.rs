@@ -114,8 +114,14 @@ fn arrays() {
         // TODO: implement enough verification
         jvm.disable_verification_by_type_checking()
     }
+
     let method = jvm
         .resolve_method("Arrays", "test", [], Some(Typ::Boolean))
+        .unwrap();
+    assert_eq!(method.invoke(&[]).unwrap(), true);
+
+    let method = jvm
+        .resolve_method("Arrays", "multianewarray", [], Some(Typ::Boolean))
         .unwrap();
     assert_eq!(method.invoke(&[]).unwrap(), true);
 }

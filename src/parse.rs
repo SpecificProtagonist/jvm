@@ -1,11 +1,11 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    default::default,
     sync::Arc,
 };
 
 use crate::{
     const_pool::{ConstPool, ConstPoolItem},
+    default,
     field::{Field, FieldNaT},
     jvm::exception,
     jvm::JVMResult,

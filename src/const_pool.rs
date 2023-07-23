@@ -34,8 +34,11 @@ pub(crate) enum ConstPoolItem {
     VirtualMethod(ClassPtr, MethodNaT<'static>),
     InterfaceMethodRef { class: u16, nat: u16 },
     NameAndType { name: u16, descriptor: u16 },
+    // Only present before resolve
     FieldRef { class: u16, nat: u16 },
+    // Only present before resolve
     MethodRef { class: u16, nat: u16 },
+    // Only present before resolve
     RawString(u16),
     RawClass(u16),
     // Accoring to the spec, long and doubles taking two entries was a design mistake
@@ -93,7 +96,7 @@ impl ConstPool {
                     let string = self.get_utf8(jvm, index)?;
                     // TODO: move string object creation routine to jvm (for interning)
                     let length = string.encode_utf16().count();
-                    let backing_array = jvm.create_array(&Typ::Char, length as i32);
+                    let backing_array = jvm.create_array_of(&Typ::Char, length as i32);
                     for (index, char) in string.encode_utf16().enumerate() {
                         backing_array
                             .ptr

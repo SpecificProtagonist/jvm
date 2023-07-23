@@ -26,10 +26,8 @@ impl ClassLoader for FolderClassLoader {
             let mut path = path.clone();
             path.push(name.replace('.', "/"));
             path.set_extension("class");
-            println!("Trying to load {name} at {path:?}");
 
             if path.exists() {
-                println!("Success");
                 let mut bytes = Vec::new();
                 let error = "Failed to read class. TODO: What error to throw when the class is found but could not be read?";
                 std::fs::File::open(path)
