@@ -1,4 +1,5 @@
 use crate::{
+    class::ClassPtr,
     const_pool::{ConstPool, ConstPoolItem},
     field::Field,
     field_storage::FieldStorage,
@@ -22,14 +23,14 @@ pub(crate) fn invoke(
     for arg in args {
         match arg {
             Value::Void => panic!("invoke with void argument"),
-            Value::Ref(object) => arg_values.push(IVal::from_ref(object)),
-            Value::Int(value) => arg_values.push(IVal::from_int(value)),
+            Value::Ref(object) => arg_values.push(object.into()),
+            Value::Int(value) => arg_values.push(value.into()),
             Value::Long(value) => {
                 let (low, high) = IVal::from_long(value);
                 arg_values.push(low);
                 arg_values.push(high);
             }
-            Value::Float(value) => arg_values.push(IVal::from_float(value)),
+            Value::Float(value) => arg_values.push(value.into()),
             Value::Double(value) => {
                 let (low, high) = IVal::from_double(value);
                 arg_values.push(low);
@@ -109,7 +110,7 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JVMResult<Va
                             ))
                     {
                         frame.stack.clear();
-                        frame.stack.push(IVal::from_object(thrown));
+                        frame.stack.push(thrown.into());
                         frame.pc = handler.handler_pc;
                         caught = true;
                         break;
@@ -134,27 +135,27 @@ fn run_until_exception_or_return(
         match frame.read_code_u8() {
             NOP => {}
             ACONST_NULL => frame.stack.push(IVal(0)),
-            ICONST_M1 => frame.stack.push(IVal::from_int(-1)),
-            ICONST_0 => frame.stack.push(IVal::from_int(0)),
-            ICONST_1 => frame.stack.push(IVal::from_int(1)),
-            ICONST_2 => frame.stack.push(IVal::from_int(2)),
-            ICONST_3 => frame.stack.push(IVal::from_int(3)),
-            ICONST_4 => frame.stack.push(IVal::from_int(4)),
-            ICONST_5 => frame.stack.push(IVal::from_int(5)),
+            ICONST_M1 => frame.stack.push((-1).into()),
+            ICONST_0 => frame.stack.push(0.into()),
+            ICONST_1 => frame.stack.push(1.into()),
+            ICONST_2 => frame.stack.push(2.into()),
+            ICONST_3 => frame.stack.push(3.into()),
+            ICONST_4 => frame.stack.push(4.into()),
+            ICONST_5 => frame.stack.push(5.into()),
             LCONST_0 => frame.push_long(0),
             LCONST_1 => frame.push_long(1),
-            FCONST_0 => frame.stack.push(IVal::from_float(0.0)),
-            FCONST_1 => frame.stack.push(IVal::from_float(1.0)),
-            FCONST_2 => frame.stack.push(IVal::from_float(2.0)),
+            FCONST_0 => frame.stack.push(0.0.into()),
+            FCONST_1 => frame.stack.push(1.0.into()),
+            FCONST_2 => frame.stack.push(2.0.into()),
             DCONST_0 => frame.push_double(0.0),
             DCONST_1 => frame.push_double(1.0),
             BIPUSH => {
                 let value = frame.read_code_u8() as i8;
-                frame.stack.push(IVal::from_int(value as i32));
+                frame.stack.push((value as i32).into());
             }
             SIPUSH => {
                 let value = frame.read_code_u16() as i16;
-                frame.stack.push(IVal::from_int(value as i32));
+                frame.stack.push((value as i32).into());
             }
             LDC => {
                 let index = frame.read_code_u8() as u16;
@@ -196,9 +197,7 @@ fn run_until_exception_or_return(
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                frame
-                    .stack
-                    .push(IVal::from_int(obj.ptr.array_read_i32(jvm, index)?));
+                frame.stack.push(obj.ptr.array_read_i32(jvm, index)?.into());
             }
             LALOAD => {
                 let index = frame.pop().as_int();
@@ -210,9 +209,7 @@ fn run_until_exception_or_return(
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                frame
-                    .stack
-                    .push(IVal::from_float(obj.ptr.array_read_f32(jvm, index)?));
+                frame.stack.push(obj.ptr.array_read_f32(jvm, index)?.into());
             }
             DALOAD => {
                 let index = frame.pop().as_int();
@@ -232,15 +229,15 @@ fn run_until_exception_or_return(
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 frame
                     .stack
-                    .push(IVal::from_int(obj.ptr.array_read_i8(jvm, index)? as i32));
+                    .push((obj.ptr.array_read_i8(jvm, index)? as i32).into());
             }
             CALOAD => {
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                frame.stack.push(IVal::from_int(
-                    obj.ptr.array_read_i16(jvm, index)? as u16 as i32
-                ));
+                frame
+                    .stack
+                    .push((obj.ptr.array_read_i16(jvm, index)? as u16 as i32).into());
             }
             SALOAD => {
                 let index = frame.pop().as_int();
@@ -248,7 +245,7 @@ fn run_until_exception_or_return(
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 frame
                     .stack
-                    .push(IVal::from_int(obj.ptr.array_read_i16(jvm, index)? as i32));
+                    .push((obj.ptr.array_read_i16(jvm, index)? as i32).into());
             }
             ISTORE | FSTORE | ASTORE => {
                 let index = frame.read_code_u8() as u16;
@@ -431,7 +428,7 @@ fn run_until_exception_or_return(
                     IXOR => a ^ b,
                     _ => unreachable!(),
                 };
-                frame.stack.push(IVal::from_int(result));
+                frame.stack.push(result.into());
             }
             LADD | LSUB | LMUL | LDIV | LREM | LSHL | LSHR | LUSHR | LAND | LOR | LXOR => {
                 let b = frame.pop_long();
@@ -471,7 +468,7 @@ fn run_until_exception_or_return(
                     FREM => a % b,
                     _ => unreachable!(),
                 };
-                frame.stack.push(IVal::from_float(result));
+                frame.stack.push(result.into());
             }
             DADD | DSUB | DMUL | DDIV | DREM => {
                 let b = frame.pop_double();
@@ -488,7 +485,7 @@ fn run_until_exception_or_return(
             }
             INEG => {
                 let result = -frame.pop().as_int();
-                frame.stack.push(IVal::from_int(result));
+                frame.stack.push(result.into());
             }
             LNEG => {
                 let result = -frame.pop_long();
@@ -496,7 +493,7 @@ fn run_until_exception_or_return(
             }
             FNEG => {
                 let result = -frame.pop().as_float();
-                frame.stack.push(IVal::from_float(result));
+                frame.stack.push(result.into());
             }
             DNEG => {
                 let result = -frame.pop_double();
@@ -506,35 +503,35 @@ fn run_until_exception_or_return(
                 let index = frame.read_code_u8() as u16;
                 let constant = frame.read_code_u8() as i32;
                 frame.locals[index as usize] =
-                    IVal::from_int(frame.locals[index as usize].as_int() + constant);
+                    (frame.locals[index as usize].as_int() + constant).into();
             }
             I2L => {
                 let value = frame.pop().as_int();
                 frame.push_long(value as i64);
             }
             I2F => {
-                let value = frame.pop().as_int();
-                frame.stack.push(IVal::from_float(value as f32));
+                let value = frame.pop().as_int() as f32;
+                frame.stack.push(value.into());
             }
             I2D => {
                 let value = frame.pop().as_int();
                 frame.push_double(value as f64);
             }
             L2I => {
-                let value = frame.pop_long();
-                frame.stack.push(IVal::from_int(value as i32));
+                let value = frame.pop_long() as i32;
+                frame.stack.push(value.into());
             }
             L2F => {
-                let value = frame.pop_long();
-                frame.stack.push(IVal::from_float(value as f32));
+                let value = frame.pop_long() as f32;
+                frame.stack.push(value.into());
             }
             L2D => {
                 let value = frame.pop_long();
                 frame.push_double(value as f64);
             }
             F2I => {
-                let value = frame.pop().as_float();
-                frame.stack.push(IVal::from_int(value as i32));
+                let value = frame.pop().as_float() as i32;
+                frame.stack.push(value.into());
             }
             F2L => {
                 let value = frame.pop().as_float();
@@ -545,37 +542,40 @@ fn run_until_exception_or_return(
                 frame.push_double(value as f64);
             }
             D2I => {
-                let value = frame.pop_double();
-                frame.stack.push(IVal::from_int(value as i32));
+                let value = frame.pop_double() as i32;
+                frame.stack.push(value.into());
             }
             D2L => {
                 let value = frame.pop_double();
                 frame.push_long(value as i64);
             }
             D2F => {
-                let value = frame.pop_double();
-                frame.stack.push(IVal::from_float(value as f32));
+                let value = frame.pop_double() as f32;
+                frame.stack.push(value.into());
             }
             I2B => {
-                let value = frame.pop().as_int() as i8;
-                frame.stack.push(IVal::from_int(value as i32));
+                let value = frame.pop().as_int() as i8 as i32;
+                frame.stack.push(value.into());
             }
             I2C => {
-                let value = frame.pop().as_int() as u16;
-                frame.stack.push(IVal::from_int(value as i32));
+                let value = frame.pop().as_int() as u16 as i32;
+                frame.stack.push(value.into());
             }
             I2S => {
-                let value = frame.pop().as_int() as i16;
-                frame.stack.push(IVal::from_int(value as i32));
+                let value = frame.pop().as_int() as i16 as i32;
+                frame.stack.push(value.into());
             }
             LCMP => {
                 let b = frame.pop_long();
                 let a = frame.pop_long();
-                frame.stack.push(IVal::from_int(match a - b {
-                    x if x > 0 => 1,
-                    0 => 0,
-                    _ => -1,
-                }))
+                frame.stack.push(
+                    match a - b {
+                        x if x > 0 => 1,
+                        0 => 0,
+                        _ => -1,
+                    }
+                    .into(),
+                )
             }
             FCMPL | FCMPG => {
                 let b = frame.pop().as_float();
@@ -591,7 +591,7 @@ fn run_until_exception_or_return(
                 } else {
                     i32::from(b != a)
                 };
-                frame.stack.push(IVal::from_int(result))
+                frame.stack.push(result.into())
             }
             DCMPL | DCMPG => {
                 let b = frame.pop_double();
@@ -607,7 +607,7 @@ fn run_until_exception_or_return(
                 } else {
                     i32::from(b != a)
                 };
-                frame.stack.push(IVal::from_int(result))
+                frame.stack.push(result.into())
             }
             IFEQ | IFNE | IFLT | IFGE | IFGT | IFLE | IF_ICMPEQ | IF_ICMPNE | IF_ICMPLT
             | IF_ICMPGE | IF_ICMPGT | IF_ICMPLE => {
@@ -787,9 +787,7 @@ fn run_until_exception_or_return(
                 let index = frame.read_code_u16();
                 let class = const_pool.get_class(jvm, index)?;
                 class.ensure_init(jvm)?;
-                frame
-                    .stack
-                    .push(IVal::from_object(jvm.create_object(class)))
+                frame.stack.push(jvm.create_object(class).into())
             }
             NEWARRAY => {
                 let length = frame.pop().as_int();
@@ -809,7 +807,7 @@ fn run_until_exception_or_return(
                 };
                 frame
                     .stack
-                    .push(IVal::from_object(jvm.create_array(&component, length)));
+                    .push(jvm.create_array_of(&component, length).into());
             }
             ANEWARRAY => {
                 let length = frame.pop().as_int();
@@ -820,15 +818,15 @@ fn run_until_exception_or_return(
                 }
                 frame
                     .stack
-                    .push(IVal::from_object(jvm.create_array(&component, length)));
+                    .push(jvm.create_array_of(&component, length).into());
             }
             ARRAYLENGTH => {
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                let Some(length) = obj.array_len()  else {
+                let Some(length) = obj.array_len() else {
                     unreachable!()
                 };
-                frame.stack.push(IVal::from_int(length));
+                frame.stack.push(length.into());
             }
             ATHROW => {
                 let obj = unsafe { frame.pop().as_ref() }
@@ -836,7 +834,30 @@ fn run_until_exception_or_return(
                 return Err(obj);
             }
             MULTIANEWARRAY => {
-                todo!()
+                let index = frame.read_code_u16();
+                let dimensions = frame.read_code_u8();
+                // Remove this check one it's in validation
+                if dimensions == 0 {
+                    return Err(exception(jvm, "ClassFormatError"));
+                }
+                let class = const_pool.get_class(jvm, index)?;
+                fn create_array(jvm: &Jvm, dimensions: &[IVal], class: ClassPtr) -> Object {
+                    let len = dimensions[0].as_int();
+                    let array = jvm.create_array(class, len);
+                    if let Some(Typ::Ref(element_type)) = &class.element_type {
+                        let class = jvm.resolve_class(element_type).unwrap();
+                        for i in 0..len {
+                            array.array_write(i, create_array(jvm, &dimensions[1..], class).into());
+                        }
+                    }
+                    array
+                }
+                let array = create_array(
+                    jvm,
+                    &frame.stack[frame.stack.len() - dimensions as usize..],
+                    class,
+                );
+                frame.stack.push(array.into());
             }
             IF_NULL => {
                 let base = frame.pc - 1;
@@ -857,11 +878,11 @@ fn run_until_exception_or_return(
 
 fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) {
     match const_pool.items.get(index as usize) {
-        Some(ConstPoolItem::Integer(i)) => frame.stack.push(IVal::from_int(*i)),
-        Some(ConstPoolItem::Float(f)) => frame.stack.push(IVal::from_float(*f)),
+        Some(&ConstPoolItem::Integer(i)) => frame.stack.push(i.into()),
+        Some(&ConstPoolItem::Float(f)) => frame.stack.push(f.into()),
         Some(ConstPoolItem::Long(l)) => frame.push_long(*l),
         Some(ConstPoolItem::Double(d)) => frame.push_double(*d),
-        Some(ConstPoolItem::String(object)) => frame.stack.push(IVal::from_object(*object)),
+        Some(&ConstPoolItem::String(object)) => frame.stack.push(object.into()),
         Some(ConstPoolItem::Class(_)) => todo!("Class objects"),
         other => unreachable!("Invalid ldc/ldc_w/ldc2_w: {:?}", other),
     }
@@ -871,18 +892,18 @@ fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
     unsafe {
         match field.nat.typ {
-            Typ::Boolean | Typ::Byte => frame.stack.push(IVal::from_int(
-                storage.read_i8(field.byte_offset, volatile) as i32,
-            )),
-            Typ::Short | Typ::Char => frame.stack.push(IVal::from_int(
-                storage.read_i16(field.byte_offset, volatile) as i32,
-            )),
-            Typ::Int => frame.stack.push(IVal::from_int(
-                storage.read_i32(field.byte_offset, volatile),
-            )),
-            Typ::Float => frame.stack.push(IVal::from_float(
-                storage.read_f32(field.byte_offset, volatile),
-            )),
+            Typ::Boolean | Typ::Byte => frame
+                .stack
+                .push((storage.read_i8(field.byte_offset, volatile) as i32).into()),
+            Typ::Short | Typ::Char => frame
+                .stack
+                .push((storage.read_i16(field.byte_offset, volatile) as i32).into()),
+            Typ::Int => frame
+                .stack
+                .push(storage.read_i32(field.byte_offset, volatile).into()),
+            Typ::Float => frame
+                .stack
+                .push(storage.read_f32(field.byte_offset, volatile).into()),
             Typ::Long => frame.push_long(storage.read_i64(field.byte_offset, volatile)),
             Typ::Double => frame.push_double(storage.read_f64(field.byte_offset, volatile)),
             Typ::Ref(..) => frame
@@ -923,24 +944,43 @@ fn execute_invoke_instr(jvm: &Jvm, frame: &mut Frame, method: &Method) -> JVMRes
     frame.stack.truncate(frame.stack.len() - arg_slots);
     match result {
         Value::Void => (),
-        Value::Ref(object) => frame.stack.push(IVal::from_ref(object)),
-        Value::Int(value) => frame.stack.push(IVal::from_int(value)),
-        Value::Float(value) => frame.stack.push(IVal::from_float(value)),
+        Value::Ref(object) => frame.stack.push(object.into()),
+        Value::Int(value) => frame.stack.push(value.into()),
+        Value::Float(value) => frame.stack.push(value.into()),
         Value::Long(value) => frame.push_long(value),
         Value::Double(value) => frame.push_double(value),
     };
     Ok(())
 }
 
-impl IVal {
-    fn from_int(value: i32) -> Self {
+impl From<i32> for IVal {
+    fn from(value: i32) -> Self {
         Self(value as u32 as SlotSize)
     }
+}
 
-    fn from_float(value: f32) -> Self {
+impl From<f32> for IVal {
+    fn from(value: f32) -> Self {
         Self(value.to_bits() as SlotSize)
     }
+}
 
+impl From<Object> for IVal {
+    fn from(value: Object) -> Self {
+        Self(value.ptr().into())
+    }
+}
+
+impl From<Option<Object>> for IVal {
+    fn from(value: Option<Object>) -> Self {
+        Self(match value {
+            None => NULL_PTR,
+            Some(object) => object.ptr().into(),
+        })
+    }
+}
+
+impl IVal {
     /// Returns (low half, high half)
     fn from_long(value: i64) -> (Self, Self) {
         (
@@ -952,17 +992,6 @@ impl IVal {
     /// Returns (low half, high half)
     fn from_double(value: f64) -> (Self, Self) {
         Self::from_long(value.to_bits() as i64)
-    }
-
-    fn from_ref(object: Option<Object>) -> Self {
-        Self(match object {
-            None => NULL_PTR,
-            Some(object) => object.ptr().into(),
-        })
-    }
-
-    fn from_object(object: Object) -> Self {
-        Self(object.ptr().into())
     }
 
     fn as_int(self) -> i32 {
