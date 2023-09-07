@@ -20,7 +20,6 @@ let field_value = field.static_get();
 ```
 
 Currently implemented:
-- thread-safe access
 - class loading/initialization
 - verification by type checking (not all instructions covered yet)
 - operations on primitives
@@ -36,6 +35,7 @@ Some mayor missing features:
 - interfaces
 - some bytecodes
 - private/protected
+- locking
 - a way to call native code
 
 This is only a JVM, not including a proper class library. The problem is that the JVM
