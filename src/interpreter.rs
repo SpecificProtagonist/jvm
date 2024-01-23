@@ -95,12 +95,11 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JVMResult<Va
         return Err(exception(jvm, "NullPointerException"));
     }
 
-    loop {
+    'run: loop {
         match run_until_exception_or_return(jvm, method, &const_pool, &mut frame) {
             Ok(result) => return Ok(result),
             Err(thrown) => {
                 // Check whether the exception gets caught or rethrown
-                let mut caught = false;
                 for handler in &code.exception_table {
                     let in_range = (handler.start_pc..=handler.end_pc).contains(&frame.pc);
                     if in_range
@@ -112,13 +111,10 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JVMResult<Va
                         frame.stack.clear();
                         frame.stack.push(thrown.into());
                         frame.pc = handler.handler_pc;
-                        caught = true;
-                        break;
+                        continue 'run;
                     }
                 }
-                if !caught {
-                    return Err(thrown);
-                }
+                return Err(thrown);
             }
         }
     }

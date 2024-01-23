@@ -65,6 +65,7 @@ fn default<T: Default>() -> T {
 /// folder of this repository. These aren't loaded automatically, your
 /// class library needs to be provided by the class loader. Missing or
 /// invalid classes may cause the thread to hang or crash.
+#[derive(Eq)]
 pub struct Jvm(jvm::Jvm);
 
 impl Jvm {
@@ -129,6 +130,12 @@ impl Jvm {
     /// Panics if length < 0
     pub fn create_array<'a>(&'a self, typ: &Typ, length: i32) -> Object<'a> {
         Object::new(self, self.0.create_array_of(typ, length))
+    }
+}
+
+impl PartialEq for Jvm {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
     }
 }
 
