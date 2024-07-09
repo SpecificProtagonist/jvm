@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     heap::{self, AtomicJVMPtr, Heap, JVMPtr, JVMPtrNonNull},
-    jvm::{exception, JVMResult, Jvm},
+    jvm::{exception, Jvm, JvmResult},
     object,
 };
 
@@ -46,7 +46,7 @@ macro_rules! access {
         }
 
         #[inline]
-        pub fn $array_read(&self, jvm: &Jvm, index: i32) -> JVMResult<$typ> {
+        pub fn $array_read(&self, jvm: &Jvm, index: i32) -> JvmResult<$typ> {
             let offset = object::header_size() + index as usize * std::mem::size_of::<$typ>();
             if (index < 0) | (offset >= self.size()) {
                 Err(exception(jvm, "ArrayIndexOutOfBoundsException"))
@@ -56,7 +56,7 @@ macro_rules! access {
         }
 
         #[inline]
-        pub fn $array_write(&self, jvm: &Jvm, index: i32, value: $typ) -> JVMResult<()> {
+        pub fn $array_write(&self, jvm: &Jvm, index: i32, value: $typ) -> JvmResult<()> {
             let offset = object::header_size() + index as usize * std::mem::size_of::<$typ>();
             if (index < 0) | (offset >= self.size()) {
                 Err(exception(jvm, "ArrayIndexOutOfBoundsException"))

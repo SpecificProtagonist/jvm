@@ -6,15 +6,15 @@ use std::sync::{
 use crate::{
     class::{Class, ClassPtr},
     typ::Typ,
-    AccessFlags,
+    AccessFlags, Jvm,
 };
 
 pub(crate) struct Method {
-    pub(crate) nat: MethodNaT<'static>,
+    pub(crate) nat: MethodNaT,
     pub(crate) access_flags: AccessFlags,
     /// Class is behind a AtomicCell to enable circular references
     pub(crate) class: AtomicPtr<Class>,
-    pub(crate) code: Option<Code>,
+    pub(crate) code: Code,
 }
 
 impl Method {
@@ -29,12 +29,11 @@ impl Method {
     }
 }
 
-// Ownership situation of this is ugly. Remove lifetime (always 'static)? Make owning?
-/// Contains a method's name and type.
+/// Contains a method's name and type. Uniquely identifies method within class.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct MethodNaT<'a> {
+pub struct MethodNaT {
     pub name: Arc<str>,
-    pub typ: &'a MethodDescriptor,
+    pub typ: MethodDescriptor,
 }
 
 /// A method signature type signature
@@ -56,8 +55,20 @@ impl MethodDescriptor {
     }
 }
 
+pub(crate) enum Code {
+    None,
+    Bytecode(Bytecode),
+    Native(NativeCode),
+}
+
+pub type NativeCode = Box<
+    dyn for<'a> Fn(&Jvm, &[crate::Value<'a>]) -> crate::JvmResult<'a, crate::Value<'a>>
+        + Send
+        + Sync,
+>;
+
 // TODO: use verification data to construct a more efficient bytecode
-pub(crate) struct Code {
+pub(crate) struct Bytecode {
     pub max_stack: u16,
     pub max_locals: u16,
     pub bytes: Vec<u8>,
@@ -93,7 +104,7 @@ impl std::fmt::Debug for Method {
     }
 }
 
-impl<'a> std::fmt::Display for MethodNaT<'a> {
+impl std::fmt::Display for MethodNaT {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(ret) = &self.typ.returns {
             write!(f, "{}", ret)?;

@@ -4,8 +4,8 @@ use crate::{
     class::{Class, ClassPtr},
     const_pool::ConstPoolItem,
     instructions::*,
-    jvm::{exception, JVMResult, Jvm},
-    method::Method,
+    jvm::{exception, Jvm, JvmResult},
+    method::{Bytecode, Code, Method},
     object::Object,
     parse,
     typ::Typ,
@@ -39,7 +39,7 @@ impl StackMapFrame {
     }
 
     /// In case of category 2 type, pops both the top type and the actual type
-    fn pop(&mut self, jvm: &Jvm) -> JVMResult<VerificationType> {
+    fn pop(&mut self, jvm: &Jvm) -> JvmResult<VerificationType> {
         let typ = self
             .stack
             .pop()
@@ -111,7 +111,7 @@ impl VerificationType {
     }
 }
 
-pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Typ) -> JVMResult<()> {
+pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Typ) -> JvmResult<()> {
     match typ {
         Typ::Boolean | Typ::Char | Typ::Byte | Typ::Short | Typ::Int => {
             types.push(VerificationType::Integer)
@@ -125,7 +125,9 @@ pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Typ)
             types.push(VerificationType::Long);
             types.push(VerificationType::Top);
         }
-        Typ::Ref(class) => types.push(VerificationType::ObjectVariable(jvm.resolve_class(class)?)),
+        Typ::Ref(class) => types.push(VerificationType::ObjectVariable(
+            jvm.resolve_class_internal(class)?,
+        )),
     }
     Ok(())
 }
@@ -134,7 +136,7 @@ pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Typ)
 // TODO: Exception handlers
 /// Verification by type checking
 /// (Verification by type inference is not planned)
-pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassPtr) -> JVMResult<()> {
+pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassPtr) -> JvmResult<()> {
     if let Some(super_class) = class.super_class {
         verify(jvm, super_class)?;
         // Check whether the super class is final (as described in spec) is redundant (has to already be checked during loading)
@@ -152,7 +154,7 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassPtr) -> JVMResult<()>
 }
 
 // TODO: do this lazily
-fn verify_method(jvm: &Jvm, method: &Method) -> JVMResult<()> {
+fn verify_method(jvm: &Jvm, method: &Method) -> JvmResult<()> {
     if let (false, Some(super_class)) = (
         method.access_flags.contains(AccessFlags::STATIC),
         method.class().super_class,
@@ -164,38 +166,40 @@ fn verify_method(jvm: &Jvm, method: &Method) -> JVMResult<()> {
         }
     }
 
-    if method.code.is_some() {
-        if !jvm
-            .verification_type_checking_disabled
-            .load(Ordering::SeqCst)
-        {
-            verify_bytecode(jvm, method)?
+    match &method.code {
+        Code::None => {
+            if !method.access_flags.contains(AccessFlags::ABSTRACT) {
+                return Err(ve(jvm, "missing code attribute"));
+            }
         }
-    } else if !method
-        .access_flags
-        .intersects(AccessFlags::NATIVE | AccessFlags::ABSTRACT)
-    {
-        return Err(ve(jvm, "missing code attribute"));
+        Code::Bytecode(code) => {
+            if !jvm
+                .verification_type_checking_disabled
+                .load(Ordering::SeqCst)
+            {
+                verify_bytecode(jvm, method, code)?
+            }
+        }
+        Code::Native(_) => assert!(method.access_flags.contains(AccessFlags::NATIVE)),
     }
 
     Ok(())
 }
 
-fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
+fn verify_bytecode(jvm: &Jvm, method: &Method, code: &Bytecode) -> JvmResult<()> {
     ///// for testing, TODO: remove this! /////
-    println!(
-        "verifying {}.{} ({})",
-        method.class().name,
-        method.nat.name,
-        jvm.verification_type_checking_disabled
-            .load(Ordering::SeqCst)
-    );
     if method.nat.name.as_ref() == "<init>" {
         return Ok(());
     }
+    // println!(
+    //     "verifying {}.{} ({})",
+    //     method.class().name,
+    //     method.nat.name,
+    //     jvm.verification_type_checking_disabled
+    //         .load(Ordering::SeqCst)
+    // );
     ///////////////////////////////////////////
 
-    let code = method.code.as_ref().unwrap();
     let const_pool = method.class().const_pool.read();
 
     // The initial typestate is not stored in the class file but derive from the method signature
@@ -256,7 +260,8 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
 
     let pc = &mut pc;
 
-    let any_object = VerificationType::ObjectVariable(jvm.resolve_class("java.lang.Object")?);
+    let any_object =
+        VerificationType::ObjectVariable(jvm.resolve_class_internal("java.lang.Object")?);
 
     // Iterate over all instructions
     // TODO: switch result to bool
@@ -291,9 +296,11 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                         type_state.stack.push(VerificationType::Integer)
                     }
                     Some(ConstPoolItem::Float(_)) => type_state.stack.push(VerificationType::Float),
-                    Some(ConstPoolItem::RawString(_)) => type_state.stack.push(
-                        VerificationType::ObjectVariable(jvm.resolve_class("java.lang.String")?),
-                    ),
+                    Some(ConstPoolItem::RawString(_)) => {
+                        type_state.stack.push(VerificationType::ObjectVariable(
+                            jvm.resolve_class_internal("java.lang.String")?,
+                        ))
+                    }
                     Some(ConstPoolItem::Class(class)) => type_state
                         .stack
                         .push(VerificationType::ObjectVariable(class)),
@@ -307,9 +314,11 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                         type_state.stack.push(VerificationType::Integer)
                     }
                     Some(ConstPoolItem::Float(_)) => type_state.stack.push(VerificationType::Float),
-                    Some(ConstPoolItem::RawString(_)) => type_state.stack.push(
-                        VerificationType::ObjectVariable(jvm.resolve_class("java.lang.String")?),
-                    ),
+                    Some(ConstPoolItem::RawString(_)) => {
+                        type_state.stack.push(VerificationType::ObjectVariable(
+                            jvm.resolve_class_internal("java.lang.String")?,
+                        ))
+                    }
                     Some(ConstPoolItem::Class(class)) => type_state
                         .stack
                         .push(VerificationType::ObjectVariable(class)),
@@ -496,7 +505,8 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
             }
             DUP_X2 => {
                 let first = type_state.pop(jvm)?;
-                let (Some(second), Some(third)) = (type_state.stack.pop(), type_state.stack.pop()) else {
+                let (Some(second), Some(third)) = (type_state.stack.pop(), type_state.stack.pop())
+                else {
                     return Err(ve(jvm, "invalid dup_x2"));
                 };
                 type_state.stack.push(first);
@@ -505,7 +515,8 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
                 type_state.stack.push(first);
             }
             DUP2 => {
-                let (Some(first), Some(second)) = (type_state.stack.pop(), type_state.stack.pop()) else {
+                let (Some(first), Some(second)) = (type_state.stack.pop(), type_state.stack.pop())
+                else {
                     return Err(ve(jvm, "invalid dup2"));
                 };
                 if second == VerificationType::Top {
@@ -563,7 +574,8 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
             }
             IADD | ISUB | IMUL | IDIV | IREM | ISHL | ISHR | IUSHR | IAND | IOR | IXOR => {
                 let (Some(VerificationType::Integer), Some(VerificationType::Integer)) =
-                    (type_state.stack.pop(), type_state.stack.pop()) else {
+                    (type_state.stack.pop(), type_state.stack.pop())
+                else {
                     return Err(ve(jvm, "invalid integer arithmetic"));
                 };
                 type_state.stack.push(VerificationType::Integer)
@@ -798,7 +810,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method) -> JVMResult<()> {
     Ok(())
 }
 
-fn pop_type<'b>(jvm: &'b Jvm, stack: &'b mut Vec<VerificationType>, typ: &Typ) -> JVMResult<()> {
+fn pop_type<'b>(jvm: &'b Jvm, stack: &'b mut Vec<VerificationType>, typ: &Typ) -> JvmResult<()> {
     if match (typ, stack.pop()) {
         (
             Typ::Boolean | Typ::Byte | Typ::Short | Typ::Char | Typ::Int,
@@ -827,7 +839,7 @@ fn load<'b>(
     type_state: &'b mut StackMapFrame,
     index: u16,
     typ: VerificationType,
-) -> JVMResult<()> {
+) -> JvmResult<()> {
     let var = type_state
         .locals
         .get(index as usize)
@@ -844,7 +856,7 @@ fn store<'b>(
     type_state: &'b mut StackMapFrame,
     index: u16,
     typ: VerificationType,
-) -> JVMResult<()> {
+) -> JvmResult<()> {
     let on_stack = type_state.pop(jvm)?;
 
     let mut cat2_success = true;
@@ -870,7 +882,7 @@ fn top_of_stack<'b>(
     jvm: &'b Jvm,
     type_state: &'b mut StackMapFrame,
     typ: VerificationType,
-) -> JVMResult<()> {
+) -> JvmResult<()> {
     if typ.category_2() {
         if (type_state.stack.len() > 1)
             && type_state.stack[type_state.stack.len() - 1] == VerificationType::Top
@@ -895,7 +907,7 @@ fn relative_jump<'b>(
     type_state: &'b mut StackMapFrame,
     bytes: &'b [u8],
     pc: &'b mut u16,
-) -> JVMResult<()> {
+) -> JvmResult<()> {
     let base = *pc - 1;
     let target_offset = read_code_u16(jvm, bytes, pc)? as i16;
     let target = (base as i32 + target_offset as i32) as u16;
@@ -920,7 +932,7 @@ fn small_array_type(typ: VerificationType) -> bool {
     }
 }
 
-fn read_code_u8(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JVMResult<u8> {
+fn read_code_u8(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JvmResult<u8> {
     *pc += 1;
     bytes
         .get(*pc as usize - 1)
@@ -928,6 +940,6 @@ fn read_code_u8(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JVMResult<u8> {
         .ok_or_else(|| ve(jvm, "incomplete instruction"))
 }
 
-fn read_code_u16(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JVMResult<u16> {
+fn read_code_u16(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JvmResult<u16> {
     Ok(((read_code_u8(jvm, bytes, pc)? as u16) << 8) + read_code_u8(jvm, bytes, pc)? as u16)
 }

@@ -108,6 +108,30 @@ fn invoke_virtual() {
 }
 
 #[test]
+fn invoke_native() {
+    let jvm = make_jvm();
+    jvm.register_native_method(
+        "Native",
+        "add",
+        [Typ::Int, Typ::Int],
+        Some(Typ::Long),
+        Box::new(|_, args| {
+            let (Value::Int(a), Value::Int(b)) = (args[0], args[1]) else {
+                panic!()
+            };
+            Ok(Value::Long(a as i64 + b as i64))
+        }),
+    );
+    let method = jvm
+        .resolve_method("Native", "add", [Typ::Int, Typ::Int], Some(Typ::Long))
+        .unwrap();
+    assert_eq!(
+        method.invoke(&[1.into(), 2.into()]).unwrap(),
+        Value::Long(3)
+    );
+}
+
+#[test]
 fn arrays() {
     let jvm = make_jvm();
     unsafe {
@@ -194,14 +218,17 @@ fn strings() {
         .field("foo", Typ::Ref("java.lang.String".into()))
         .unwrap()
         .static_get()
-        else { panic!() };
+    else {
+        panic!()
+    };
     let backing_field = jvm
         .resolve_class("java.lang.String")
         .unwrap()
         .field("chars", Typ::Ref("char[]".into()))
         .unwrap();
-    let Value::Ref(Some(chars)) = backing_field.instance_get(string)
-        else { panic!() };
+    let Value::Ref(Some(chars)) = backing_field.instance_get(string) else {
+        panic!()
+    };
     assert_eq!(format!("{:?}", chars), "\"bar\"");
 }
 

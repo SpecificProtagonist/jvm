@@ -5,14 +5,12 @@ use crate::{
     const_pool::ConstPool,
     field::{Field, FieldNaT},
     field_storage::FieldStorage,
-    jvm::exception,
-    jvm::JVMResult,
-    jvm::Jvm,
+    jvm::{exception, JvmResult},
     method::{MethodDescriptor, MethodNaT, MethodPtr},
     object::{self, Object},
     typ::Typ,
     verification::verify,
-    AccessFlags,
+    AccessFlags, Jvm,
 };
 
 /// Represents an interface, regular class, array class or enum.
@@ -27,12 +25,13 @@ pub(crate) struct Class {
     /// Afterward (such as when executing a function in this class), only read access is required.
     pub(crate) const_pool: RwLock<ConstPool>,
     pub(crate) access_flags: AccessFlags,
+    #[allow(dead_code)]
     pub(crate) interfaces: Vec<ClassPtr>,
     /// Does not contain inherited fields.
     /// As far as I can tell, JVM supports field overloading.
     pub(crate) fields: HashMap<FieldNaT, Field>,
     /// At the moment, this includes any inherited methods. Change this?
-    pub(crate) methods: HashMap<MethodNaT<'static>, MethodPtr>,
+    pub(crate) methods: HashMap<MethodNaT, MethodPtr>,
     pub(crate) static_storage: FieldStorage,
     /// Combined size of instance fields in normal class, 0 if array
     pub(crate) object_size: usize,
@@ -102,6 +101,7 @@ impl Class {
         (fields, static_layout.size(), object_layout.size())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn interface(&self) -> bool {
         self.access_flags.contains(AccessFlags::INTERACE)
     }
@@ -140,7 +140,7 @@ impl Class {
     /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.
     /// This happens automatically when a method belonging to this class is called.
     // May only be called by the library consumer or instuctions new, getstatic, putstatic or invokestatic or by being the initial class
-    pub fn ensure_init(&'static self, jvm: &Jvm) -> JVMResult<()> {
+    pub fn ensure_init(&'static self, jvm: &Jvm) -> JvmResult<()> {
         let mut guard = self.init.lock();
         match *guard {
             ClassInitState::Done => Ok(()),
@@ -180,7 +180,7 @@ impl Class {
     }
 
     /// This may only be called from self.ensure_init
-    fn init(&'static self, jvm: &Jvm) -> JVMResult<()> {
+    fn init(&'static self, jvm: &Jvm) -> JvmResult<()> {
         let mut const_pool = self.const_pool.write();
         // Preparation
         for field in self.fields.values() {
@@ -255,7 +255,7 @@ impl Class {
         // Initialization
         if let Some(initializer) = self.methods.get(&MethodNaT {
             name: "<clinit>".into(),
-            typ: &MethodDescriptor {
+            typ: MethodDescriptor {
                 args: vec![],
                 returns: None,
             },

@@ -7,14 +7,8 @@ use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     default,
     field::{Field, FieldNaT},
-    jvm::exception,
-    jvm::JVMResult,
-    jvm::Jvm,
-    method::Code,
-    method::Method,
-    method::MethodDescriptor,
-    method::MethodNaT,
-    method::{ExceptionHandler, MethodPtr},
+    jvm::{exception, Jvm, JvmResult},
+    method::{Bytecode, Code, ExceptionHandler, Method, MethodDescriptor, MethodNaT},
     object::Object,
     typ::Typ,
     verification::{StackMapFrame, VerificationType},
@@ -22,7 +16,7 @@ use crate::{
 };
 
 #[inline]
-fn read_u8(jvm: &Jvm, input: &mut &[u8]) -> JVMResult<u8> {
+fn read_u8(jvm: &Jvm, input: &mut &[u8]) -> JvmResult<u8> {
     if let Some(u8) = input.first() {
         *input = &input[1..];
         Ok(*u8)
@@ -31,25 +25,25 @@ fn read_u8(jvm: &Jvm, input: &mut &[u8]) -> JVMResult<u8> {
     }
 }
 
-fn read_u16(jvm: &Jvm, input: &mut &[u8]) -> JVMResult<u16> {
+fn read_u16(jvm: &Jvm, input: &mut &[u8]) -> JvmResult<u16> {
     let high = read_u8(jvm, input)?;
     let low = read_u8(jvm, input)?;
     Ok(((high as u16) << 8) + low as u16)
 }
 
-fn read_u32(jvm: &Jvm, input: &mut &[u8]) -> JVMResult<u32> {
+fn read_u32(jvm: &Jvm, input: &mut &[u8]) -> JvmResult<u32> {
     let high = read_u16(jvm, input)?;
     let low = read_u16(jvm, input)?;
     Ok(((high as u32) << 16) + low as u32)
 }
 
-fn read_u64(jvm: &Jvm, input: &mut &[u8]) -> JVMResult<u64> {
+fn read_u64(jvm: &Jvm, input: &mut &[u8]) -> JvmResult<u64> {
     let high = read_u32(jvm, input)?;
     let low = read_u32(jvm, input)?;
     Ok(((high as u64) << 32) + low as u64)
 }
 
-fn read_magic(jvm: &Jvm, input: &mut &[u8]) -> JVMResult<()> {
+fn read_magic(jvm: &Jvm, input: &mut &[u8]) -> JvmResult<()> {
     if 0xCAFEBABE == read_u32(jvm, input)? {
         Ok(())
     } else {
@@ -57,7 +51,7 @@ fn read_magic(jvm: &Jvm, input: &mut &[u8]) -> JVMResult<()> {
     }
 }
 
-fn read_const_pool_item(input: &mut &[u8], jvm: &Jvm) -> JVMResult<ConstPoolItem> {
+fn read_const_pool_item(input: &mut &[u8], jvm: &Jvm) -> JvmResult<ConstPoolItem> {
     use ConstPoolItem::*;
     match read_u8(jvm, input)? {
         1 => {
@@ -97,7 +91,7 @@ fn read_const_pool_item(input: &mut &[u8], jvm: &Jvm) -> JVMResult<ConstPoolItem
     }
 }
 
-fn read_const_pool(input: &mut &[u8], jvm: &Jvm) -> JVMResult<ConstPool> {
+fn read_const_pool(input: &mut &[u8], jvm: &Jvm) -> JvmResult<ConstPool> {
     let length = read_u16(jvm, input)? as usize;
     let mut items = Vec::with_capacity(length);
     items.push(ConstPoolItem::PlaceholderAfterLongOrDoubleEntryOrForEntryZero);
@@ -145,7 +139,7 @@ fn read_interfaces(
     jvm: &Jvm,
     input: &mut &[u8],
     const_pool: &ConstPool,
-) -> JVMResult<Vec<Arc<str>>> {
+) -> JvmResult<Vec<Arc<str>>> {
     let length = read_u16(jvm, input)?;
     let mut vec = Vec::with_capacity(length as usize);
     for _ in 0..length {
@@ -162,7 +156,7 @@ fn read_attribute<'a>(
     jvm: &Jvm,
     input: &mut &'a [u8],
     const_pool: &ConstPool,
-) -> JVMResult<(Arc<str>, &'a [u8])> {
+) -> JvmResult<(Arc<str>, &'a [u8])> {
     let name = const_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
     let attr_length = read_u32(jvm, input)?;
     if attr_length as usize > input.len() {
@@ -177,7 +171,7 @@ pub(crate) fn parse_typ_descriptor(
     jvm: &Jvm,
     descriptor: &str,
     start: usize,
-) -> JVMResult<(Typ, usize)> {
+) -> JvmResult<(Typ, usize)> {
     let str = &descriptor[start..];
     if let Some(typ) = match str.chars().next() {
         Some('Z') => Some(Typ::Boolean),
@@ -219,7 +213,7 @@ pub(crate) fn parse_typ_descriptor(
     }
 }
 
-fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMResult<Field> {
+fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmResult<Field> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
     if access_flags.contains(AccessFlags::FINAL | AccessFlags::VOLATILE) {
         return Err(cfe(jvm, "Field may not be final and volatile"));
@@ -256,7 +250,7 @@ fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMRes
     })
 }
 
-fn read_fields(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMResult<Vec<Field>> {
+fn read_fields(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmResult<Vec<Field>> {
     // Read fields
     let length = read_u16(jvm, input)?;
     let mut fields = Vec::new();
@@ -271,7 +265,7 @@ fn read_verification_type(
     jvm: &Jvm,
     input: &mut &[u8],
     const_pool: &ConstPool,
-) -> JVMResult<VerificationType> {
+) -> JvmResult<VerificationType> {
     Ok(match read_u8(jvm, input)? {
         0 => VerificationType::Top,
         1 => VerificationType::Integer,
@@ -295,7 +289,7 @@ pub(crate) fn read_stack_map_table(
     input: Option<&[u8]>,
     const_pool: &ConstPool,
     initial_locals: Vec<VerificationType>,
-) -> JVMResult<BTreeMap<u16, StackMapFrame>> {
+) -> JvmResult<BTreeMap<u16, StackMapFrame>> {
     let mut frames = BTreeMap::new();
     let mut pc = 0;
     frames.insert(
@@ -311,7 +305,7 @@ pub(crate) fn read_stack_map_table(
     let input = &mut input;
     let length = read_u16(jvm, input)?;
     for _ in 0..length {
-        let prev_frame = frames.iter().rev().next().unwrap().1;
+        let prev_frame = frames.iter().next_back().unwrap().1;
         let frame_type = read_u8(jvm, input)?;
         let (offset, current_frame) = if frame_type < 64 {
             // Same
@@ -399,7 +393,7 @@ pub(crate) fn read_stack_map_table(
     Ok(frames)
 }
 
-fn read_code(jvm: &Jvm, mut input: &[u8], constant_pool: &ConstPool) -> JVMResult<Code> {
+fn read_code(jvm: &Jvm, mut input: &[u8], constant_pool: &ConstPool) -> JvmResult<Bytecode> {
     let input = &mut input;
     let max_stack = read_u16(jvm, input)?;
     let max_locals = read_u16(jvm, input)?;
@@ -439,7 +433,7 @@ fn read_code(jvm: &Jvm, mut input: &[u8], constant_pool: &ConstPool) -> JVMResul
         return Err(cfe(jvm, "End of code attribute not reached"));
     }
 
-    Ok(Code {
+    Ok(Bytecode {
         max_stack,
         max_locals,
         bytes,
@@ -448,7 +442,7 @@ fn read_code(jvm: &Jvm, mut input: &[u8], constant_pool: &ConstPool) -> JVMResul
     })
 }
 
-pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JVMResult<MethodDescriptor> {
+pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JvmResult<MethodDescriptor> {
     if !descriptor.starts_with('(') {
         return Err(cfe(jvm, "Invalid method descriptor"));
     }
@@ -477,7 +471,7 @@ pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JVMResult<
     }
 }
 
-fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMResult<Method> {
+fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmResult<Method> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
 
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
@@ -485,23 +479,32 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JVMRe
     let descriptor = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
     let descriptor = parse_method_descriptor(jvm, &descriptor)?;
 
-    let mut code = None;
+    let mut code = Code::None;
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
         let (attr_name, bytes) = read_attribute(jvm, input, constant_pool)?;
         if attr_name.as_ref() == "Code" {
-            if code.is_none() {
-                code = Some(read_code(jvm, bytes, constant_pool)?);
+            if let Code::None = code {
+                code = Code::Bytecode(read_code(jvm, bytes, constant_pool)?);
             } else {
                 return Err(cfe(jvm, "Multiple code attributes on same method"));
             }
         }
     }
 
-    let typ = jvm.method_descriptor_storage.lock().alloc(descriptor);
+    if let Code::None = &code {
+        if !access_flags.contains(AccessFlags::ABSTRACT)
+            & !access_flags.contains(AccessFlags::NATIVE)
+        {
+            return Err(cfe(jvm, "Method missing code attribute"));
+        }
+    }
 
     Ok(Method {
-        nat: MethodNaT { name, typ },
+        nat: MethodNaT {
+            name,
+            typ: descriptor,
+        },
         access_flags,
         class: default(),
         code,
@@ -512,7 +515,7 @@ fn read_methods(
     input: &mut &[u8],
     constant_pool: &ConstPool,
     jvm: &Jvm,
-) -> JVMResult<HashMap<MethodNaT<'static>, MethodPtr>> {
+) -> JvmResult<HashMap<MethodNaT, Method>> {
     let length = read_u16(jvm, input)?;
     let mut methods = HashMap::with_capacity(length as usize);
     for _ in 0..length {
@@ -522,8 +525,7 @@ fn read_methods(
                 return Err(cfe(jvm, "Duplicate method in same class"));
             }
         }
-        let method = jvm.method_storage.lock().alloc(method);
-        methods.insert(method.nat.clone(), &*method);
+        methods.insert(method.nat.clone(), method);
     }
     Ok(methods)
 }
@@ -531,7 +533,7 @@ fn read_methods(
 /// class of each field is set to the dummy,
 /// super_class is set to None,
 /// actual superclass name (which needs to be resolved) is returned alongside,
-pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JVMResult<ClassDescriptor> {
+pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDescriptor> {
     let input = &mut input;
 
     read_magic(jvm, input)?;
@@ -590,7 +592,7 @@ pub(crate) struct ClassDescriptor {
     pub(crate) super_class: Option<Arc<str>>,
     pub(crate) interfaces: Vec<Arc<str>>,
     pub(crate) fields: Vec<Field>,
-    pub(crate) methods: HashMap<MethodNaT<'static>, MethodPtr>,
+    pub(crate) methods: HashMap<MethodNaT, Method>,
 }
 
 fn cfe(jvm: &Jvm, _message: &str) -> Object {

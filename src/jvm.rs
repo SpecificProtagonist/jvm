@@ -34,11 +34,20 @@ pub(crate) enum Value {
 // TODO: what to do if trying to throw an exception retursively throws infinite exceptions
 // (e.g. java.lang.Object is missing/corrupt)? Currently stackoverflow
 /// Err is an object that extends Throwable
-pub(crate) type JVMResult<T> = std::result::Result<T, Object>;
+pub(crate) type JvmResult<T> = std::result::Result<T, Object>;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) struct Jvm {
+/// Creates & manages classes and objects, which borrow from the Jvm.
+/// Multiple independent JVMs may exist.
+/// Mutable shared access follows Java's rules.
+///
+/// To operate correctly, the JVM requires a class library. The minimal
+/// version necessary to implement this is available under the `classes`
+/// folder of this repository. These aren't loaded automatically, your
+/// class library needs to be provided by the class loader. Missing or
+/// invalid classes may cause the thread to hang or crash.
+pub struct Jvm {
     /// Uniquely identifies the Jvm to prevent mixing of objects between Jvms
     pub(crate) id: u64,
     /// Currently there's a single class loader per Jvm.
@@ -49,9 +58,9 @@ pub(crate) struct Jvm {
     // Classes (including arrays), methods, method descriptors and interned strings live as long as the JVM
     // TODO: alloc on heap
     pub(crate) method_storage: Mutex<ManuallyDropArena<Method, 128>>,
-    /// Implementation detail of const_pool, maybe remove in the future
-    pub(crate) method_descriptor_storage: Mutex<ManuallyDropArena<MethodDescriptor, 128>>,
-    classes: RwLock<HashMap<Arc<str>, ClassPtr>>,
+    pub(crate) classes: RwLock<HashMap<Arc<str>, ClassPtr>>,
+    /// Native method code for classes not loaded yet
+    pub(crate) unbound_native_methods: Mutex<HashMap<String, HashMap<MethodNaT, NativeCode>>>,
 }
 
 impl Jvm {
@@ -65,26 +74,26 @@ impl Jvm {
             verification_type_checking_disabled: false.into(),
             heap,
             method_storage: default(),
-            method_descriptor_storage: default(),
             classes: default(),
+            unbound_native_methods: default(),
         }
     }
 
     /// Returns the class representing arrays of the given component.
     /// If the component is a class, this also loads it, its superclass (recursively) and any interfaces it implements.
     /// Does not initialize this class nor load any other class referenced.
-    pub fn resolve_array_of(&self, component: &Typ) -> JVMResult<ClassPtr> {
+    pub(crate) fn resolve_array_of(&self, component: &Typ) -> JvmResult<ClassPtr> {
         // Arrays of primitives inherit from objects,
         // other arrays inherit from arrays of the superclass of their component type
         let super_class = if let Typ::Ref(component) = &component {
-            let component = self.resolve_class(component)?;
+            let component = self.resolve_class_internal(component)?;
             if let Some(comp_super) = component.super_class {
                 self.resolve_array_of(&comp_super.typ())?
             } else {
-                self.resolve_class("java.lang.Object")?
+                self.resolve_class_internal("java.lang.Object")?
             }
         } else {
-            self.resolve_class("java.lang.Object")?
+            self.resolve_class_internal("java.lang.Object")?
         };
 
         let name: Arc<str> = format!("{component}[]").into();
@@ -123,7 +132,7 @@ impl Jvm {
     /// This also loads its superclass and any interfaces it implements.
     /// Does not initialize this class nor load any other class referenced.
     /// `name` must be fully qualified and may be a binary class name (https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.2.1) or describe an array.
-    pub fn resolve_class(&self, name: &str) -> JVMResult<ClassPtr> {
+    pub(crate) fn resolve_class_internal(&self, name: &str) -> JvmResult<ClassPtr> {
         self.resolve_class_impl(name, Vec::new())
     }
 
@@ -132,13 +141,16 @@ impl Jvm {
         &self,
         name: &str,
         mut check_circular: Vec<Arc<str>>,
-    ) -> JVMResult<ClassPtr> {
-        if let Some(class) = self.classes.read().get(name) {
+    ) -> JvmResult<ClassPtr> {
+        // Normalize binary class names
+        let name = name.replace('/', ".");
+
+        if let Some(class) = self.classes.read().get(name.as_str()) {
             return Ok(*class);
         }
         // Do we want to load an array (binary class name)?
         if name.starts_with('[') {
-            let (component, end) = parse::parse_typ_descriptor(self, name, 1)?;
+            let (component, end) = parse::parse_typ_descriptor(self, name.as_str(), 1)?;
             if end != name.len() {
                 return Err(exception(self, "ClassFormatError"));
             }
@@ -150,9 +162,6 @@ impl Jvm {
             return self.resolve_array_of(&component.into());
         }
 
-        // Normalize binary class names
-        let name = name.replace('/', ".");
-
         // We want to load a normal class
         let bytes = self
             .bootstrap_class_loader
@@ -161,11 +170,38 @@ impl Jvm {
 
         let mut class_desc = parse::read_class_file(&bytes, self)?;
 
+        // Bind native methods
+        let mut methods = HashMap::default();
+        for (nat, mut method) in class_desc.methods.drain() {
+            if method.access_flags.contains(AccessFlags::NATIVE) {
+                let mut native = self.unbound_native_methods.lock();
+                let Some(native) = native.get_mut(&name) else {
+                    return Err(exception(
+                        self,
+                        &format!("Class {name} has native method {nat}, but method is not bound"),
+                    ));
+                };
+                match native.remove(&nat) {
+                    Some(code) => method.code = Code::Native(code),
+                    None => {
+                        return Err(exception(
+                            self,
+                            &format!(
+                                "Class {name} has native method {nat}, but method is not bound"
+                            ),
+                        ))
+                    }
+                }
+            }
+            let method = &*self.method_storage.lock().alloc(method);
+            methods.insert(nat, method);
+        }
+
         if name != class_desc.name.as_ref() {
             return Err(exception(self, "NoClassDefFoundError"));
         }
 
-        let new_methods = class_desc.methods.clone();
+        let new_methods = methods.clone();
 
         // Superclasses loading & verification
         let super_class = if let Some(super_class_name) = class_desc.super_class {
@@ -185,7 +221,7 @@ impl Jvm {
 
             // Method resolution
             for (nat, method) in &super_class.methods {
-                class_desc.methods.entry(nat.clone()).or_insert(*method);
+                methods.entry(nat.clone()).or_insert(*method);
             }
             Some(super_class)
         } else {
@@ -216,7 +252,7 @@ impl Jvm {
                 access_flags: class_desc.access_flags,
                 interfaces,
                 fields,
-                methods: class_desc.methods,
+                methods,
                 static_storage,
                 object_size,
                 init: ClassInitState::Uninit.into(),
@@ -252,7 +288,7 @@ impl Jvm {
     /// # Panics
     /// Panics if class is an array class
     #[track_caller]
-    pub fn create_object(&self, class: ClassPtr) -> Object {
+    pub(crate) fn create_object(&self, class: ClassPtr) -> Object {
         if class.element_type.is_some() {
             panic!("{} is an array type", class.name)
         }
@@ -266,7 +302,7 @@ impl Jvm {
     /// # Panics
     /// Panics if length < 0 or class is not an array class.
     #[track_caller]
-    pub fn create_array(&self, class: ClassPtr, length: i32) -> Object {
+    pub(crate) fn create_array_internal(&self, class: ClassPtr, length: i32) -> Object {
         self.create_array_impl(
             class,
             class
@@ -277,11 +313,11 @@ impl Jvm {
         )
     }
 
-    /// Creates an bdcvbmn, n vdcn bmf,.vn dc.,m-nön-nnnon the heap.
+    /// Creates an array on the heap.
     /// # Panics
     /// Panics if length < 0 or the component is a class that fails to load.
     #[track_caller]
-    pub fn create_array_of(&self, component: &Typ, length: i32) -> Object {
+    pub(crate) fn create_array_of(&self, component: &Typ, length: i32) -> Object {
         let class = self
             .resolve_array_of(component)
             .expect("Failed to resolve class");
@@ -318,7 +354,6 @@ impl Drop for Jvm {
         // SAFETY: All references have lifetime 'a and no member of JVM has a drop impl that dereferences them
         unsafe {
             ManuallyDropArena::drop(&mut self.method_storage.lock());
-            ManuallyDropArena::drop(&mut self.method_descriptor_storage.lock());
         }
     }
 }
@@ -326,7 +361,7 @@ impl Drop for Jvm {
 /// For exceptions and errors thrown by the JVM (instead of by athrow).
 /// `name` is unqualified.
 pub(crate) fn exception(jvm: &Jvm, name: &str) -> Object {
-    match jvm.resolve_class(&format!("java.lang.{name}")) {
+    match jvm.resolve_class_internal(&format!("java.lang.{name}")) {
         Ok(class) => {
             if let Err(thrown) = class.ensure_init(jvm) {
                 thrown

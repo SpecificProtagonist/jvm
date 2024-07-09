@@ -5,9 +5,8 @@ use crate::{
     field_storage::FieldStorage,
     heap::{JVMPtr, NULL_PTR},
     instructions::*,
-    jvm::exception,
-    jvm::{JVMResult, Jvm, Value},
-    method::Method,
+    jvm::{exception, Jvm, JvmResult, Value},
+    method::{Bytecode, Code, Method, NativeCode},
     object::Object,
     typ::Typ,
     AccessFlags,
@@ -17,7 +16,7 @@ pub(crate) fn invoke(
     jvm: &Jvm,
     method: &Method,
     args: impl IntoIterator<Item = Value>,
-) -> JVMResult<Value> {
+) -> JvmResult<Value> {
     method.class().ensure_init(jvm)?;
     let mut arg_values = Vec::new();
     for arg in args {
@@ -42,7 +41,7 @@ pub(crate) fn invoke(
 }
 
 /// Called on <clinit> during class initialization
-pub(crate) fn invoke_initializer(jvm: &Jvm, initializer: &Method) -> JVMResult<()> {
+pub(crate) fn invoke_initializer(jvm: &Jvm, initializer: &Method) -> JvmResult<()> {
     invoke_initialized(jvm, initializer, &[]).map(|_| ())
 }
 
@@ -65,21 +64,79 @@ type SlotSize = u32;
 struct IVal(SlotSize);
 
 /// Requires that the class is already initialized, or method is the initializer
-fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JVMResult<Value> {
-    if method.code.is_none() {
-        todo!("Methods without code attribute");
+fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Value> {
+    match &method.code {
+        Code::None => todo!("Abstract method"),
+        Code::Bytecode(code) => interpret(jvm, method, code, args),
+        Code::Native(code) => native(jvm, method, code, args),
     }
+}
 
+/// Requires that the class is already initialized, or method is the initializer
+fn native(jvm: &Jvm, method: &Method, code: &NativeCode, args: &[IVal]) -> JvmResult<Value> {
+    let mut values = Vec::new();
+    let mut i = 0;
+    for arg in &method.nat.typ.args {
+        match arg {
+            Typ::Boolean => {
+                values.push(crate::Value::Boolean(args[i].as_int() != 0));
+                i += 1;
+            }
+            Typ::Byte => {
+                values.push(crate::Value::Byte(args[i].as_int() as i8));
+                i += 1;
+            }
+            Typ::Short => {
+                values.push(crate::Value::Short(args[i].as_int() as i16));
+                i += 1;
+            }
+            Typ::Char => {
+                values.push(crate::Value::Char(args[i].as_int() as u16));
+                i += 1;
+            }
+            Typ::Int => {
+                values.push(crate::Value::Int(args[i].as_int()));
+                i += 1;
+            }
+            Typ::Long => {
+                values.push(crate::Value::Long(IVal::as_long(args[i], args[i + 1])));
+                i += 2;
+            }
+            Typ::Float => {
+                values.push(crate::Value::Float(args[i].as_float()));
+                i += 1;
+            }
+            Typ::Double => {
+                values.push(crate::Value::Double(IVal::as_double(args[i], args[i + 1])));
+                i += 2;
+            }
+            Typ::Ref(_) => {
+                values.push(crate::Value::Ref(unsafe {
+                    args[i].as_ref().map(|value| crate::Object::new(jvm, value))
+                }));
+                i += 1;
+            }
+        }
+    }
+    // TODO: StackOverflowError
+    match code(jvm, &values) {
+        Ok(ret) => {
+            // TODO: Validate return type
+            Ok(ret.into_inner(jvm))
+        }
+        Err(err) => Err(err.into_inner(jvm)),
+    }
+}
+
+/// Requires that the class is already initialized, or method is the initializer
+fn interpret(jvm: &Jvm, method: &Method, code: &Bytecode, args: &[IVal]) -> JvmResult<Value> {
     // The class is already initialized, so we can hold the read lock for as long as we like
     let const_pool = method.class().const_pool.read();
 
-    let code = method.code.as_ref().unwrap();
-
     let mut frame = Frame {
-        method,
         code_bytes: &code.bytes,
         locals: {
-            let max_locals = method.code.as_ref().unwrap().max_locals as usize;
+            let max_locals = code.max_locals as usize;
             let mut locals = Vec::with_capacity(max_locals);
             locals.extend_from_slice(args);
             while locals.len() < max_locals {
@@ -87,7 +144,7 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JVMResult<Va
             }
             locals
         },
-        stack: Vec::with_capacity(method.code.as_ref().unwrap().max_stack as usize),
+        stack: Vec::with_capacity(code.max_stack as usize),
         pc: 0,
     };
 
@@ -126,7 +183,7 @@ fn run_until_exception_or_return(
     method: &Method,
     const_pool: &ConstPool,
     frame: &mut Frame,
-) -> JVMResult<Value> {
+) -> JvmResult<Value> {
     loop {
         match frame.read_code_u8() {
             NOP => {}
@@ -839,9 +896,9 @@ fn run_until_exception_or_return(
                 let class = const_pool.get_class(jvm, index)?;
                 fn create_array(jvm: &Jvm, dimensions: &[IVal], class: ClassPtr) -> Object {
                     let len = dimensions[0].as_int();
-                    let array = jvm.create_array(class, len);
+                    let array = jvm.create_array_internal(class, len);
                     if let Some(Typ::Ref(element_type)) = &class.element_type {
-                        let class = jvm.resolve_class(element_type).unwrap();
+                        let class = jvm.resolve_class_internal(element_type).unwrap();
                         for i in 0..len {
                             array.array_write(i, create_array(jvm, &dimensions[1..], class).into());
                         }
@@ -928,7 +985,7 @@ fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
     }
 }
 
-fn execute_invoke_instr(jvm: &Jvm, frame: &mut Frame, method: &Method) -> JVMResult<()> {
+fn execute_invoke_instr(jvm: &Jvm, frame: &mut Frame, method: &Method) -> JvmResult<()> {
     let mut arg_slots = method.nat.typ.arg_slots();
     if !method.access_flags.contains(AccessFlags::STATIC) {
         // `this` is treated as an argument, but not mentioned in method descriptor
@@ -1006,13 +1063,13 @@ impl IVal {
         f64::from_bits(low.0 as u64 + ((high.0 as u64) << 32))
     }
 
+    /// SAFETY: Must be null or a valid ptr to an object
     unsafe fn as_ref(self) -> Option<Object> {
         Object::from_ptr(self.0)
     }
 }
 
 struct Frame<'a> {
-    method: &'a Method,
     code_bytes: &'a [u8],
     locals: Vec<IVal>,
     stack: Vec<IVal>,
@@ -1033,7 +1090,12 @@ impl<'jvm> Frame<'jvm> {
     }
 
     fn pop(&mut self) -> IVal {
-        self.stack.pop().expect("Popped empty stack")
+        debug_assert!(!self.stack.is_empty());
+        unsafe {
+            let value = *self.stack.get_unchecked(self.stack.len() - 1);
+            self.stack.set_len(self.stack.len() - 1);
+            value
+        }
     }
 
     fn pop_long(&mut self) -> i64 {
@@ -1059,7 +1121,7 @@ impl<'jvm> Frame<'jvm> {
     }
 
     fn read_code_u8(&mut self) -> u8 {
-        // SAFETY: This always succeeds because bounds were already checked during verification
+        debug_assert!(self.code_bytes.len() >= self.pc as usize);
         let byte = unsafe { *self.code_bytes.get_unchecked(self.pc as usize) };
         self.pc += 1;
         byte
@@ -1074,6 +1136,6 @@ impl<'jvm> Frame<'jvm> {
     }
 
     fn read_previous_byte(&mut self) -> u8 {
-        self.method.code.as_ref().unwrap().bytes[self.pc as usize - 1]
+        unsafe { *self.code_bytes.get_unchecked(self.pc as usize - 1) }
     }
 }

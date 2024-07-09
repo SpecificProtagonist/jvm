@@ -1,6 +1,6 @@
 This is a toy embeddable JVM in writen in Rust. It is very much WIP and aims to eventually 
 implement most of the Java 8 JVM specification (except for the loading of classes with version <50.0).
-As this is intended as a learning experience, the choice of which features to implement is
+As this is intended as a toy / a learning experience, the choice of which features to implement is
 not determined by practicality but by how interested I'm in doing so.
 
 ```rust, no_run
@@ -33,10 +33,12 @@ Currently implemented:
 Some mayor missing features:
 - garbage collection
 - interfaces
+- method references
 - some bytecodes
 - private/protected
 - locking
-- a way to call native code
+- performance optimizations
+- hot reloading
 
 This is only a JVM, not including a proper class library. The problem is that the JVM
 specification depends on a number of classes, but never bothers to specify what it requires

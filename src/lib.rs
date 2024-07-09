@@ -17,6 +17,7 @@ mod typ;
 mod verification;
 
 use std::{
+    collections::hash_map::Entry,
     fmt::{Debug, Display},
     hash::Hash,
     sync::atomic::Ordering,
@@ -24,14 +25,14 @@ use std::{
 
 pub use class_loader::{ClassLoader, FolderClassLoader};
 pub use field::FieldNaT;
+pub use jvm::Jvm;
+pub use method::NativeCode;
 pub use method::{MethodDescriptor, MethodNaT};
 pub use typ::Typ;
 
 fn default<T: Default>() -> T {
     Default::default()
 }
-
-// @next: Test abstract methods
 
 // This file represents most of the public interface.
 // It defines wrapper types that ensure types don't outlive the Jvm
@@ -56,46 +57,28 @@ fn default<T: Default>() -> T {
 // - when accessing fields (in `fields_storage.rs` and when dereferencing pointers to objects)
 // Unfortunately, for most of this the safety boundary is at the crate level.
 
-/// Creates & manages classes and objects, which borrow from the Jvm.
-/// Multiple independent JVMs may exist.
-/// Mutable shared access follows Java's rules.
-///
-/// To operate correctly, the JVM requires a class library. The minimal
-/// version necessary to implement this is available under the `classes`
-/// folder of this repository. These aren't loaded automatically, your
-/// class library needs to be provided by the class loader. Missing or
-/// invalid classes may cause the thread to hang or crash.
-#[derive(Eq)]
-pub struct Jvm(jvm::Jvm);
-
 impl Jvm {
-    pub fn new(base_class_loader: Box<dyn ClassLoader>) -> Self {
-        Self(jvm::Jvm::new(base_class_loader))
-    }
-
     /// Bypasses bytecode verification. This is currently necessary
     /// because veryfication is not yet implemented for all opcodes and
     /// will be removed afterwards.
+    ///
     /// # Safety
     /// Undefined behavior if any invalid class gets initialized
     pub unsafe fn disable_verification_by_type_checking(&self) {
-        self.0
-            .verification_type_checking_disabled
+        self.verification_type_checking_disabled
             .store(true, Ordering::SeqCst);
     }
 
     pub fn enable_verification_by_type_checking(&self) {
-        self.0
-            .verification_type_checking_disabled
+        self.verification_type_checking_disabled
             .store(false, Ordering::SeqCst)
     }
 
     /// Returns the class, loading it if it wasn't already loaded.
     /// This also loads its superclass and any interfaces it implements.
     /// Does not initialize this class, nor load any other class referenced.
-    pub fn resolve_class<'a>(&'a self, name: &str) -> JVMResult<'a, Class<'a>> {
-        self.0
-            .resolve_class(name)
+    pub fn resolve_class<'a>(&'a self, name: &str) -> JvmResult<'a, Class<'a>> {
+        self.resolve_class_internal(name)
             .map(|value| Class { jvm: self, value })
             .map_err(|value| Object::new(self, value))
     }
@@ -108,34 +91,84 @@ impl Jvm {
         method: &str,
         args: impl IntoIterator<Item = Typ>,
         returns: Option<Typ>,
-    ) -> JVMResult<'a, Method<'a>> {
-        self.0
-            .resolve_class(class)
+    ) -> JvmResult<'a, Method<'a>> {
+        self.resolve_class_internal(class)
             .map_err(|value| Object::new(self, value))?
             .methods
             .get(&MethodNaT {
                 name: method.into(),
-                typ: &MethodDescriptor {
+                typ: MethodDescriptor {
                     args: args.into_iter().collect(),
                     returns,
                 },
             })
-            .ok_or_else(|| jvm::exception(&self.0, "NoSuchMethodError"))
+            .ok_or_else(|| jvm::exception(self, "NoSuchMethodError"))
             .map(|value| Method { jvm: self, value })
             .map_err(|value| Object::new(self, value))
     }
 
     /// Creates an array on the heap
+    ///
     /// # Panics
     /// Panics if length < 0
     pub fn create_array<'a>(&'a self, typ: &Typ, length: i32) -> Object<'a> {
-        Object::new(self, self.0.create_array_of(typ, length))
+        Object::new(self, self.create_array_of(typ, length))
     }
-}
 
-impl PartialEq for Jvm {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.id == other.0.id
+    /// Register code for a native method. Method needs to be marked as native.
+    /// If the method isn't static, the first argument passed will be the object it is invoked on.
+    ///
+    /// # Panics
+    /// Panics if the class is already loaded.
+    pub fn register_native_method(
+        &self,
+        class: &str,
+        name: &str,
+        args: impl IntoIterator<Item = Typ>,
+        returns: Option<Typ>,
+        native: NativeCode,
+    ) {
+        self.register_native_method_by_nat(
+            class,
+            MethodNaT {
+                name: name.into(),
+                typ: MethodDescriptor {
+                    args: args.into_iter().collect(),
+                    returns,
+                },
+            },
+            native,
+        )
+    }
+    /// Register code for a native method. Method needs to be marked as native.
+    /// If the method isn't static, the first argument passed will be the object it is invoked on.
+    ///
+    /// # Panics
+    /// Panics if the class is already loaded.
+    pub fn register_native_method_by_nat(
+        &self,
+        class: &str,
+        method: MethodNaT,
+        native: NativeCode,
+    ) {
+        let classes = self.classes.read();
+        if classes.contains_key(class) {
+            panic!("Failed to register native method: Class already loaded");
+        }
+        match self
+            .unbound_native_methods
+            .lock()
+            .entry(class.to_owned())
+            .or_default()
+            .entry(method)
+        {
+            Entry::Occupied(entry) => {
+                panic!("Native method {class}.{} already registered", entry.key());
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(native);
+            }
+        }
     }
 }
 
@@ -144,17 +177,17 @@ macro_rules! define_guard {
         $(#[$doc])*
         pub struct $guard_typ<'a> {
             value: $impl_typ,
-            jvm: &'a Jvm,
+            jvm: &'a jvm::Jvm,
         }
 
         impl<'a> $guard_typ<'a> {
-            fn new(jvm: &'a Jvm, value: $impl_typ) -> Self {
+            fn new(jvm: &'a jvm::Jvm, value: $impl_typ) -> Self {
                 Self { value, jvm }
             }
 
             #[allow(dead_code)]
-            fn into_inner(self, jvm: &Jvm) -> $impl_typ {
-                if self.jvm.0.id == jvm.0.id {
+            fn into_inner(self, jvm: &jvm::Jvm) -> $impl_typ {
+                if self.jvm.id == jvm.id {
                     self.value
                 } else {
                     panic!("Wrong JVM accessed")
@@ -213,8 +246,9 @@ impl<'a> Object<'a> {
     }
 
     /// Returns either the value at index.
+    ///
     /// # Panics
-    /// if the object is not an array or the index is out of bounds.
+    /// Panics if the object is not an array or the index is out of bounds.
     pub fn array_read(self, index: i32) -> Value<'a> {
         Value::new(
             self.jvm,
@@ -225,8 +259,9 @@ impl<'a> Object<'a> {
 
     /// Sets an array element. If the element type is boolean, byte, short or char,
     /// the `JVMValue::Int` is truncated
+    ///
     /// # Panics
-    /// if object is not an array, the element type mismatches, the index is out of bounds
+    /// Panics if object is not an array, the element type mismatches, the index is out of bounds
     /// or the value is an object created by another JVM.
     pub fn array_write(self, index: i32, value: Value<'a>) {
         self.value.array_write(index, value.into_inner(self.jvm))
@@ -254,7 +289,7 @@ impl<'a> Class<'a> {
 
     /// Returns the array class which has this class as its element type.
     pub fn array_class(self) -> Self {
-        Class::new(self.jvm, self.jvm.0.resolve_array_of(&self.typ()).unwrap())
+        Class::new(self.jvm, self.jvm.resolve_array_of(&self.typ()).unwrap())
     }
 
     /// Convenience method for getting this class' type
@@ -300,7 +335,7 @@ impl<'a> Class<'a> {
     ) -> Option<Method<'a>> {
         self.method_by_nat(&MethodNaT {
             name: name.into(),
-            typ: &MethodDescriptor {
+            typ: MethodDescriptor {
                 args: args.into_iter().collect(),
                 returns: ret,
             },
@@ -318,17 +353,18 @@ impl<'a> Class<'a> {
 
     /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.
     /// This happens automatically when a method belonging to this class is called.
-    pub fn ensure_init(self) -> JVMResult<'a, ()> {
+    pub fn ensure_init(self) -> JvmResult<'a, ()> {
         self.value
-            .ensure_init(&self.jvm.0)
+            .ensure_init(self.jvm)
             .map_err(|value| Object::new(self.jvm, value))
     }
 
     /// Creates an instance of a non-array class on the heap without invoking its constructor
+    ///
     /// # Panics
     /// Panics if this is an array class.
     pub fn create_object_uninit(self) -> Object<'a> {
-        Object::new(self.jvm, self.jvm.0.create_object(self.value))
+        Object::new(self.jvm, self.jvm.create_object(self.value))
     }
 
     // TODO:
@@ -363,6 +399,7 @@ impl<'a> Field<'a> {
 
     /// Get the value of a static field.
     /// Note that this might not be initialized yet unless a method has been called on this class.
+    ///
     /// # Panics
     /// Panics if the field is not static.
     pub fn static_get(&self) -> Value<'a> {
@@ -374,6 +411,7 @@ impl<'a> Field<'a> {
     }
 
     /// Get the value of an object's field.
+    ///
     /// # Panics
     /// Panics if the field is static or the object is not an instance of the class corresponding to this field.
     pub fn instance_get(&self, object: Object) -> Value<'a> {
@@ -385,6 +423,7 @@ impl<'a> Field<'a> {
     }
 
     /// Set the value of a static field.
+    ///
     /// # Panics
     /// Panics if the field is not static or the value is not assignable to the field's type
     /// or the value is an object created by a different JVM
@@ -393,6 +432,7 @@ impl<'a> Field<'a> {
     }
 
     /// Get the value of an object's field.
+    ///
     /// # Panics
     /// Panics if the field is static,
     /// the object is not an instance of the class corresponding to this field,
@@ -420,7 +460,7 @@ impl<'a> Method<'a> {
 
     /// The name and type signature of the method. There may be multiple methods of the same
     /// name but differing types in the same class.
-    pub fn name_and_type(&self) -> MethodNaT<'a> {
+    pub fn name_and_type(&self) -> MethodNaT {
         self.value.nat()
     }
 
@@ -431,12 +471,13 @@ impl<'a> Method<'a> {
     // TODO: publicly accessible dynamic method resolution
     /// Calls the method, initializing its class if necessary.
     /// Returns either the function's return value or the exception that was thrown
+    ///
     /// # Panics
     /// Panics if any of the [`Value`]s is an object created by another JVM
-    pub fn invoke(&self, args: &[Value<'a>]) -> JVMResult<'a, Value<'a>> {
+    pub fn invoke(&self, args: &[Value<'a>]) -> JvmResult<'a, Value<'a>> {
         // TODO: Check for argument type mismatch
         interpreter::invoke(
-            &self.jvm.0,
+            self.jvm,
             self.value,
             args.iter().map(|arg| arg.into_inner(self.jvm)),
         )
@@ -592,7 +633,7 @@ impl<'a> PartialEq<Value<'a>> for () {
 
 /// Err is an object that extends Throwable.
 /// Currently no call stack is provided.
-pub type JVMResult<'a, T> = std::result::Result<T, Object<'a>>;
+pub type JvmResult<'a, T> = std::result::Result<T, Object<'a>>;
 
 bitflags::bitflags! {
     /// Access flags of a class, field or method
