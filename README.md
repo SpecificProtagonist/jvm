@@ -21,11 +21,11 @@ let field_value = field.static_get();
 
 Currently implemented:
 - class loading/initialization
-- verification by type checking (not all instructions covered yet)
+- verification by type checking (partially)
 - operations on primitives
 - intra-function control flow
 - exceptions
-- calling static & instance functions (except via interfaces)
+- functions calls (except via interfaces)
 - creating objects, including arrays
 - accessing fields & array elements
 - compressed pointers on x86-64 Linux

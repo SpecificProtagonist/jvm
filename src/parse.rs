@@ -530,9 +530,6 @@ fn read_methods(
     Ok(methods)
 }
 
-/// class of each field is set to the dummy,
-/// super_class is set to None,
-/// actual superclass name (which needs to be resolved) is returned alongside,
 pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDescriptor> {
     let input = &mut input;
 
@@ -540,7 +537,7 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
     let _minor_version = read_u16(jvm, input)?;
     let major_version = read_u16(jvm, input)?;
 
-    if !(50..=52).contains(&major_version) {
+    if major_version < 50 {
         return Err(exception(jvm, "UnsupportedClassVersionError"));
     }
 

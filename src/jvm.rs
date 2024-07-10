@@ -2,6 +2,7 @@ use crate::heap::Heap;
 use crate::{class_loader::ClassLoader, AccessFlags};
 use fixed_typed_arena::ManuallyDropArena;
 use parking_lot::{Mutex, RwLock};
+use std::collections::hash_map::Entry;
 use std::{
     // TODO: posibly exchange for different hasher (benchmark)
     collections::HashMap,
@@ -64,8 +65,7 @@ pub struct Jvm {
 }
 
 impl Jvm {
-    /// Construct a new JVM. When searching for class definitions, the folders specified in
-    /// `class_path` are searched in order.
+    /// Construct a new JVM.
     pub fn new(base_class_loader: Box<dyn ClassLoader>) -> Self {
         let heap = Heap::default();
         Self {
@@ -76,6 +76,137 @@ impl Jvm {
             method_storage: default(),
             classes: default(),
             unbound_native_methods: default(),
+        }
+    }
+
+    /// Bypasses bytecode verification. This is currently necessary
+    /// because veryfication is not yet implemented for all opcodes and
+    /// will be removed afterwards.
+    ///
+    /// # Safety
+    /// Undefined behavior if any invalid class gets initialized
+    pub unsafe fn disable_verification_by_type_checking(&self) {
+        self.verification_type_checking_disabled
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub fn enable_verification_by_type_checking(&self) {
+        self.verification_type_checking_disabled
+            .store(false, Ordering::SeqCst)
+    }
+
+    /// Returns the class, loading it if it wasn't already loaded.
+    /// This also loads its superclass and any interfaces it implements.
+    /// Does not initialize this class, nor load any other class referenced.
+    pub fn resolve_class<'a>(&'a self, name: &str) -> crate::JvmResult<'a, crate::Class<'a>> {
+        self.resolve_class_internal(name)
+            .map(|value| crate::Class { jvm: self, value })
+            .map_err(|value| crate::Object::new(self, value))
+    }
+
+    /// Convenience method.
+    /// Includes inherited dynamic methods.
+    pub fn resolve_method<'a>(
+        &'a self,
+        class: &str,
+        method: &str,
+        args: impl IntoIterator<Item = Typ>,
+        returns: Option<Typ>,
+    ) -> crate::JvmResult<'a, crate::Method<'a>> {
+        self.resolve_class_internal(class)
+            .map_err(|value| crate::Object::new(self, value))?
+            .methods
+            .get(&MethodNaT {
+                name: method.into(),
+                typ: MethodDescriptor {
+                    args: args.into_iter().collect(),
+                    returns,
+                },
+            })
+            .ok_or_else(|| exception(self, "NoSuchMethodError"))
+            .map(|value| crate::Method { jvm: self, value })
+            .map_err(|value| crate::Object::new(self, value))
+    }
+
+    /// Creates an object via constructor.
+    pub fn create_object<'a>(
+        &'a self,
+        class: &str,
+        arg_types: impl IntoIterator<Item = Typ>,
+        mut args: Vec<crate::Value<'a>>,
+    ) -> crate::JvmResult<'a, crate::Object<'a>> {
+        let class = self.resolve_class(class)?;
+        let object = crate::Object::new(self, self.create_object_uninitialized(class.value));
+        args.insert(0, crate::Value::Ref(Some(object)));
+        let constructor = class
+            .method("<init>", arg_types, None)
+            .ok_or_else(|| crate::Object::new(self, exception(self, "NoSuchMethodError")))?;
+        constructor.invoke(&args)?;
+        Ok(object)
+    }
+
+    /// Creates an array on the heap.
+    ///
+    /// # Panics
+    /// Panics if length < 0
+    pub fn create_array<'a>(&'a self, typ: &Typ, length: i32) -> crate::Object<'a> {
+        crate::Object::new(self, self.create_array_of(typ, length))
+    }
+
+    /// Register code for a native method. Method needs to be marked as native.
+    /// If the method isn't static, the first argument passed will be the object it is invoked on.
+    ///
+    /// # Panics
+    /// Panics if the class is already loaded.
+    pub fn register_native_method(
+        &self,
+        class: &str,
+        name: &str,
+        args: impl IntoIterator<Item = Typ>,
+        returns: Option<Typ>,
+        native: NativeCode,
+    ) {
+        self.register_native_method_by_nat(
+            class,
+            MethodNaT {
+                name: name.into(),
+                typ: MethodDescriptor {
+                    args: args.into_iter().collect(),
+                    returns,
+                },
+            },
+            native,
+        )
+    }
+
+    /// Register code for a native method. Method needs to be marked as native.
+    /// If the method isn't static, the first argument passed will be the object it is invoked on.
+    ///
+    /// # Panics
+    /// Panics if the class is already loaded.
+    pub fn register_native_method_by_nat(
+        &self,
+        class: &str,
+        method: MethodNaT,
+        native: NativeCode,
+    ) {
+        let classes = self.classes.read();
+        if classes.contains_key(class) {
+            panic!("Failed to register native method: crate::Class already loaded");
+        }
+        match self
+            .unbound_native_methods
+            .lock()
+            .entry(class.to_owned())
+            .or_default()
+            .entry(method)
+        {
+            Entry::Occupied(entry) => {
+                panic!("Native method {class}.{} already registered", entry.key());
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(native);
+            }
         }
     }
 

@@ -17,15 +17,12 @@ mod typ;
 mod verification;
 
 use std::{
-    collections::hash_map::Entry,
     fmt::{Debug, Display},
     hash::Hash,
-    sync::atomic::Ordering,
 };
 
 pub use class_loader::{ClassLoader, FolderClassLoader};
 pub use field::FieldNaT;
-use jvm::exception;
 pub use jvm::Jvm;
 pub use method::NativeCode;
 pub use method::{MethodDescriptor, MethodNaT};
@@ -34,10 +31,6 @@ pub use typ::Typ;
 fn default<T: Default>() -> T {
     Default::default()
 }
-
-// This file represents most of the public interface.
-// It defines wrapper types that ensure types don't outlive the Jvm
-// they belong to or get used with a different Jvm.
 
 // Rough overview:
 // - a `Jvm` contains classes and objects
@@ -58,138 +51,8 @@ fn default<T: Default>() -> T {
 // - when accessing fields (in `fields_storage.rs` and when dereferencing pointers to objects)
 // Unfortunately, for most of this the safety boundary is at the crate level.
 
-impl Jvm {
-    /// Bypasses bytecode verification. This is currently necessary
-    /// because veryfication is not yet implemented for all opcodes and
-    /// will be removed afterwards.
-    ///
-    /// # Safety
-    /// Undefined behavior if any invalid class gets initialized
-    pub unsafe fn disable_verification_by_type_checking(&self) {
-        self.verification_type_checking_disabled
-            .store(true, Ordering::SeqCst);
-    }
-
-    pub fn enable_verification_by_type_checking(&self) {
-        self.verification_type_checking_disabled
-            .store(false, Ordering::SeqCst)
-    }
-
-    /// Returns the class, loading it if it wasn't already loaded.
-    /// This also loads its superclass and any interfaces it implements.
-    /// Does not initialize this class, nor load any other class referenced.
-    pub fn resolve_class<'a>(&'a self, name: &str) -> JvmResult<'a, Class<'a>> {
-        self.resolve_class_internal(name)
-            .map(|value| Class { jvm: self, value })
-            .map_err(|value| Object::new(self, value))
-    }
-
-    /// Convenience method.
-    /// Includes inherited dynamic methods.
-    pub fn resolve_method<'a>(
-        &'a self,
-        class: &str,
-        method: &str,
-        args: impl IntoIterator<Item = Typ>,
-        returns: Option<Typ>,
-    ) -> JvmResult<'a, Method<'a>> {
-        self.resolve_class_internal(class)
-            .map_err(|value| Object::new(self, value))?
-            .methods
-            .get(&MethodNaT {
-                name: method.into(),
-                typ: MethodDescriptor {
-                    args: args.into_iter().collect(),
-                    returns,
-                },
-            })
-            .ok_or_else(|| jvm::exception(self, "NoSuchMethodError"))
-            .map(|value| Method { jvm: self, value })
-            .map_err(|value| Object::new(self, value))
-    }
-
-    /// Creates an object via constructor.
-    pub fn create_object<'a>(
-        &'a self,
-        class: &str,
-        arg_types: impl IntoIterator<Item = Typ>,
-        mut args: Vec<Value<'a>>,
-    ) -> JvmResult<'a, Object<'a>> {
-        let class = self.resolve_class(class)?;
-        let object = Object::new(self, self.create_object_uninitialized(class.value));
-        args.insert(0, Value::Ref(Some(object)));
-        let constructor = class
-            .method("<init>", arg_types, None)
-            .ok_or_else(|| Object::new(self, exception(self, "NoSuchMethodError")))?;
-        constructor.invoke(&args)?;
-        Ok(object)
-    }
-
-    /// Creates an array on the heap.
-    ///
-    /// # Panics
-    /// Panics if length < 0
-    pub fn create_array<'a>(&'a self, typ: &Typ, length: i32) -> Object<'a> {
-        Object::new(self, self.create_array_of(typ, length))
-    }
-
-    /// Register code for a native method. Method needs to be marked as native.
-    /// If the method isn't static, the first argument passed will be the object it is invoked on.
-    ///
-    /// # Panics
-    /// Panics if the class is already loaded.
-    pub fn register_native_method(
-        &self,
-        class: &str,
-        name: &str,
-        args: impl IntoIterator<Item = Typ>,
-        returns: Option<Typ>,
-        native: NativeCode,
-    ) {
-        self.register_native_method_by_nat(
-            class,
-            MethodNaT {
-                name: name.into(),
-                typ: MethodDescriptor {
-                    args: args.into_iter().collect(),
-                    returns,
-                },
-            },
-            native,
-        )
-    }
-    /// Register code for a native method. Method needs to be marked as native.
-    /// If the method isn't static, the first argument passed will be the object it is invoked on.
-    ///
-    /// # Panics
-    /// Panics if the class is already loaded.
-    pub fn register_native_method_by_nat(
-        &self,
-        class: &str,
-        method: MethodNaT,
-        native: NativeCode,
-    ) {
-        let classes = self.classes.read();
-        if classes.contains_key(class) {
-            panic!("Failed to register native method: Class already loaded");
-        }
-        match self
-            .unbound_native_methods
-            .lock()
-            .entry(class.to_owned())
-            .or_default()
-            .entry(method)
-        {
-            Entry::Occupied(entry) => {
-                panic!("Native method {class}.{} already registered", entry.key());
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(native);
-            }
-        }
-    }
-}
-
+/// Guard types ensure types don't outlive the Jvm
+/// they belong to or get used with a different Jvm.
 macro_rules! define_guard {
     ($(#[$doc:meta])* $guard_typ:ident, $impl_typ:ty) => {
         $(#[$doc])*
