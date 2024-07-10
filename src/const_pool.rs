@@ -101,7 +101,7 @@ impl ConstPool {
                             .array_write_i16(jvm, index as i32, char as i16)?
                     }
                     let string_class = jvm.resolve_class_internal("java.lang.String")?;
-                    let obj = jvm.create_object(string_class);
+                    let obj = jvm.create_object_uninitialized(string_class);
                     let field =
                         string_class.field("chars", Typ::Ref("char[]".into())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
                     field.instance_set(obj, Some(backing_array).into());

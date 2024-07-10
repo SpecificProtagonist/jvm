@@ -25,6 +25,7 @@ use std::{
 
 pub use class_loader::{ClassLoader, FolderClassLoader};
 pub use field::FieldNaT;
+use jvm::exception;
 pub use jvm::Jvm;
 pub use method::NativeCode;
 pub use method::{MethodDescriptor, MethodNaT};
@@ -107,7 +108,24 @@ impl Jvm {
             .map_err(|value| Object::new(self, value))
     }
 
-    /// Creates an array on the heap
+    /// Creates an object via constructor.
+    pub fn create_object<'a>(
+        &'a self,
+        class: &str,
+        arg_types: impl IntoIterator<Item = Typ>,
+        mut args: Vec<Value<'a>>,
+    ) -> JvmResult<'a, Object<'a>> {
+        let class = self.resolve_class(class)?;
+        let object = Object::new(self, self.create_object_uninitialized(class.value));
+        args.insert(0, Value::Ref(Some(object)));
+        let constructor = class
+            .method("<init>", arg_types, None)
+            .ok_or_else(|| Object::new(self, exception(self, "NoSuchMethodError")))?;
+        constructor.invoke(&args)?;
+        Ok(object)
+    }
+
+    /// Creates an array on the heap.
     ///
     /// # Panics
     /// Panics if length < 0
@@ -364,7 +382,7 @@ impl<'a> Class<'a> {
     /// # Panics
     /// Panics if this is an array class.
     pub fn create_object_uninit(self) -> Object<'a> {
-        Object::new(self.jvm, self.jvm.create_object(self.value))
+        Object::new(self.jvm, self.jvm.create_object_uninitialized(self.value))
     }
 
     // TODO:

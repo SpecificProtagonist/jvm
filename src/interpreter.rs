@@ -76,6 +76,12 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Va
 fn native(jvm: &Jvm, method: &Method, code: &NativeCode, args: &[IVal]) -> JvmResult<Value> {
     let mut values = Vec::new();
     let mut i = 0;
+    if !method.access_flags.contains(AccessFlags::STATIC) {
+        values.push(crate::Value::Ref(unsafe {
+            args[0].as_ref().map(|value| crate::Object::new(jvm, value))
+        }));
+        i += 1;
+    }
     for arg in &method.nat.typ.args {
         match arg {
             Typ::Boolean => {
@@ -840,7 +846,9 @@ fn run_until_exception_or_return(
                 let index = frame.read_code_u16();
                 let class = const_pool.get_class(jvm, index)?;
                 class.ensure_init(jvm)?;
-                frame.stack.push(jvm.create_object(class).into())
+                frame
+                    .stack
+                    .push(jvm.create_object_uninitialized(class).into())
             }
             NEWARRAY => {
                 let length = frame.pop().as_int();

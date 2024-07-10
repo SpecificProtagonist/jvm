@@ -112,7 +112,7 @@ fn invoke_native() {
     let jvm = make_jvm();
     jvm.register_native_method(
         "Native",
-        "add",
+        "call_static",
         [Typ::Int, Typ::Int],
         Some(Typ::Long),
         Box::new(|_, args| {
@@ -122,13 +122,39 @@ fn invoke_native() {
             Ok(Value::Long(a as i64 + b as i64))
         }),
     );
+    jvm.register_native_method(
+        "Native",
+        "call_instance",
+        [],
+        None,
+        Box::new(|_, args| {
+            let Value::Ref(Some(this)) = args[0] else {
+                panic!()
+            };
+            let field = this.class().field("value", Typ::Long).unwrap();
+            assert_eq!(field.instance_get(this), Value::Long(1));
+            Ok(Value::Void)
+        }),
+    );
+
     let method = jvm
-        .resolve_method("Native", "add", [Typ::Int, Typ::Int], Some(Typ::Long))
+        .resolve_method(
+            "Native",
+            "call_static",
+            [Typ::Int, Typ::Int],
+            Some(Typ::Long),
+        )
         .unwrap();
     assert_eq!(
         method.invoke(&[1.into(), 2.into()]).unwrap(),
         Value::Long(3)
     );
+
+    let object = jvm.create_object("Native", [], vec![]).unwrap();
+    let method = jvm
+        .resolve_method("Native", "call_instance", [], None)
+        .unwrap();
+    method.invoke(&[Value::Ref(Some(object))]).unwrap();
 }
 
 #[test]

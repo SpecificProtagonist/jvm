@@ -288,7 +288,7 @@ impl Jvm {
     /// # Panics
     /// Panics if class is an array class
     #[track_caller]
-    pub(crate) fn create_object(&self, class: ClassPtr) -> Object {
+    pub(crate) fn create_object_uninitialized(&self, class: ClassPtr) -> Object {
         if class.element_type.is_some() {
             panic!("{} is an array type", class.name)
         }
@@ -366,7 +366,7 @@ pub(crate) fn exception(jvm: &Jvm, name: &str) -> Object {
             if let Err(thrown) = class.ensure_init(jvm) {
                 thrown
             } else {
-                jvm.create_object(class)
+                jvm.create_object_uninitialized(class)
             }
         }
         Err(thrown) => thrown,
