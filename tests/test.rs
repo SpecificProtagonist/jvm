@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use jvm::*;
 
 fn make_jvm() -> Jvm {
@@ -132,7 +134,7 @@ fn invoke_native() {
                 panic!()
             };
             let field = this.class().field("value", Typ::Long).unwrap();
-            assert_eq!(field.instance_get(this), Value::Long(1));
+            assert_eq!(field.instance_get(this), 1i64);
             Ok(Value::Void)
         }),
     );
@@ -145,10 +147,7 @@ fn invoke_native() {
             Some(Typ::Long),
         )
         .unwrap();
-    assert_eq!(
-        method.invoke(&[1.into(), 2.into()]).unwrap(),
-        Value::Long(3)
-    );
+    assert_eq!(method.invoke(&[1.into(), 2.into()]).unwrap(), 3i64);
 
     let object = jvm.create_object("Native", [], vec![]).unwrap();
     let method = jvm
@@ -292,4 +291,36 @@ fn cross_jvms_method() {
         .method("method", [Typ::Ref("java.lang.Object".into())], None)
         .unwrap();
     _ = method.invoke(&[Some(object_from_1).into()]);
+}
+
+#[test]
+fn hot_reloading() {
+    static RELOADED: AtomicBool = AtomicBool::new(false);
+    struct TestClassloader;
+    impl ClassLoader for TestClassloader {
+        fn load(&self, mut name: &str) -> Option<Vec<u8>> {
+            if name == "HotReloading" {
+                if RELOADED.load(Ordering::SeqCst) {
+                    name = "HotReloading2";
+                } else {
+                    name = "HotReloading1"
+                }
+            }
+            let loader = FolderClassLoader::new_boxed(["classes", "tests/classes"]);
+            loader.load(name)
+        }
+    }
+    let jvm = Jvm::new(Box::new(TestClassloader));
+
+    let class = jvm.resolve_class("HotReloading").unwrap();
+    let field = class.field("static_field", Typ::Int).unwrap();
+    field.static_set(1);
+    let method = class.method("hot_reloadable", [], Some(Typ::Int)).unwrap();
+    assert_eq!(method.invoke(&[]).unwrap(), 1);
+
+    RELOADED.store(true, Ordering::SeqCst);
+    jvm.reload_method_bytecodes_for_class("HotReloading")
+        .unwrap();
+    assert_eq!(method.invoke(&[]).unwrap(), 2);
+    assert_eq!(field.static_get(), 1);
 }

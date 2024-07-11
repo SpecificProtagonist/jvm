@@ -72,6 +72,9 @@ impl Class {
         /*static size*/ usize,
         /*instance size*/ usize,
     ) {
+        // Layout needs to be consistent when hot-reloading
+        fields.sort_by_key(|field| format!("{:?}", field.nat));
+        // Minimize space used
         fields.sort_by_key(|field| field.nat.typ.layout().align());
         let mut static_layout = Layout::new::<()>();
         let mut object_layout = Layout::from_size_align(
@@ -82,6 +85,7 @@ impl Class {
             8,
         )
         .unwrap();
+
         let fields = fields
             .into_iter()
             .map(|mut field| {

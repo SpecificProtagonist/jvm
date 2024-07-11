@@ -1,4 +1,5 @@
 use crate::heap::Heap;
+use crate::hot_reloading::{reload_method_bytecodes_for_class, ReloadErr};
 use crate::{class_loader::ClassLoader, AccessFlags};
 use fixed_typed_arena::ManuallyDropArena;
 use parking_lot::{Mutex, RwLock};
@@ -208,6 +209,17 @@ impl Jvm {
                 entry.insert(native);
             }
         }
+    }
+
+    /// Reload the bytecodes of all methods in the class.
+    /// Fails if there are structural changes to the class (e.g. a field is added of a
+    /// method signature has changed).
+    /// Behavior when a class gets reloaded during initialization is unspecified (but safe).
+    pub fn reload_method_bytecodes_for_class<'a>(
+        &'a self,
+        class: &str,
+    ) -> Result<(), ReloadErr<'a>> {
+        reload_method_bytecodes_for_class(self, class)
     }
 
     /// Returns the class representing arrays of the given component.

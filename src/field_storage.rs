@@ -45,6 +45,7 @@ macro_rules! access {
             )
         }
 
+        #[allow(dead_code)]
         #[inline]
         pub fn $array_read(&self, jvm: &Jvm, index: i32) -> JvmResult<$typ> {
             let offset = object::header_size() + index as usize * std::mem::size_of::<$typ>();
@@ -55,6 +56,7 @@ macro_rules! access {
             }
         }
 
+        #[allow(dead_code)]
         #[inline]
         pub fn $array_write(&self, jvm: &Jvm, index: i32, value: $typ) -> JvmResult<()> {
             let offset = object::header_size() + index as usize * std::mem::size_of::<$typ>();

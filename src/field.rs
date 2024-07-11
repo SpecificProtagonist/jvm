@@ -22,7 +22,8 @@ pub(crate) struct Field {
     /// Offset into the FieldData of the class (static field) / instance (non-static) where this is stored
     /// Java has no multiple inheritance for fields, therefore each field can be at a set position
     pub(crate) byte_offset: usize,
-    /// Only set for static fields
+    /// Index into the const pool.
+    /// Only set for static fields.
     pub(crate) const_value_index: Option<u16>,
 }
 

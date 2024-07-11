@@ -67,7 +67,7 @@ struct IVal(SlotSize);
 fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Value> {
     match &method.code {
         Code::None => todo!("Abstract method"),
-        Code::Bytecode(code) => interpret(jvm, method, code, args),
+        Code::Bytecode(code) => interpret(jvm, method, &code.read_recursive(), args),
         Code::Native(code) => native(jvm, method, code, args),
     }
 }
@@ -220,61 +220,37 @@ fn run_until_exception_or_return(
                 let index = frame.read_code_u8() as u16;
                 ldc(frame, const_pool, index);
             }
-            LDC_W => {
-                let index = frame.read_code_u16();
-                ldc(frame, const_pool, index);
-            }
-            LDC2_W => {
+            LDC_W | LDC2_W => {
                 let index = frame.read_code_u16();
                 ldc(frame, const_pool, index);
             }
             ILOAD | FLOAD | ALOAD => {
                 let index = frame.read_code_u8() as u16;
-                frame.stack.push(frame.locals[index as usize]);
+                frame.load_local(index as usize);
             }
-            LLOAD => {
+            LLOAD | DLOAD => {
                 let index = frame.read_code_u8() as u16;
-                frame.push_long(frame.load_long(index));
+                frame.load_local_2(index as usize);
             }
-            DLOAD => {
-                let index = frame.read_code_u8() as u16;
-                frame.push_double(frame.load_double(index));
-            }
-            ILOAD_0 | FLOAD_0 | ALOAD_0 => frame.stack.push(frame.locals[0]),
-            ILOAD_1 | FLOAD_1 | ALOAD_1 => frame.stack.push(frame.locals[1]),
-            ILOAD_2 | FLOAD_2 | ALOAD_2 => frame.stack.push(frame.locals[2]),
-            ILOAD_3 | FLOAD_3 | ALOAD_3 => frame.stack.push(frame.locals[3]),
-            LLOAD_0 => frame.push_long(frame.load_long(0)),
-            LLOAD_1 => frame.push_long(frame.load_long(1)),
-            LLOAD_2 => frame.push_long(frame.load_long(2)),
-            LLOAD_3 => frame.push_long(frame.load_long(3)),
-            DLOAD_0 => frame.push_double(frame.load_double(0)),
-            DLOAD_1 => frame.push_double(frame.load_double(1)),
-            DLOAD_2 => frame.push_double(frame.load_double(2)),
-            DLOAD_3 => frame.push_double(frame.load_double(3)),
-            IALOAD => {
+            ILOAD_0 | FLOAD_0 | ALOAD_0 => frame.load_local(0),
+            ILOAD_1 | FLOAD_1 | ALOAD_1 => frame.load_local(1),
+            ILOAD_2 | FLOAD_2 | ALOAD_2 => frame.load_local(2),
+            ILOAD_3 | FLOAD_3 | ALOAD_3 => frame.load_local(3),
+            LLOAD_0 | DLOAD_0 => frame.load_local_2(0),
+            LLOAD_1 | DLOAD_1 => frame.load_local_2(1),
+            LLOAD_2 | DLOAD_2 => frame.load_local_2(2),
+            LLOAD_3 | DLOAD_3 => frame.load_local_2(3),
+            IALOAD | FALOAD => {
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 frame.stack.push(obj.ptr.array_read_i32(jvm, index)?.into());
             }
-            LALOAD => {
+            LALOAD | DALOAD => {
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 frame.push_long(obj.ptr.array_read_i64(jvm, index)?);
-            }
-            FALOAD => {
-                let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
-                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                frame.stack.push(obj.ptr.array_read_f32(jvm, index)?.into());
-            }
-            DALOAD => {
-                let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
-                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                frame.push_double(obj.ptr.array_read_f64(jvm, index)?);
             }
             AALOAD => {
                 let index = frame.pop().as_int();
@@ -336,33 +312,19 @@ fn run_until_exception_or_return(
                 frame.locals[4] = frame.pop();
                 frame.locals[3] = frame.pop();
             }
-            IASTORE => {
+            IASTORE | FASTORE => {
                 let value = frame.pop().as_int();
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 obj.ptr.array_write_i32(jvm, index, value)?
             }
-            LASTORE => {
+            LASTORE | DASTORE => {
                 let value = frame.pop_long();
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| exception(jvm, "NullPointerException"))?;
                 obj.ptr.array_write_i64(jvm, index, value)?
-            }
-            FASTORE => {
-                let value = frame.pop().as_float();
-                let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
-                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                obj.ptr.array_write_f32(jvm, index, value)?
-            }
-            DASTORE => {
-                let value = frame.pop_double();
-                let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
-                    .ok_or_else(|| exception(jvm, "NullPointerException"))?;
-                obj.ptr.array_write_f64(jvm, index, value)?
             }
             AASTORE => {
                 let value = frame.pop();
@@ -372,6 +334,7 @@ fn run_until_exception_or_return(
                 let Some(Typ::Ref(component)) = &obj.class().element_type else {
                     unreachable!("checked during verification")
                 };
+                // Yay for covariant arrays, another consequence of Java launching without generics…
                 if !obj.class().assignable_to(component) {
                     return Err(exception(jvm, "ArrayStoreException"));
                 }
@@ -1089,14 +1052,6 @@ impl<'jvm> Frame<'jvm> {
         self.pc = (base as i32 + target_offset) as u16;
     }
 
-    fn load_long(&self, index: u16) -> i64 {
-        IVal::as_long(self.locals[index as usize], self.locals[index as usize + 1])
-    }
-
-    fn load_double(&self, index: u16) -> f64 {
-        IVal::as_double(self.locals[index as usize], self.locals[index as usize + 1])
-    }
-
     fn pop(&mut self) -> IVal {
         debug_assert!(!self.stack.is_empty());
         unsafe {
@@ -1126,6 +1081,15 @@ impl<'jvm> Frame<'jvm> {
         let (low, high) = IVal::from_double(value);
         self.stack.push(low);
         self.stack.push(high);
+    }
+
+    fn load_local(&mut self, index: usize) {
+        self.stack.push(self.locals[index]);
+    }
+
+    fn load_local_2(&mut self, index: usize) {
+        self.stack.push(self.locals[index]);
+        self.stack.push(self.locals[index + 1]);
     }
 
     fn read_code_u8(&mut self) -> u8 {

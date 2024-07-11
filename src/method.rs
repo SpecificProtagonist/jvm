@@ -3,6 +3,8 @@ use std::sync::{
     Arc,
 };
 
+use parking_lot::RwLock;
+
 use crate::{
     class::{Class, ClassPtr},
     typ::Typ,
@@ -57,7 +59,8 @@ impl MethodDescriptor {
 
 pub(crate) enum Code {
     None,
-    Bytecode(Bytecode),
+    /// When also accessing the constant pool, lock the constant pool first
+    Bytecode(RwLock<Bytecode>),
     Native(NativeCode),
 }
 

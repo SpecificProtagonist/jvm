@@ -7,6 +7,7 @@ mod const_pool;
 mod field;
 mod field_storage;
 mod heap;
+mod hot_reloading;
 mod instructions;
 mod interpreter;
 mod jvm;
@@ -139,7 +140,7 @@ impl<'a> Object<'a> {
     }
 
     /// Sets an array element. If the element type is boolean, byte, short or char,
-    /// the `JVMValue::Int` is truncated
+    /// the `JvmValue::Int` is truncated
     ///
     /// # Panics
     /// Panics if object is not an array, the element type mismatches, the index is out of bounds
@@ -247,12 +248,6 @@ impl<'a> Class<'a> {
     pub fn create_object_uninit(self) -> Object<'a> {
         Object::new(self.jvm, self.jvm.create_object_uninitialized(self.value))
     }
-
-    // TODO:
-    // /// Create a new instance of this class and call its constructor.
-    // /// Returns None if no constructor matching the args is found.
-    // /// Returns Some(Err) if the constructor threw an exception.
-    // pub fn create_object(self, args: &[Value<'a>]) -> JVMResult<'a, Option<Value<'a>>
 }
 
 define_guard!(

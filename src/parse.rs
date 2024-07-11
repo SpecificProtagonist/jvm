@@ -485,7 +485,7 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
         let (attr_name, bytes) = read_attribute(jvm, input, constant_pool)?;
         if attr_name.as_ref() == "Code" {
             if let Code::None = code {
-                code = Code::Bytecode(read_code(jvm, bytes, constant_pool)?);
+                code = Code::Bytecode(read_code(jvm, bytes, constant_pool)?.into());
             } else {
                 return Err(cfe(jvm, "Multiple code attributes on same method"));
             }

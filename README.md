@@ -1,7 +1,7 @@
 This is a toy embeddable JVM in writen in Rust. It is very much WIP and aims to eventually 
 implement most of the Java 8 JVM specification (except for the loading of classes with version <50.0).
 As this is intended as a toy / a learning experience, the choice of which features to implement is
-not determined by practicality but by how interested I'm in doing so.
+not determined by practicality but by how interested I'm in doing so. It also uses large amounts of unsafe (the safety boundary essentially being the entire crate), is badly tested, doesn't have any benchmarks, and doesn't do any garbage collection.
 
 ```rust, no_run
 use jvm::*;
@@ -9,7 +9,7 @@ use jvm::*;
 let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes"]));
 // Load class `Foo`
 let class = jvm.resolve_class("Foo").unwrap();
-// Resolve its method `void bar(int _, String _)`
+// Resolve its method `void bar(int, String)`
 let method = class.method("bar", vec![Typ::Int, "java.lang.String".into()], None).unwrap();
 // And call it: `Foo.bar(0, null)`
 method.invoke(&[0.into(), None.into()]).expect("bar threw an exception");
@@ -29,6 +29,8 @@ Currently implemented:
 - creating objects, including arrays
 - accessing fields & array elements
 - compressed pointers on x86-64 Linux
+- multithreading
+- hot method reloading
 
 Some mayor missing features:
 - garbage collection
@@ -37,8 +39,6 @@ Some mayor missing features:
 - some bytecodes
 - private/protected
 - locking
-- performance optimizations
-- hot reloading
 
 This is only a JVM, not including a proper class library. The problem is that the JVM
 specification depends on a number of classes, but never bothers to specify what it requires

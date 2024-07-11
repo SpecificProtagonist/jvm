@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 use crate::{
     class::{Class, ClassPtr},
-    const_pool::ConstPoolItem,
+    const_pool::{ConstPool, ConstPoolItem},
     instructions::*,
     jvm::{exception, Jvm, JvmResult},
     method::{Bytecode, Code, Method},
@@ -144,9 +144,11 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassPtr) -> JvmResult<()>
         return Err(ve(jvm, "class has no superclass"));
     }
 
+    let const_pool = class.const_pool.read();
+
     for method in class.methods.values() {
         if method.class() == class {
-            verify_method(jvm, method)?;
+            verify_method(jvm, &const_pool, method)?;
         }
     }
 
@@ -154,7 +156,7 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassPtr) -> JvmResult<()>
 }
 
 // TODO: do this lazily
-fn verify_method(jvm: &Jvm, method: &Method) -> JvmResult<()> {
+fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) -> JvmResult<()> {
     if let (false, Some(super_class)) = (
         method.access_flags.contains(AccessFlags::STATIC),
         method.class().super_class,
@@ -177,7 +179,7 @@ fn verify_method(jvm: &Jvm, method: &Method) -> JvmResult<()> {
                 .verification_type_checking_disabled
                 .load(Ordering::SeqCst)
             {
-                verify_bytecode(jvm, method, code)?
+                verify_bytecode(jvm, const_pool, method, &code.read())?
             }
         }
         Code::Native(_) => assert!(method.access_flags.contains(AccessFlags::NATIVE)),
@@ -186,7 +188,12 @@ fn verify_method(jvm: &Jvm, method: &Method) -> JvmResult<()> {
     Ok(())
 }
 
-fn verify_bytecode(jvm: &Jvm, method: &Method, code: &Bytecode) -> JvmResult<()> {
+fn verify_bytecode(
+    jvm: &Jvm,
+    const_pool: &ConstPool,
+    method: &Method,
+    code: &Bytecode,
+) -> JvmResult<()> {
     ///// for testing, TODO: remove this! /////
     if method.nat.name.as_ref() == "<init>" {
         return Ok(());
@@ -199,8 +206,6 @@ fn verify_bytecode(jvm: &Jvm, method: &Method, code: &Bytecode) -> JvmResult<()>
     //         .load(Ordering::SeqCst)
     // );
     ///////////////////////////////////////////
-
-    let const_pool = method.class().const_pool.read();
 
     // The initial typestate is not stored in the class file but derive from the method signature
     let initial_locals = {
@@ -229,7 +234,7 @@ fn verify_bytecode(jvm: &Jvm, method: &Method, code: &Bytecode) -> JvmResult<()>
     let mut stack_map_table = parse::read_stack_map_table(
         jvm,
         code.stack_map_table.as_deref(),
-        &const_pool,
+        const_pool,
         initial_locals,
     )?;
 
