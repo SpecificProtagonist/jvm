@@ -5,7 +5,7 @@ use crate::{
     const_pool::ConstPool,
     field::{Field, FieldNaT},
     field_storage::FieldStorage,
-    jvm::{exception, JvmResult},
+    jvm::{error, JvmResult},
     method::{MethodDescriptor, MethodNaT, MethodPtr},
     object::{self, Object},
     typ::Typ,
@@ -72,8 +72,6 @@ impl Class {
         /*static size*/ usize,
         /*instance size*/ usize,
     ) {
-        // Layout needs to be consistent when hot-reloading
-        fields.sort_by_key(|field| format!("{:?}", field.nat));
         // Minimize space used
         fields.sort_by_key(|field| field.nat.typ.layout().align());
         let mut static_layout = Layout::new::<()>();
@@ -107,12 +105,38 @@ impl Class {
 
     #[allow(dead_code)]
     pub(crate) fn interface(&self) -> bool {
-        self.access_flags.contains(AccessFlags::INTERACE)
+        self.access_flags.contains(AccessFlags::INTERFACE)
     }
 
     /// Convenience method for getting this class' type
     pub(crate) fn typ(&self) -> Typ {
         Typ::Ref(self.name.clone())
+    }
+
+    pub(crate) fn iter_fields(&'static self) -> impl Iterator<Item = &'static Field> {
+        struct FieldIterator {
+            fields: std::collections::hash_map::Values<'static, FieldNaT, Field>,
+            class: &'static Class,
+        }
+        impl Iterator for FieldIterator {
+            type Item = &'static Field;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                if let Some(field) = self.fields.next() {
+                    Some(field)
+                } else if let Some(super_class) = self.class.super_class {
+                    self.fields = super_class.fields.values();
+                    self.class = super_class;
+                    self.next()
+                } else {
+                    None
+                }
+            }
+        }
+        FieldIterator {
+            fields: self.fields.values(),
+            class: self,
+        }
     }
 
     pub(crate) fn field(&self, name: &str, typ: Typ) -> Option<&Field> {
@@ -242,7 +266,11 @@ impl Class {
                                 )
                             }
                         } else {
-                            return Err(exception(jvm, "ClassFormatError"));
+                            return Err(error(
+                                jvm,
+                                "ClassFormatError",
+                                &format!("{}: preparation failed", self.name),
+                            ));
                         }
                     }
                 }

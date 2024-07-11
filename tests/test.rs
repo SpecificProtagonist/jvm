@@ -246,15 +246,7 @@ fn strings() {
     else {
         panic!()
     };
-    let backing_field = jvm
-        .resolve_class("java.lang.String")
-        .unwrap()
-        .field("chars", Typ::Ref("char[]".into()))
-        .unwrap();
-    let Value::Ref(Some(chars)) = backing_field.instance_get(string) else {
-        panic!()
-    };
-    assert_eq!(format!("{:?}", chars), "\"bar\"");
+    assert_eq!(format!("{string:?}"), "\"bar\"");
 }
 
 #[test]

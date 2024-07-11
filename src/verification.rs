@@ -4,7 +4,7 @@ use crate::{
     class::{Class, ClassPtr},
     const_pool::{ConstPool, ConstPoolItem},
     instructions::*,
-    jvm::{exception, Jvm, JvmResult},
+    jvm::{error, Jvm, JvmResult},
     method::{Bytecode, Code, Method},
     object::Object,
     parse,
@@ -12,8 +12,8 @@ use crate::{
     AccessFlags,
 };
 
-fn ve(jvm: &Jvm, _message: &str) -> Object {
-    exception(jvm, "VerifyError")
+fn ve(jvm: &Jvm, message: &str) -> Object {
+    error(jvm, "VerifyError", message)
 }
 
 #[derive(Clone, Default, Debug)]
@@ -134,8 +134,7 @@ pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Typ)
 
 // TODO: if this throws a linkage error, it must always throw the same instance for the same class
 // TODO: Exception handlers
-/// Verification by type checking
-/// (Verification by type inference is not planned)
+/// Verification by type checking (verification by type inference is not planned)
 pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassPtr) -> JvmResult<()> {
     if let Some(super_class) = class.super_class {
         verify(jvm, super_class)?;
@@ -155,7 +154,6 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassPtr) -> JvmResult<()>
     Ok(())
 }
 
-// TODO: do this lazily
 fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) -> JvmResult<()> {
     if let (false, Some(super_class)) = (
         method.access_flags.contains(AccessFlags::STATIC),
@@ -630,6 +628,14 @@ fn verify_bytecode(
                 }
                 type_state.stack.push(VerificationType::Integer);
             }
+            LCMP => {
+                if (type_state.pop(jvm)?, type_state.pop(jvm)?)
+                    != (VerificationType::Long, VerificationType::Long)
+                {
+                    return Err(ve(jvm, "invalid lcmp"));
+                }
+                type_state.stack.push(VerificationType::Integer);
+            }
             IFEQ | IFNE | IFLT | IFGE | IFGT | IFLE => {
                 if type_state.pop(jvm)? != VerificationType::Integer {
                     return Err(ve(jvm, "invalid if"));
@@ -849,7 +855,10 @@ fn load<'b>(
         .locals
         .get(index as usize)
         .ok_or_else(|| ve(jvm, "Index out of bounds"))?;
-    if !var.is_assignable_to(typ) {
+    if !var.is_assignable_to(typ)
+        | (var.category_2()
+            & (type_state.locals.get(index as usize + 1) != Some(&VerificationType::Top)))
+    {
         return Err(ve(jvm, "load type mismatch"));
     }
     type_state.stack.push(*var);
@@ -891,7 +900,7 @@ fn top_of_stack<'b>(
     if typ.category_2() {
         if (type_state.stack.len() > 1)
             && type_state.stack[type_state.stack.len() - 1] == VerificationType::Top
-            && type_state.stack[type_state.stack.len() - 1].is_assignable_to(typ)
+            && type_state.stack[type_state.stack.len() - 2].is_assignable_to(typ)
         {
             Ok(())
         } else {

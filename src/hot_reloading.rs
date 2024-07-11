@@ -1,6 +1,6 @@
 use crate::{
-    class::ClassInitState, jvm::exception, method::Code, parse::read_class_file,
-    verification::verify, Jvm,
+    class::ClassInitState, jvm::error, method::Code, parse::read_class_file, verification::verify,
+    Jvm,
 };
 
 #[derive(Debug)]
@@ -21,7 +21,7 @@ pub(crate) fn reload_method_bytecodes_for_class<'a>(
     let bytes = jvm
         .bootstrap_class_loader
         .load(&name)
-        .ok_or_else(|| map_exception(exception(jvm, "NoClassDefFoundError")))?;
+        .ok_or_else(|| map_exception(error(jvm, "NoClassDefFoundError", &name)))?;
     let new_class = read_class_file(&bytes, jvm).map_err(map_exception)?;
 
     // Check for incompatibilities

@@ -114,17 +114,24 @@ impl Jvm {
         args: impl IntoIterator<Item = Typ>,
         returns: Option<Typ>,
     ) -> crate::JvmResult<'a, crate::Method<'a>> {
+        let nat = MethodNaT {
+            name: method.into(),
+            typ: MethodDescriptor {
+                args: args.into_iter().collect(),
+                returns,
+            },
+        };
         self.resolve_class_internal(class)
             .map_err(|value| crate::Object::new(self, value))?
             .methods
-            .get(&MethodNaT {
-                name: method.into(),
-                typ: MethodDescriptor {
-                    args: args.into_iter().collect(),
-                    returns,
-                },
+            .get(&nat)
+            .ok_or_else(|| {
+                error(
+                    self,
+                    "NoSuchMethodError",
+                    &format!("{class}.{method}:{nat:?}"),
+                )
             })
-            .ok_or_else(|| exception(self, "NoSuchMethodError"))
             .map(|value| crate::Method { jvm: self, value })
             .map_err(|value| crate::Object::new(self, value))
     }
@@ -136,12 +143,15 @@ impl Jvm {
         arg_types: impl IntoIterator<Item = Typ>,
         mut args: Vec<crate::Value<'a>>,
     ) -> crate::JvmResult<'a, crate::Object<'a>> {
-        let class = self.resolve_class(class)?;
-        let object = crate::Object::new(self, self.create_object_uninitialized(class.value));
+        let class_ptr = self.resolve_class(class)?;
+        let object = crate::Object::new(self, self.create_object_uninitialized(class_ptr.value));
         args.insert(0, crate::Value::Ref(Some(object)));
-        let constructor = class
-            .method("<init>", arg_types, None)
-            .ok_or_else(|| crate::Object::new(self, exception(self, "NoSuchMethodError")))?;
+        let constructor = class_ptr.method("<init>", arg_types, None).ok_or_else(|| {
+            crate::Object::new(
+                self,
+                error(self, "NoSuchMethodError", &format!("{class} <init> …")),
+            )
+        })?;
         constructor.invoke(&args)?;
         Ok(object)
     }
@@ -295,7 +305,7 @@ impl Jvm {
         if name.starts_with('[') {
             let (component, end) = parse::parse_typ_descriptor(self, name.as_str(), 1)?;
             if end != name.len() {
-                return Err(exception(self, "ClassFormatError"));
+                return Err(error(self, "ClassFormatError", &name));
             }
             return self.resolve_array_of(&component);
         }
@@ -309,7 +319,7 @@ impl Jvm {
         let bytes = self
             .bootstrap_class_loader
             .load(&name)
-            .ok_or_else(|| exception(self, "NoClassDefFoundError"))?;
+            .ok_or_else(|| error(self, "NoClassDefFoundError", &name))?;
 
         let mut class_desc = parse::read_class_file(&bytes, self)?;
 
@@ -318,22 +328,20 @@ impl Jvm {
         for (nat, mut method) in class_desc.methods.drain() {
             if method.access_flags.contains(AccessFlags::NATIVE) {
                 let mut native = self.unbound_native_methods.lock();
-                let Some(native) = native.get_mut(&name) else {
-                    return Err(exception(
+                let err = || {
+                    Err(error(
                         self,
+                        // What exception to use here?
+                        "IncompatibleClassChangeError",
                         &format!("Class {name} has native method {nat}, but method is not bound"),
-                    ));
+                    ))
+                };
+                let Some(native) = native.get_mut(&name) else {
+                    return err();
                 };
                 match native.remove(&nat) {
                     Some(code) => method.code = Code::Native(code),
-                    None => {
-                        return Err(exception(
-                            self,
-                            &format!(
-                                "Class {name} has native method {nat}, but method is not bound"
-                            ),
-                        ))
-                    }
+                    None => return err(),
                 }
             }
             let method = &*self.method_storage.lock().alloc(method);
@@ -341,7 +349,11 @@ impl Jvm {
         }
 
         if name != class_desc.name.as_ref() {
-            return Err(exception(self, "NoClassDefFoundError"));
+            return Err(error(
+                self,
+                "NoClassDefFoundError",
+                &format!("{name} != {}", class_desc.name.as_ref()),
+            ));
         }
 
         let new_methods = methods.clone();
@@ -349,7 +361,7 @@ impl Jvm {
         // Superclasses loading & verification
         let super_class = if let Some(super_class_name) = class_desc.super_class {
             if check_circular.contains(&super_class_name) {
-                return Err(exception(self, "ClassCircularityError"));
+                return Err(error(self, "ClassCircularityError", &name));
             }
             check_circular.push(super_class_name.clone());
             let super_class = self.resolve_class_impl(&super_class_name, check_circular)?;
@@ -357,9 +369,9 @@ impl Jvm {
             if super_class.element_type.is_some()
                 | super_class
                     .access_flags
-                    .intersects(AccessFlags::FINAL | AccessFlags::INTERACE)
+                    .intersects(AccessFlags::FINAL | AccessFlags::INTERFACE)
             {
-                return Err(exception(self, "IncompatibleClassChangeError"));
+                return Err(error(self, "IncompatibleClassChangeError", &name));
             }
 
             // Method resolution
@@ -372,13 +384,13 @@ impl Jvm {
         };
 
         // Interfaces must directly inherit from object (5.3.5)
-        if class_desc.access_flags.contains(AccessFlags::INTERACE)
+        if class_desc.access_flags.contains(AccessFlags::INTERFACE)
             && match &super_class {
                 None => true,
                 Some(s) => *s.name != *"java.lang.Object",
             }
         {
-            return Err(exception(self, "IncompatibleClassChangeError"));
+            return Err(error(self, "IncompatibleClassChangeError", &name));
         }
 
         let (fields, static_size, object_size) = Class::set_layouts(super_class, class_desc.fields);
@@ -501,9 +513,21 @@ impl Drop for Jvm {
     }
 }
 
+/// For errors thrown by the JVM (instead of by athrow).
+/// `name` is unqualified.
+pub(crate) fn error(jvm: &Jvm, name: &str, message: &str) -> Object {
+    let object = throwable(jvm, name);
+    let field = object
+        .class()
+        .field("message", Typ::Ref("java.lang.String".into()))
+        .expect("java.lang.Throwable missing field java.lang.String message");
+    field.instance_set(object, Value::Ref(Some(str_to_java(jvm, message))));
+    object
+}
+
 /// For exceptions and errors thrown by the JVM (instead of by athrow).
 /// `name` is unqualified.
-pub(crate) fn exception(jvm: &Jvm, name: &str) -> Object {
+pub(crate) fn throwable(jvm: &Jvm, name: &str) -> Object {
     match jvm.resolve_class_internal(&format!("java.lang.{name}")) {
         Ok(class) => {
             if let Err(thrown) = class.ensure_init(jvm) {
@@ -514,6 +538,23 @@ pub(crate) fn exception(jvm: &Jvm, name: &str) -> Object {
         }
         Err(thrown) => thrown,
     }
+}
+
+pub(crate) fn str_to_java(jvm: &Jvm, utf8: &str) -> Object {
+    let chars: Vec<u16> = utf8.encode_utf16().collect();
+    let chars_object = jvm.create_array_of(&Typ::Char, chars.len() as i32);
+    for (i, char) in chars.iter().enumerate() {
+        chars_object.array_write(i as i32, Value::Int(*char as i32));
+    }
+    let string_class = jvm
+        .resolve_class_internal("java/lang/String")
+        .expect("java.lang.String missing");
+    let object = jvm.create_object_uninitialized(string_class);
+    let field = string_class
+        .field("chars", Typ::Ref("char[]".into()))
+        .expect("java.lang.String missing field char[] chars");
+    field.instance_set(object, Value::Ref(Some(chars_object)));
+    object
 }
 
 #[allow(clippy::extra_unused_type_parameters)]

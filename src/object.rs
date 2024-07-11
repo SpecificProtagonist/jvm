@@ -1,4 +1,7 @@
-use std::mem::{align_of, size_of};
+use std::{
+    mem::{align_of, size_of},
+    ops::Deref,
+};
 
 use crate::{
     class::{Class, ClassPtr},
@@ -105,6 +108,16 @@ impl Object {
             panic!("not an array")
         }
     }
+
+    pub(crate) fn format_short(self) -> String {
+        struct Fmt(Object);
+        impl std::fmt::Debug for Fmt {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                fmt_object(self.0, f, false)
+            }
+        }
+        format!("{:?}", Fmt(self))
+    }
 }
 
 impl Eq for Object {
@@ -122,65 +135,94 @@ impl std::hash::Hash for Object {
     }
 }
 
-impl std::fmt::Debug for Object {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let class = self.class();
+fn fmt_object(object: Object, f: &mut std::fmt::Formatter<'_>, full: bool) -> std::fmt::Result {
+    let class = object.class();
 
-        // Arrays
-        if let Some(base) = &class.element_type {
-            let length = self.array_len().unwrap();
-            // Prettier printing for strings
-            if base == &Typ::Char {
-                write!(f, "\"")?;
-                for char in char::decode_utf16(
-                    (0..length).map(|i| self.ptr.array_read_i16_freestanding(i) as u16),
-                ) {
-                    write!(f, "{}", char.unwrap_or(char::REPLACEMENT_CHARACTER))?
-                }
-                return write!(f, "\"");
-            } else {
-                write!(f, "{}[", base)?;
-                for i in 0..length {
-                    write!(f, "{}, ", self.array_read(i))?
-                }
-                return write!(f, "]");
+    // Prettier printing for strings
+    if class.name.deref() == "java.lang.String" {
+        let Value::Ref(chars) = class
+            .field("chars", Typ::Ref("char[]".into()))
+            .expect("java.lang.String missing field char[] chars")
+            .instance_get(object)
+        else {
+            unreachable!()
+        };
+        if let Some(chars) = chars {
+            let length = chars.array_len().unwrap();
+            write!(f, "\"")?;
+            for char in char::decode_utf16(
+                (0..length).map(|i| chars.ptr.array_read_i16_freestanding(i) as u16),
+            ) {
+                write!(f, "{}", char.unwrap_or(char::REPLACEMENT_CHARACTER))?
             }
+            return write!(f, "\"");
+        } else {
+            return write!(f, "null");
         }
+    }
 
-        // Ordinary objects
-        write!(f, "{}{{", class.name)?;
-        let mut first = true;
-        for field in class.fields.values() {
-            if !field.access_flags.contains(AccessFlags::STATIC) {
-                if !first {
-                    write!(f, ", ")?;
-                }
-                first = false;
-                write!(f, "{}: ", field.nat.name)?;
-                unsafe {
-                    match field.nat.typ {
-                        Typ::Boolean | Typ::Byte => {
-                            write!(f, "{}", self.ptr.read_i8(field.byte_offset, false))?
-                        }
-                        Typ::Short => write!(f, "{}", self.ptr.read_i16(field.byte_offset, false))?,
-                        Typ::Char => {
-                            write!(f, "u+{:x}", self.ptr.read_i16(field.byte_offset, false))?
-                        }
-                        Typ::Int => write!(f, "{}", self.ptr.read_i32(field.byte_offset, false))?,
-                        Typ::Long => write!(f, "{}", self.ptr.read_i64(field.byte_offset, false))?,
-                        Typ::Float => write!(f, "{}", self.ptr.read_f32(field.byte_offset, false))?,
-                        Typ::Double => {
-                            write!(f, "{}", self.ptr.read_f64(field.byte_offset, false))?
-                        }
-                        Typ::Ref(_) => {
-                            write!(f, "@{:x}", self.ptr.read_ptr(field.byte_offset, false))?
+    // Arrays
+    if let Some(base) = &class.element_type {
+        let length = object.array_len().unwrap();
+        write!(f, "{}[", base)?;
+        for i in 0..length {
+            write!(f, "{}, ", object.array_read(i))?
+        }
+        return write!(f, "]");
+    }
+
+    // Ordinary objects
+    write!(f, "{}{{", class.name)?;
+    let mut first = true;
+    for field in class.iter_fields() {
+        if !field.access_flags.contains(AccessFlags::STATIC) {
+            if !first {
+                write!(f, ", ")?;
+            }
+            first = false;
+            write!(f, "{}: ", field.nat.name)?;
+            unsafe {
+                match field.nat.typ {
+                    Typ::Boolean | Typ::Byte => {
+                        write!(f, "{}", object.ptr.read_i8(field.byte_offset, false))?
+                    }
+                    Typ::Short => write!(f, "{}", object.ptr.read_i16(field.byte_offset, false))?,
+                    Typ::Char => {
+                        write!(f, "u+{:x}", object.ptr.read_i16(field.byte_offset, false))?
+                    }
+                    Typ::Int => write!(f, "{}", object.ptr.read_i32(field.byte_offset, false))?,
+                    Typ::Long => write!(f, "{}", object.ptr.read_i64(field.byte_offset, false))?,
+                    Typ::Float => write!(f, "{}", object.ptr.read_f32(field.byte_offset, false))?,
+                    Typ::Double => write!(f, "{}", object.ptr.read_f64(field.byte_offset, false))?,
+                    Typ::Ref(_) => {
+                        let ptr = object.ptr.read_ptr(field.byte_offset, false);
+                        if let Some(obj) = Object::from_ptr(ptr) {
+                            if full {
+                                fmt_object(obj, f, true)?
+                            } else {
+                                write!(f, "@{:x}", object.ptr.read_ptr(field.byte_offset, false))?
+                            }
+                        } else {
+                            write!(f, "null")?
                         }
                     }
                 }
             }
         }
-        write!(f, "}}")?;
-        Ok(())
+    }
+    write!(f, "}}")?;
+    Ok(())
+}
+
+impl std::fmt::Debug for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt_object(*self, f, true)
+    }
+}
+
+impl std::fmt::Pointer for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "@{:x}", self.ptr())
     }
 }
 

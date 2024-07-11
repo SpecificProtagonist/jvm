@@ -148,6 +148,17 @@ impl<'a> Object<'a> {
     pub fn array_write(self, index: i32, value: Value<'a>) {
         self.value.array_write(index, value.into_inner(self.jvm))
     }
+
+    /// Creates a debug representation of the object. For a full object tree, use `Debug`.
+    pub fn format_short(self) -> String {
+        self.value.format_short()
+    }
+}
+
+impl<'a> std::fmt::Pointer for Object<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Pointer::fmt(&self.value, f)
+    }
 }
 
 define_guard!(
@@ -539,7 +550,7 @@ bitflags::bitflags! {
         /// This method is implemented in native code (TODO).
         const NATIVE = 0x0100;
         /// This class is an interface.
-        const INTERACE = 0x0200;
+        const INTERFACE = 0x0200;
         /// Class: Must not be instantiated.
         ///
         /// Method: Not implemented in this class; may be implemented by subclasses.

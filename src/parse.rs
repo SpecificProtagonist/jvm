@@ -7,7 +7,7 @@ use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     default,
     field::{Field, FieldNaT},
-    jvm::{exception, Jvm, JvmResult},
+    jvm::{error, Jvm, JvmResult},
     method::{Bytecode, Code, ExceptionHandler, Method, MethodDescriptor, MethodNaT},
     object::Object,
     typ::Typ,
@@ -538,7 +538,11 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
     let major_version = read_u16(jvm, input)?;
 
     if major_version < 50 {
-        return Err(exception(jvm, "UnsupportedClassVersionError"));
+        return Err(error(
+            jvm,
+            "UnsupportedClassVersionError",
+            &format!("{major_version}"),
+        ));
     }
 
     let const_pool = read_const_pool(input, jvm)?;
@@ -592,6 +596,6 @@ pub(crate) struct ClassDescriptor {
     pub(crate) methods: HashMap<MethodNaT, Method>,
 }
 
-fn cfe(jvm: &Jvm, _message: &str) -> Object {
-    exception(jvm, "ClassFormatError")
+fn cfe(jvm: &Jvm, message: &str) -> Object {
+    error(jvm, "ClassFormatError", message)
 }

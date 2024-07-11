@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     class::ClassPtr,
     field::{Field, FieldNaT},
-    jvm::{exception, JvmResult},
+    jvm::{error, JvmResult},
     method::{MethodNaT, MethodPtr},
     object::Object,
     parse,
@@ -45,7 +45,7 @@ pub(crate) enum ConstPoolItem {
 }
 
 fn cfe(jvm: &Jvm) -> Object {
-    exception(jvm, "ClassFormatError")
+    error(jvm, "ClassFormatError", "")
 }
 
 impl ConstPool {
@@ -64,13 +64,14 @@ impl ConstPool {
                     let class = self.get_class(jvm, class)?;
                     let (name, descriptor) = self.get_raw_nat(jvm, nat)?;
                     let typ = parse::parse_method_descriptor(jvm, &descriptor)?;
+                    let nat = MethodNaT {
+                        name: name.clone(),
+                        typ: typ.clone(),
+                    };
                     let method = class
                         .methods
-                        .get(&MethodNaT {
-                            name: name.clone(),
-                            typ: typ.clone(),
-                        })
-                        .ok_or_else(|| exception(jvm, "NoSuchMethodError"))?;
+                        .get(&nat)
+                        .ok_or_else(|| error(jvm, "NoSuchMethodError", &format!("{nat:?}")))?;
                     if method.access_flags.contains(AccessFlags::STATIC) {
                         self.items[i] = ConstPoolItem::StaticMethod(method);
                     } else {
@@ -83,10 +84,11 @@ impl ConstPool {
                     let class = self.get_class(jvm, class)?;
                     let (name, typ) = self.get_raw_nat(jvm, nat)?;
                     let (typ, _) = parse::parse_typ_descriptor(jvm, &typ, 0)?;
-                    if let Some(field) = class.fields.get(&FieldNaT { name, typ }) {
+                    let nat = FieldNaT { name, typ };
+                    if let Some(field) = class.fields.get(&nat) {
                         self.items[i] = ConstPoolItem::Field(field);
                     } else {
-                        return Err(exception(jvm, "NoSuchFieldError"));
+                        return Err(error(jvm, "NoSuchFieldError", &format!("{nat:?}")));
                     }
                 }
                 ConstPoolItem::RawString(index) => {

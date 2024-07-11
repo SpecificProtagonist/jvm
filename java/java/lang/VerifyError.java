@@ -1,0 +1,3 @@
+package java.lang;
+
+public class VerifyError extends Throwable {}
