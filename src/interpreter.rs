@@ -890,6 +890,13 @@ fn run_until_exception_or_return(
                     frame.jump_relative(base, target_offset as i32);
                 }
             }
+            IF_NON_NULL => {
+                let base = frame.pc - 1;
+                let target_offset = frame.read_code_u16() as i16;
+                if frame.pop().0 != 0 {
+                    frame.jump_relative(base, target_offset as i32);
+                }
+            }
             GOTO_W => {
                 let base = frame.pc - 1;
                 let target_offset = frame.read_code_u32() as i32;

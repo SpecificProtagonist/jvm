@@ -371,7 +371,11 @@ pub(crate) fn read_stack_map_table(
             let num_locals = read_u16(jvm, input)?;
             let mut locals = Vec::with_capacity(num_locals as usize);
             for _ in 0..num_locals {
-                locals.push(read_verification_type(jvm, input, const_pool)?)
+                let typ = read_verification_type(jvm, input, const_pool)?;
+                locals.push(typ);
+                if typ.category_2() {
+                    locals.push(VerificationType::Top);
+                }
             }
             let num_stack = read_u16(jvm, input)?;
             let mut stack = Vec::with_capacity(num_stack as usize);

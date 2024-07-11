@@ -81,10 +81,6 @@ fn field_access_inheritance() {
 #[test]
 fn invoke_static() {
     let jvm = make_jvm();
-    unsafe {
-        // TODO: implement enough verification
-        jvm.disable_verification_by_type_checking()
-    }
     let method = jvm
         .resolve_method(
             "InvokeStatic",

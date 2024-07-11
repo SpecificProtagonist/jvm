@@ -28,7 +28,8 @@ pub(crate) struct Class {
     #[allow(dead_code)]
     pub(crate) interfaces: Vec<ClassPtr>,
     /// Does not contain inherited fields.
-    /// As far as I can tell, JVM supports field overloading.
+    /// Note: JVM supports field overloading.
+    // TODO: also include inherited fields, that would save trouble
     pub(crate) fields: HashMap<FieldNaT, Field>,
     /// At the moment, this includes any inherited methods. Change this?
     pub(crate) methods: HashMap<MethodNaT, MethodPtr>,
