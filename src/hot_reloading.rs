@@ -1,5 +1,11 @@
+use std::sync::atomic::Ordering;
+
 use crate::{
-    class::ClassInitState, jvm::error, method::Code, parse::read_class_file, verification::verify,
+    class::{Class, ClassState},
+    jvm::{error, JvmResult},
+    method::Code,
+    parse::read_class_file,
+    verification::verify_method,
     Jvm,
 };
 
@@ -22,7 +28,7 @@ pub(crate) fn reload_method_bytecodes_for_class<'a>(
         .bootstrap_class_loader
         .load(&name)
         .ok_or_else(|| map_exception(error(jvm, "NoClassDefFoundError", &name)))?;
-    let new_class = read_class_file(&bytes, jvm).map_err(map_exception)?;
+    let mut new_class = read_class_file(&bytes, jvm).map_err(map_exception)?;
 
     // Check for incompatibilities
     if (class.name != new_class.name)
@@ -40,7 +46,12 @@ pub(crate) fn reload_method_bytecodes_for_class<'a>(
                 .iter()
                 .any(|new| (f.nat == new.nat) & (f.access_flags == new.access_flags))
         })
-        || (class.methods.len() != new_class.methods.len())
+        || (class
+            .methods
+            .values()
+            .filter(|m| m.class() == class)
+            .count()
+            != new_class.methods.len())
         || class.methods.values().any(|m| {
             !new_class
                 .methods
@@ -51,34 +62,58 @@ pub(crate) fn reload_method_bytecodes_for_class<'a>(
         return Err(ReloadErr::ClassLayoutChanged);
     }
 
-    // Alright, swap out code
-    let mut const_pool = class.const_pool.write();
-    *const_pool = new_class.const_pool;
-    for (nat, method) in &class.methods {
-        match (&method.code, &new_class.methods.get(nat).unwrap().code) {
-            (Code::None | Code::Native(_), Code::None) => {}
-            (Code::Bytecode(old), Code::Bytecode(new)) => {
-                std::mem::swap(&mut *old.write(), &mut *new.write());
-            }
-            _ => return Err(ReloadErr::ClassLayoutChanged),
-        }
+    // Set class pointers
+    for method in new_class.methods.values() {
+        method
+            .class
+            .store(class as *const Class as *mut Class, Ordering::SeqCst);
+    }
+    for field in new_class.fields {
+        field
+            .class
+            .store(class as *const Class as *mut Class, Ordering::SeqCst);
     }
 
     let mut guard = class.init.lock();
-    match *guard {
-        ClassInitState::Uninit => {}
-        ClassInitState::InProgress(_) | ClassInitState::Done => {
-            // Resolution
-            const_pool.resolve(jvm).map_err(map_exception)?;
-            drop(const_pool);
-
-            // Verification
-            verify(jvm, class).map_err(map_exception)?;
-
-            // Skip preparation & initialization to keep existing state
+    loop {
+        match *guard {
+            ClassState::InProgress(_) => class.init_waiter.wait(&mut guard),
+            ClassState::Error(_) => {
+                // Reset in case the error was caused by bytecode verification
+                *guard = ClassState::Unverified;
+                break;
+            }
+            ClassState::Unverified => break,
+            ClassState::Verified | ClassState::Initialized => {
+                // Verification needed
+                if let Err(e) = || -> JvmResult<()> {
+                    // Resolution
+                    new_class.const_pool.resolve(jvm)?;
+                    // Verification – only bytecode has changed
+                    for method in new_class.methods.values() {
+                        verify_method(jvm, &new_class.const_pool, method)?
+                    }
+                    Ok(())
+                }() {
+                    *guard = ClassState::Error(e);
+                    return Err(map_exception(e));
+                }
+                break;
+            }
         }
-        ClassInitState::Error(_) => *guard = ClassInitState::Uninit,
     }
 
+    // Alright, swap out code
+    *class.const_pool.write() = new_class.const_pool;
+    for (nat, method) in &class.methods {
+        if let (Code::Bytecode(old), Code::Bytecode(new)) =
+            (&method.code, &new_class.methods.get(nat).unwrap().code)
+        {
+            std::mem::swap(&mut *old.write(), &mut *new.write());
+        }
+    }
+    // Skip preparation & initialization to keep existing state
+
+    class.init_waiter.notify_all();
     Ok(())
 }

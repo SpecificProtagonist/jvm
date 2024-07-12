@@ -1,5 +1,7 @@
+use std::ops::Deref;
+
 use crate::{
-    class::ClassPtr,
+    class::{ClassPtr, ClassState},
     const_pool::{ConstPool, ConstPoolItem},
     field::Field,
     field_storage::FieldStorage,
@@ -136,6 +138,10 @@ fn native(jvm: &Jvm, method: &Method, code: &NativeCode, args: &[IVal]) -> JvmRe
 
 /// Requires that the class is already initialized, or method is the initializer
 fn interpret(jvm: &Jvm, method: &Method, code: &Bytecode, args: &[IVal]) -> JvmResult<Value> {
+    debug_assert!(
+        (method.nat.name.deref() == "<clinit>")
+            | matches!(*method.class().init.lock(), ClassState::Initialized)
+    );
     // The class is already initialized, so we can hold the read lock for as long as we like
     let const_pool = method.class().const_pool.read();
 

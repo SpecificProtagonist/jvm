@@ -176,6 +176,7 @@ pub(crate) enum VerificationType {
     Integer,
     Float,
     Null,
+    Reference,
     ObjectVariable(ClassPtr),
     UninitializedThis,
     UninitializedVariable { offset: u16 },
@@ -191,18 +192,17 @@ impl Default for VerificationType {
 
 impl VerificationType {
     fn is_assignable_to(self, other: Self) -> bool {
-        if (self == other) | (other == Self::Top) {
-            true
-        } else if let Self::ObjectVariable(other_class) = other {
-            if let Self::Null = self {
-                true
-            } else if let Self::ObjectVariable(self_class) = self {
-                self_class.assignable_to(&other_class.name)
-            } else {
-                false
-            }
-        } else {
-            false
+        use VerificationType::*;
+        match (self, other) {
+            (a, b) if a == b => true,
+            (_, Top) => true,
+            (
+                Null | ObjectVariable(_) | UninitializedThis | UninitializedVariable { .. },
+                Reference,
+            ) => true,
+            (ObjectVariable(a), ObjectVariable(b)) => a.assignable_to(&b.name),
+            (Null, ObjectVariable(_)) => true,
+            _ => false,
         }
     }
 
@@ -246,12 +246,12 @@ pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Typ)
     Ok(())
 }
 
-// TODO: if this throws a linkage error, it must always throw the same instance for the same class
 // TODO: Exception handlers
 /// Verification by type checking (verification by type inference is not planned)
+/// Requires class to be resolved (→ only called from Class::verify)
 pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassPtr) -> JvmResult<()> {
     if let Some(super_class) = class.super_class {
-        verify(jvm, super_class)?;
+        super_class.verify(jvm)?;
         // Check whether the super class is final (as described in spec) is redundant (has to already be checked during loading)
     } else if class.name.as_ref() != "java.lang.Object" {
         return Err(ve(jvm, "class has no superclass"));
@@ -268,7 +268,7 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassPtr) -> JvmResult<()>
     Ok(())
 }
 
-fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) -> JvmResult<()> {
+pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) -> JvmResult<()> {
     if let (false, Some(super_class)) = (
         method.access_flags.contains(AccessFlags::STATIC),
         method.class().super_class,
@@ -282,7 +282,7 @@ fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) -> JvmResul
 
     match &method.code {
         Code::None => {
-            if !method.access_flags.contains(AccessFlags::ABSTRACT) {
+            if !method.access_flags.intersects(AccessFlags::ABSTRACT) {
                 return Err(ve(jvm, "missing code attribute"));
             }
         }
@@ -306,12 +306,11 @@ fn verify_bytecode(
     method: &Method,
     code: &Bytecode,
 ) -> JvmResult<()> {
-    ///// for testing, TODO: remove this! /////
-    if method.nat.name.as_ref() == "<init>" {
-        return Ok(());
-    }
-    println!("verifying {}.{}", method.class().name, method.nat.name,);
-    ///////////////////////////////////////////
+    // println!(
+    //     "verifying method {}.{}",
+    //     method.class().name,
+    //     method.nat.name,
+    // );
 
     // The initial typestate is not stored in the class file but derive from the method signature
     let initial_locals = {
@@ -370,9 +369,6 @@ fn verify_bytecode(
     let mut pc = 0;
 
     let pc = &mut pc;
-
-    let any_object =
-        VerificationType::ObjectVariable(jvm.resolve_class_internal("java.lang.Object")?);
 
     // Iterate over all instructions
     // TODO: switch result to bool
@@ -461,7 +457,7 @@ fn verify_bytecode(
             }
             ALOAD => {
                 let index = read_code_u8(jvm, bytes, pc)? as u16;
-                type_state.load(jvm, index, any_object)?
+                type_state.load(jvm, index, VerificationType::Reference)?
             }
             ILOAD_0 => type_state.load(jvm, 0, VerificationType::Integer)?,
             ILOAD_1 => type_state.load(jvm, 1, VerificationType::Integer)?,
@@ -495,10 +491,10 @@ fn verify_bytecode(
             DLOAD_3 => {
                 type_state.load(jvm, 3, VerificationType::Double)?;
             }
-            ALOAD_0 => type_state.load(jvm, 0, any_object)?,
-            ALOAD_1 => type_state.load(jvm, 1, any_object)?,
-            ALOAD_2 => type_state.load(jvm, 2, any_object)?,
-            ALOAD_3 => type_state.load(jvm, 3, any_object)?,
+            ALOAD_0 => type_state.load(jvm, 0, VerificationType::Reference)?,
+            ALOAD_1 => type_state.load(jvm, 1, VerificationType::Reference)?,
+            ALOAD_2 => type_state.load(jvm, 2, VerificationType::Reference)?,
+            ALOAD_3 => type_state.load(jvm, 3, VerificationType::Reference)?,
             IALOAD => {
                 if (type_state.pop(jvm)? != VerificationType::Integer)
                     | !matches!(
@@ -629,7 +625,7 @@ fn verify_bytecode(
             }
             ASTORE => {
                 let index = read_code_u8(jvm, bytes, pc)? as u16;
-                type_state.store(jvm, index, any_object)?
+                type_state.store(jvm, index, VerificationType::Reference)?
             }
             ISTORE_0 => type_state.store(jvm, 0, VerificationType::Integer)?,
             ISTORE_1 => type_state.store(jvm, 1, VerificationType::Integer)?,
@@ -647,10 +643,10 @@ fn verify_bytecode(
             DSTORE_1 => type_state.store(jvm, 1, VerificationType::Double)?,
             DSTORE_2 => type_state.store(jvm, 2, VerificationType::Double)?,
             DSTORE_3 => type_state.store(jvm, 3, VerificationType::Double)?,
-            ASTORE_0 => type_state.store(jvm, 0, any_object)?,
-            ASTORE_1 => type_state.store(jvm, 1, any_object)?,
-            ASTORE_2 => type_state.store(jvm, 2, any_object)?,
-            ASTORE_3 => type_state.store(jvm, 3, any_object)?,
+            ASTORE_0 => type_state.store(jvm, 0, VerificationType::Reference)?,
+            ASTORE_1 => type_state.store(jvm, 1, VerificationType::Reference)?,
+            ASTORE_2 => type_state.store(jvm, 2, VerificationType::Reference)?,
+            ASTORE_3 => type_state.store(jvm, 3, VerificationType::Reference)?,
             IASTORE => {
                 if !((type_state.pop(jvm)? == VerificationType::Integer)
                     & (type_state.pop(jvm)? == VerificationType::Integer)
@@ -1102,7 +1098,7 @@ fn verify_bytecode(
                     }
                     _ => true,
                 } {
-                    return Err(ve(jvm, "invalid getfield"));
+                    return Err(ve(jvm, "invalid putfield"));
                 }
             }
             INVOKEVIRTUAL => {
@@ -1130,15 +1126,16 @@ fn verify_bytecode(
                         valid &= type_state.pop(jvm)?.matches(arg);
                     }
                     let uninit_type = type_state.pop(jvm)?;
-                    match uninit_type {
-                        VerificationType::UninitializedThis => {}
+                    let init_type = match uninit_type {
+                        VerificationType::UninitializedThis => {
+                            VerificationType::ObjectVariable(method.class())
+                        }
                         VerificationType::UninitializedVariable { offset } => {
                             valid &= code.bytes[offset as usize] == NEW;
+                            VerificationType::ObjectVariable(invoke_class)
                         }
-                        _ => valid = false,
-                    }
-                    // TODO: Spec talks about class of the method, and method holder. Is there a difference?
-                    let init_type = VerificationType::ObjectVariable(invoke_class);
+                        _ => return Err(ve(jvm, "invalid invokespecial")),
+                    };
                     for typ in type_state
                         .locals
                         .iter_mut()

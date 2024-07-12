@@ -169,6 +169,7 @@ impl Jvm {
     ///
     /// # Panics
     /// Panics if the class is already loaded.
+    // TODO: remove the panic restriction; move lock from bytecode to code, make native option, move binding resolution to invokation
     pub fn register_native_method(
         &self,
         class: &str,
@@ -222,9 +223,8 @@ impl Jvm {
     }
 
     /// Reload the bytecodes of all methods in the class.
-    /// Fails if there are structural changes to the class (e.g. a field is added of a
-    /// method signature has changed).
-    /// Behavior when a class gets reloaded during initialization is unspecified (but safe).
+    /// Fails if there are structural changes to the class (e.g. a field is added of a method signature has changed).
+    /// Reloading a class while it is getting verified or getting initialized (or vice-versa) may deadlock.
     pub fn reload_method_bytecodes_for_class<'a>(
         &'a self,
         class: &str,
@@ -268,7 +268,7 @@ impl Jvm {
             methods: super_class.methods.clone(),
             static_storage: FieldStorage::new(&self.heap, 0),
             object_size: 0,
-            init: ClassInitState::Uninit.into(),
+            init: ClassState::Unverified.into(),
             init_waiter: default(),
         };
         let array = unsafe { self.heap.alloc_typed(array) };
@@ -410,7 +410,7 @@ impl Jvm {
                 methods,
                 static_storage,
                 object_size,
-                init: ClassInitState::Uninit.into(),
+                init: ClassState::Unverified.into(),
                 init_waiter: default(),
             })
         };

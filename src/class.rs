@@ -27,24 +27,25 @@ pub(crate) struct Class {
     pub(crate) access_flags: AccessFlags,
     #[allow(dead_code)]
     pub(crate) interfaces: Vec<ClassPtr>,
-    /// Does not contain inherited fields.
+    /// Does not contain inherited fields. (Change this?)
     /// Note: JVM supports field overloading.
-    // TODO: also include inherited fields, that would save trouble
     pub(crate) fields: HashMap<FieldNaT, Field>,
     /// At the moment, this includes any inherited methods. Change this?
     pub(crate) methods: HashMap<MethodNaT, MethodPtr>,
     pub(crate) static_storage: FieldStorage,
     /// Combined size of instance fields in normal class, 0 if array
     pub(crate) object_size: usize,
-    pub(crate) init: Mutex<ClassInitState>,
+    pub(crate) init: Mutex<ClassState>,
     pub(crate) init_waiter: Condvar,
 }
 
-pub(crate) enum ClassInitState {
-    Uninit,
+#[derive(Debug)]
+pub(crate) enum ClassState {
+    Unverified,
+    Verified,
     InProgress(ThreadId),
     /// Initialization succeeded.
-    Done,
+    Initialized,
     /// Initialization failed; holds the exception thrown.
     Error(Object),
 }
@@ -170,46 +171,69 @@ impl Class {
     /// This happens automatically when a method belonging to this class is called.
     // May only be called by the library consumer or instuctions new, getstatic, putstatic or invokestatic or by being the initial class
     pub fn ensure_init(&'static self, jvm: &Jvm) -> JvmResult<()> {
-        let mut guard = self.init.lock();
-        match *guard {
-            ClassInitState::Done => Ok(()),
-            ClassInitState::Error(err) => Err(err),
-            ClassInitState::InProgress(thread) => {
-                if thread == std::thread::current().id() {
-                    Ok(())
-                } else {
-                    loop {
+        loop {
+            let mut guard = self.init.lock();
+            match *guard {
+                ClassState::InProgress(thread) => {
+                    if thread == std::thread::current().id() {
+                        return Ok(());
+                    } else {
                         self.init_waiter.wait(&mut guard);
-                        match *guard {
-                            ClassInitState::Done => return Ok(()),
-                            ClassInitState::Error(err) => return Err(err),
-                            ClassInitState::InProgress(_) => continue,
-                            ClassInitState::Uninit => unreachable!(),
-                        }
                     }
                 }
-            }
-            ClassInitState::Uninit => {
-                *guard = ClassInitState::InProgress(std::thread::current().id());
-                drop(guard);
-
-                if let Some(super_class) = self.super_class {
-                    super_class.ensure_init(jvm)?;
+                ClassState::Unverified => {
+                    *guard = ClassState::InProgress(std::thread::current().id());
+                    drop(guard);
+                    self.verify(jvm)?;
+                    self.init_waiter.notify_all();
                 }
+                ClassState::Verified => {
+                    *guard = ClassState::InProgress(std::thread::current().id());
+                    drop(guard);
 
-                let result = self.init(jvm);
-                *self.init.lock() = match result {
-                    Ok(()) => ClassInitState::Done,
-                    Err(err) => ClassInitState::Error(err),
-                };
-                self.init_waiter.notify_all();
-                result
+                    if let Some(super_class) = self.super_class {
+                        super_class.ensure_init(jvm)?;
+                    }
+
+                    let result = self.init(jvm);
+                    *self.init.lock() = match result {
+                        Ok(()) => ClassState::Initialized,
+                        Err(err) => ClassState::Error(err),
+                    };
+                    self.init_waiter.notify_all();
+                    return result;
+                }
+                ClassState::Initialized => return Ok(()),
+                ClassState::Error(err) => return Err(err),
             }
         }
     }
 
-    /// This may only be called from self.ensure_init
-    fn init(&'static self, jvm: &Jvm) -> JvmResult<()> {
+    pub(crate) fn verify(&'static self, jvm: &Jvm) -> JvmResult<()> {
+        let mut guard = self.init.lock();
+        loop {
+            match *guard {
+                ClassState::Unverified => break,
+                ClassState::InProgress(thread) => {
+                    if thread == std::thread::current().id() {
+                        break;
+                    } else {
+                        self.init_waiter.wait(&mut guard);
+                    }
+                }
+                ClassState::Verified | ClassState::Initialized => return Ok(()),
+                ClassState::Error(err) => return Err(err),
+            }
+        }
+        let result = self.verify_impl(jvm);
+        *guard = match result {
+            Ok(()) => ClassState::Verified,
+            Err(err) => ClassState::Error(err),
+        };
+        result
+    }
+
+    pub(crate) fn verify_impl(&'static self, jvm: &Jvm) -> JvmResult<()> {
         let mut const_pool = self.const_pool.write();
         // Preparation
         for field in self.fields.values() {
@@ -285,6 +309,11 @@ impl Class {
         // Verification
         verify(jvm, self)?;
 
+        Ok(())
+    }
+
+    /// Requires class to be verified, may only be called from self.ensure_init
+    fn init(&'static self, jvm: &Jvm) -> JvmResult<()> {
         // Initialization
         if let Some(initializer) = self.methods.get(&MethodNaT {
             name: "<clinit>".into(),

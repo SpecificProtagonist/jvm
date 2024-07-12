@@ -187,6 +187,7 @@ impl ConstPool {
     /// Requires resolution first
     pub fn get_virtual_method(&self, jvm: &Jvm, index: u16) -> JvmResult<(ClassPtr, MethodNaT)> {
         match self.items.get(index as usize) {
+            // TODO: remove clone
             Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, nat.clone())),
             _ => Err(cfe(jvm)),
         }
