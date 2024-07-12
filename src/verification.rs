@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::atomic::Ordering};
+use std::{collections::BTreeMap, ops::Deref, sync::atomic::Ordering};
 
 use crate::{
     class::{Class, ClassPtr},
@@ -306,12 +306,11 @@ fn verify_bytecode(
     method: &Method,
     code: &Bytecode,
 ) -> JvmResult<()> {
-    let is_init = method.nat.name.as_ref() == "<init>";
     ///// for testing, TODO: remove this! /////
-    if is_init {
+    if method.nat.name.as_ref() == "<init>" {
         return Ok(());
     }
-    // println!("verifying {}.{}", method.class().name, method.nat.name,);
+    println!("verifying {}.{}", method.class().name, method.nat.name,);
     ///////////////////////////////////////////
 
     // The initial typestate is not stored in the class file but derive from the method signature
@@ -1098,27 +1097,83 @@ fn verify_bytecode(
                         !class.assignable_to(&field.class().name)
                     }
                     VerificationType::UninitializedThis => {
-                        is_init & method.class().assignable_to(&field.class().name)
+                        (method.nat.name.as_ref() == "<init>")
+                            & method.class().assignable_to(&field.class().name)
                     }
                     _ => true,
                 } {
                     return Err(ve(jvm, "invalid getfield"));
                 }
             }
-            INVOKESTATIC => {
+            INVOKEVIRTUAL => {
                 let index = read_code_u16(jvm, bytes, pc)?;
-                let method = const_pool.get_static_method(jvm, index)?;
-                let mut valid = true;
-                for arg in method.nat.typ.args.iter().rev() {
+                let (invoke_class, invoke_nat) = const_pool.get_virtual_method(jvm, index)?;
+                let mut valid = !matches!(invoke_nat.name.as_ref(), "<init>" | "<clinit>");
+                for arg in invoke_nat.typ.args.iter().rev() {
                     valid &= type_state.pop(jvm)?.matches(arg);
                 }
-                if let Some(return_type) = &method.nat.typ.returns {
+                valid &= type_state.pop(jvm)? == VerificationType::ObjectVariable(invoke_class);
+                if let Some(return_type) = &invoke_nat.typ.returns {
                     push_type(jvm, &mut type_state.stack, return_type)?
                 }
-                if !valid
-                    | (method.nat.name.as_ref() == "<init>")
-                    | (method.nat.name.as_ref() == "<cinit>")
-                {
+                if !valid {
+                    return Err(ve(jvm, "invalid invokevirtual"));
+                }
+            }
+            INVOKESPECIAL => {
+                let index = read_code_u16(jvm, bytes, pc)?;
+                let (invoke_class, invoke_nat) = const_pool.get_virtual_method(jvm, index)?;
+                let mut valid = invoke_nat.name.deref() != "<clinit>";
+                if invoke_nat.name.deref() == "<init>" {
+                    valid &= invoke_nat.typ.returns.is_none();
+                    for arg in invoke_nat.typ.args.iter().rev() {
+                        valid &= type_state.pop(jvm)?.matches(arg);
+                    }
+                    let uninit_type = type_state.pop(jvm)?;
+                    match uninit_type {
+                        VerificationType::UninitializedThis => {}
+                        VerificationType::UninitializedVariable { offset } => {
+                            valid &= code.bytes[offset as usize] == NEW;
+                        }
+                        _ => valid = false,
+                    }
+                    // TODO: Spec talks about class of the method, and method holder. Is there a difference?
+                    let init_type = VerificationType::ObjectVariable(invoke_class);
+                    for typ in type_state
+                        .locals
+                        .iter_mut()
+                        .chain(type_state.stack.iter_mut())
+                    {
+                        if *typ == uninit_type {
+                            *typ = init_type
+                        }
+                    }
+                } else {
+                    for arg in invoke_nat.typ.args.iter().rev() {
+                        valid &= type_state.pop(jvm)?.matches(arg);
+                    }
+                    let object = type_state.pop(jvm)?;
+                    valid &= invoke_class == method.class();
+                    valid &= object.matches(&Typ::Ref(invoke_class.name.clone()));
+                    if let Some(return_type) = &invoke_nat.typ.returns {
+                        push_type(jvm, &mut type_state.stack, return_type)?
+                    }
+                }
+                if !valid {
+                    return Err(ve(jvm, "invalid invokespecial"));
+                }
+            }
+            INVOKESTATIC => {
+                let index = read_code_u16(jvm, bytes, pc)?;
+                let invoke_method = const_pool.get_static_method(jvm, index)?;
+                let mut valid = !matches!(invoke_method.nat.name.as_ref(), "<init>" | "<clinit>");
+                for arg in invoke_method.nat.typ.args.iter().rev() {
+                    valid &= type_state.pop(jvm)?.matches(arg);
+                }
+                if let Some(return_type) = &invoke_method.nat.typ.returns {
+                    push_type(jvm, &mut type_state.stack, return_type)?
+                }
+                if !valid {
                     return Err(ve(jvm, "invalid invokestatic"));
                 }
             }
@@ -1169,7 +1224,7 @@ fn verify_bytecode(
                 }
                 type_state.push(VerificationType::Integer);
             }
-            IF_NULL | IF_NON_NULL => {
+            IFNULL | IFNONNULL => {
                 if !matches!(type_state.pop(jvm)?, VerificationType::ObjectVariable(_)) {
                     return Err(ve(jvm, "invalid if"));
                 }

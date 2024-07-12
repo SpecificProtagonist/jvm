@@ -53,10 +53,6 @@ fn control_flow() {
 #[test]
 fn field_access_simple() {
     let jvm = make_jvm();
-    unsafe {
-        // TODO: implement enough verification
-        jvm.disable_verification_by_type_checking()
-    }
     let class = jvm.resolve_class("FieldAccess").unwrap();
     let set_method = class.method("set", [Typ::Int], None).unwrap();
     let get_method = class.method("get", [], Some(Typ::Int)).unwrap();
@@ -95,10 +91,6 @@ fn invoke_static() {
 #[test]
 fn invoke_virtual() {
     let jvm = make_jvm();
-    unsafe {
-        // TODO: implement enough verification
-        jvm.disable_verification_by_type_checking()
-    }
     let method = jvm
         .resolve_method("InvokeVirtual", "test", [], Some(Typ::Boolean))
         .unwrap();
@@ -181,20 +173,12 @@ fn lazy_resolve() {
 #[test]
 fn lazy_init() {
     let jvm = make_jvm();
-    unsafe {
-        // TODO: implement enough verification
-        jvm.disable_verification_by_type_checking()
-    }
     let method = jvm
         .resolve_method("LazyInit", "test", [Typ::Boolean], Some(Typ::Int))
         .unwrap();
     assert_eq!(method.invoke(&[false.into()]).unwrap(), 1);
 
     let jvm = make_jvm();
-    unsafe {
-        // TODO: implement enough verification
-        jvm.disable_verification_by_type_checking()
-    }
     let method = jvm
         .resolve_method("LazyInit", "test", [Typ::Boolean], Some(Typ::Int))
         .unwrap();
@@ -204,10 +188,6 @@ fn lazy_init() {
 #[test]
 fn many_allocs() {
     let jvm = make_jvm();
-    unsafe {
-        // TODO: implement enough verification
-        jvm.disable_verification_by_type_checking()
-    }
     let method = jvm.resolve_method("ManyAllocs", "test", [], None).unwrap();
     assert_eq!(method.invoke(&[]).unwrap(), ());
 }

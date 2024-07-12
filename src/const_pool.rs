@@ -45,7 +45,7 @@ pub(crate) enum ConstPoolItem {
 }
 
 fn cfe(jvm: &Jvm) -> Object {
-    error(jvm, "ClassFormatError", "")
+    error(jvm, "ClassFormatError", "const pool")
 }
 
 impl ConstPool {

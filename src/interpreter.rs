@@ -5,7 +5,7 @@ use crate::{
     field_storage::FieldStorage,
     heap::{JVMPtr, NULL_PTR},
     instructions::*,
-    jvm::{throwable, Jvm, JvmResult, Value},
+    jvm::{error, throwable, Jvm, JvmResult, Value},
     method::{Bytecode, Code, Method, NativeCode},
     object::Object,
     typ::Typ,
@@ -862,7 +862,7 @@ fn run_until_exception_or_return(
                 let dimensions = frame.read_code_u8();
                 // Remove this check one it's in validation
                 if dimensions == 0 {
-                    return Err(throwable(jvm, "ClassFormatError"));
+                    return Err(error(jvm, "ClassFormatError", "multianewarray 0"));
                 }
                 let class = const_pool.get_class(jvm, index)?;
                 fn create_array(jvm: &Jvm, dimensions: &[IVal], class: ClassPtr) -> Object {
@@ -883,14 +883,14 @@ fn run_until_exception_or_return(
                 );
                 frame.stack.push(array.into());
             }
-            IF_NULL => {
+            IFNULL => {
                 let base = frame.pc - 1;
                 let target_offset = frame.read_code_u16() as i16;
                 if frame.pop().0 == 0 {
                     frame.jump_relative(base, target_offset as i32);
                 }
             }
-            IF_NON_NULL => {
+            IFNONNULL => {
                 let base = frame.pc - 1;
                 let target_offset = frame.read_code_u16() as i16;
                 if frame.pop().0 != 0 {
