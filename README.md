@@ -21,22 +21,17 @@ let field_value = field.static_get();
 
 Currently implemented:
 - class loading/initialization
-- verification by type checking (partially)
-- operations on primitives
-- intra-function control flow
+- verification by type checking
+- almost all instructions (see `src/opcodes.rs`)
 - exceptions
-- functions calls (except via interfaces)
-- creating objects, including arrays
-- accessing fields & array elements
 - compressed pointers on x86-64 Linux
-- multithreading
-- hot method reloading
+- multi-threaded access
+- hot method body reloading
 
 Some mayor missing features:
 - garbage collection
 - interfaces
 - method references
-- some bytecodes
 - private/protected
 - locking
 

@@ -147,10 +147,6 @@ fn invoke_native() {
 #[test]
 fn arrays() {
     let jvm = make_jvm();
-    unsafe {
-        // TODO: implement enough verification
-        jvm.disable_verification_by_type_checking()
-    }
 
     let method = jvm
         .resolve_method("Arrays", "test", [], Some(Typ::Boolean))
@@ -209,10 +205,6 @@ fn exceptions() {
 #[test]
 fn strings() {
     let jvm = make_jvm();
-    unsafe {
-        // TODO: implement enough verification
-        jvm.disable_verification_by_type_checking()
-    }
     let class = jvm.resolve_class("Strings").unwrap();
     class.ensure_init().unwrap();
     let Value::Ref(Some(string)) = class

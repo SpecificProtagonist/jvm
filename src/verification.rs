@@ -3,10 +3,10 @@ use std::{collections::BTreeMap, ops::Deref, sync::atomic::Ordering};
 use crate::{
     class::{Class, ClassPtr},
     const_pool::{ConstPool, ConstPoolItem},
-    instructions::*,
     jvm::{error, Jvm, JvmResult},
     method::{Bytecode, Code, Method},
     object::Object,
+    opcodes::*,
     parse,
     typ::Typ,
     AccessFlags,
@@ -400,7 +400,7 @@ fn verify_bytecode(
                 match const_pool.items.get(index as usize) {
                     Some(ConstPoolItem::Integer(_)) => type_state.push(VerificationType::Integer),
                     Some(ConstPoolItem::Float(_)) => type_state.push(VerificationType::Float),
-                    Some(ConstPoolItem::RawString(_)) => {
+                    Some(ConstPoolItem::String(_)) => {
                         type_state.push(VerificationType::ObjectVariable(
                             jvm.resolve_class_internal("java.lang.String")?,
                         ))
@@ -1220,6 +1220,28 @@ fn verify_bytecode(
                     return Err(ve(jvm, "invalid arraylength"));
                 }
                 type_state.push(VerificationType::Integer);
+            }
+            MULTIANEWARRAY => {
+                let index = read_code_u16(jvm, bytes, pc)?;
+                let dimensions = read_code_u8(jvm, bytes, pc)?;
+                let class = const_pool.get_class(jvm, index)?;
+                let mut iter_class = class;
+                let mut class_dimensions = 0;
+                while let Some(elem) = &iter_class.element_type {
+                    class_dimensions += 1;
+                    if let Typ::Ref(elem) = elem {
+                        iter_class = jvm.resolve_class_internal(elem)?;
+                    } else {
+                        break;
+                    }
+                }
+                if (dimensions == 0) | (dimensions > class_dimensions) {
+                    return Err(ve(jvm, "invalid multianewarray"));
+                }
+                for _ in 0..dimensions {
+                    type_state.pop_type(jvm, &Typ::Int)?;
+                }
+                type_state.push(VerificationType::ObjectVariable(class));
             }
             IFNULL | IFNONNULL => {
                 if !matches!(type_state.pop(jvm)?, VerificationType::ObjectVariable(_)) {

@@ -6,10 +6,10 @@ use crate::{
     field::Field,
     field_storage::FieldStorage,
     heap::{JVMPtr, NULL_PTR},
-    instructions::*,
     jvm::{error, throwable, Jvm, JvmResult, Value},
     method::{Bytecode, Code, Method, NativeCode},
     object::Object,
+    opcodes::*,
     typ::Typ,
     AccessFlags,
 };
