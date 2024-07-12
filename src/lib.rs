@@ -568,3 +568,13 @@ bitflags::bitflags! {
         const ENUM = 0x4000;
     }
 }
+
+#[inline]
+fn unreachable_verified() -> ! {
+    #[cfg(debug_assertions)]
+    unreachable!();
+    #[cfg(not(debug_assertions))]
+    unsafe {
+        std::hint::unreachable_unchecked();
+    }
+}

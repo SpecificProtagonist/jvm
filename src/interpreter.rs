@@ -11,7 +11,7 @@ use crate::{
     object::Object,
     opcodes::*,
     typ::Typ,
-    AccessFlags,
+    unreachable_verified, AccessFlags,
 };
 
 pub(crate) fn invoke(
@@ -174,7 +174,7 @@ fn interpret(jvm: &Jvm, method: &Method, code: &Bytecode, args: &[IVal]) -> JvmR
                     if in_range
                         && (handler.catch_type == 0
                             || thrown.class().assignable_to(
-                                &const_pool.get_class(jvm, handler.catch_type)?.name,
+                                &const_pool.get_class_verified(handler.catch_type).name,
                             ))
                     {
                         frame.stack.clear();
@@ -291,12 +291,14 @@ fn run_until_exception_or_return(
             ISTORE | FSTORE | ASTORE => {
                 let index = frame.read_code_u8() as u16;
                 let value = frame.pop();
-                frame.locals[index as usize] = value;
+                frame.set_local(index as usize, value);
             }
             LSTORE | DSTORE => {
                 let index = frame.read_code_u8() as u16;
-                frame.locals[index as usize + 1] = frame.pop();
-                frame.locals[index as usize] = frame.pop();
+                let value_1 = frame.pop();
+                let value_2 = frame.pop();
+                frame.set_local(index as usize + 1, value_1);
+                frame.set_local(index as usize, value_2);
             }
             ISTORE_0 | FSTORE_0 | ASTORE_0 => frame.locals[0] = frame.pop(),
             ISTORE_1 | FSTORE_1 | ASTORE_1 => frame.locals[1] = frame.pop(),
@@ -719,26 +721,26 @@ fn run_until_exception_or_return(
             RETURN => return Ok(Value::Void),
             GETSTATIC => {
                 let index = frame.read_code_u16();
-                let field = const_pool.get_field(jvm, index).unwrap();
+                let field = const_pool.get_field_verified(index);
                 field.class().ensure_init(jvm)?;
                 get_field(frame, field, &field.class().static_storage);
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16();
-                let field = const_pool.get_field(jvm, index).unwrap();
+                let field = const_pool.get_field_verified(index);
                 field.class().ensure_init(jvm)?;
                 put_field(frame, field, &field.class().static_storage);
             }
             GETFIELD => {
                 let index = frame.read_code_u16();
-                let field = const_pool.get_field(jvm, index)?;
+                let field = const_pool.get_field_verified(index);
                 let object = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
                 get_field(frame, field, &object.ptr);
             }
             PUTFIELD => {
                 let index = frame.read_code_u16();
-                let field = const_pool.get_field(jvm, index)?;
+                let field = const_pool.get_field_verified(index);
                 // Stack has object ref first, then value on top
                 // This is ugly
                 let object = if matches!(field.nat.typ, Typ::Long | Typ::Double) {
@@ -759,7 +761,7 @@ fn run_until_exception_or_return(
             }
             INVOKEVIRTUAL => {
                 let index = frame.read_code_u16();
-                let (_, nat) = const_pool.get_virtual_method(jvm, index)?;
+                let (_, nat) = const_pool.get_virtual_method_verified(index);
                 let obj_index = frame.stack.len() - nat.typ.arg_slots() - 1;
                 let obj = unsafe { frame.stack[obj_index].as_ref() }
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
@@ -767,7 +769,7 @@ fn run_until_exception_or_return(
                 let invoke_method = obj
                     .class()
                     .methods
-                    .get(&nat)
+                    .get(nat)
                     .ok_or_else(|| throwable(jvm, "NoSuchMethodError"))?;
                 if invoke_method.access_flags.contains(AccessFlags::STATIC) {
                     return Err(throwable(jvm, "IncompatibleClassChangeError"));
@@ -779,7 +781,7 @@ fn run_until_exception_or_return(
             }
             INVOKESPECIAL => {
                 let index = frame.read_code_u16();
-                let (named_class, nat) = const_pool.get_virtual_method(jvm, index)?;
+                let (named_class, nat) = const_pool.get_virtual_method_verified(index);
 
                 let is_instance_init = nat.name.as_ref() == "<init>";
 
@@ -795,7 +797,7 @@ fn run_until_exception_or_return(
                 // TODO: move method linking (incl NoSuchMethodError and IncompatibleClassChangeError) to class init
                 let invoke_method = class
                     .methods
-                    .get(&nat)
+                    .get(nat)
                     .ok_or_else(|| throwable(jvm, "NoSuchMethodError"))?;
                 if is_instance_init && invoke_method.class() != named_class {
                     return Err(throwable(jvm, "NoSuchMethodError"));
@@ -807,13 +809,13 @@ fn run_until_exception_or_return(
             }
             INVOKESTATIC => {
                 let index = frame.read_code_u16();
-                let invoke_method = const_pool.get_static_method(jvm, index)?;
+                let invoke_method = const_pool.get_static_method_verified(index);
                 invoke_method.class().ensure_init(jvm)?;
                 execute_invoke_instr(jvm, frame, invoke_method)?;
             }
             NEW => {
                 let index = frame.read_code_u16();
-                let class = const_pool.get_class(jvm, index)?;
+                let class = const_pool.get_class_verified(index);
                 class.ensure_init(jvm)?;
                 frame
                     .stack
@@ -842,19 +844,20 @@ fn run_until_exception_or_return(
             ANEWARRAY => {
                 let length = frame.pop().as_int();
                 let index = frame.read_code_u16();
-                let component = Typ::Ref(const_pool.get_class(jvm, index)?.name.clone());
+                let component = const_pool.get_class_verified(index);
+                let class = jvm.resolve_array_of(&Typ::Ref(component.name.clone()))?;
                 if length < 0 {
                     return Err(throwable(jvm, "NegativeArraySizeException"));
                 }
                 frame
                     .stack
-                    .push(jvm.create_array_of(&component, length).into());
+                    .push(jvm.create_array_internal(class, length).into());
             }
             ARRAYLENGTH => {
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
                 let Some(length) = obj.array_len() else {
-                    unreachable!()
+                    unreachable_verified()
                 };
                 frame.stack.push(length.into());
             }
@@ -1097,12 +1100,22 @@ impl<'jvm> Frame<'jvm> {
     }
 
     fn load_local(&mut self, index: usize) {
-        self.stack.push(self.locals[index]);
+        self.stack.push(self.local(index));
     }
 
     fn load_local_2(&mut self, index: usize) {
-        self.stack.push(self.locals[index]);
-        self.stack.push(self.locals[index + 1]);
+        self.stack.push(self.local(index));
+        self.stack.push(self.local(index + 1));
+    }
+
+    fn local(&self, index: usize) -> IVal {
+        debug_assert!(index < self.locals.len());
+        unsafe { *self.locals.get_unchecked(index) }
+    }
+
+    fn set_local(&mut self, index: usize, value: IVal) {
+        debug_assert!(index < self.locals.len());
+        unsafe { *self.locals.get_unchecked_mut(index) = value }
     }
 
     fn read_code_u8(&mut self) -> u8 {

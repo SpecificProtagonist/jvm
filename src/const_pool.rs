@@ -8,7 +8,7 @@ use crate::{
     object::Object,
     parse,
     typ::Typ,
-    AccessFlags, Jvm,
+    unreachable_verified, AccessFlags, Jvm,
 };
 
 // Differentiating runtime- and on-disk const pool shouldn't be neccessary
@@ -185,10 +185,9 @@ impl ConstPool {
     }
 
     /// Requires resolution first
-    pub fn get_virtual_method(&self, jvm: &Jvm, index: u16) -> JvmResult<(ClassPtr, MethodNaT)> {
+    pub fn get_virtual_method(&self, jvm: &Jvm, index: u16) -> JvmResult<(ClassPtr, &MethodNaT)> {
         match self.items.get(index as usize) {
-            // TODO: remove clone
-            Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, nat.clone())),
+            Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, nat)),
             _ => Err(cfe(jvm)),
         }
     }
@@ -207,6 +206,38 @@ impl ConstPool {
                 Ok((self.get_utf8(jvm, *name)?, self.get_utf8(jvm, *descriptor)?))
             }
             _ => Err(cfe(jvm)),
+        }
+    }
+
+    /// Requires verification first
+    pub fn get_class_verified(&self, index: u16) -> ClassPtr {
+        match self.items.get(index as usize) {
+            Some(ConstPoolItem::Class(class)) => class,
+            _ => unreachable_verified(),
+        }
+    }
+
+    /// Requires verification first
+    pub fn get_field_verified(&self, index: u16) -> &'static Field {
+        match self.items.get(index as usize) {
+            Some(ConstPoolItem::Field(field)) => field,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Requires verification first
+    pub fn get_virtual_method_verified(&self, index: u16) -> (ClassPtr, &MethodNaT) {
+        match self.items.get(index as usize) {
+            Some(ConstPoolItem::VirtualMethod(class, nat)) => (class, nat),
+            _ => unreachable_verified(),
+        }
+    }
+
+    /// Requires verification first
+    pub fn get_static_method_verified(&self, index: u16) -> MethodPtr {
+        match self.items.get(index as usize) {
+            Some(ConstPoolItem::StaticMethod(method)) => method,
+            _ => unreachable_verified(),
         }
     }
 }

@@ -236,6 +236,11 @@ impl Jvm {
     /// If the component is a class, this also loads it, its superclass (recursively) and any interfaces it implements.
     /// Does not initialize this class nor load any other class referenced.
     pub(crate) fn resolve_array_of(&self, component: &Typ) -> JvmResult<ClassPtr> {
+        let name: Arc<str> = format!("{component}[]").into();
+        if let Some(class) = self.classes.read().get(&name) {
+            return Ok(*class);
+        }
+
         // Arrays of primitives inherit from objects,
         // other arrays inherit from arrays of the superclass of their component type
         let super_class = if let Typ::Ref(component) = &component {
@@ -248,8 +253,6 @@ impl Jvm {
         } else {
             self.resolve_class_internal("java.lang.Object")?
         };
-
-        let name: Arc<str> = format!("{component}[]").into();
 
         let array = Class {
             name: name.clone(),
@@ -455,38 +458,24 @@ impl Jvm {
 
     /// Creates an array on the heap.
     /// # Panics
-    /// Panics if length < 0 or class is not an array class.
-    #[track_caller]
-    pub(crate) fn create_array_internal(&self, class: ClassPtr, length: i32) -> Object {
-        self.create_array_impl(
-            class,
-            class
-                .element_type
-                .as_ref()
-                .expect("Class is not an array class"),
-            length,
-        )
-    }
-
-    /// Creates an array on the heap.
-    /// # Panics
     /// Panics if length < 0 or the component is a class that fails to load.
     #[track_caller]
     pub(crate) fn create_array_of(&self, component: &Typ, length: i32) -> Object {
-        let class = self
-            .resolve_array_of(component)
-            .expect("Failed to resolve class");
-        self.create_array_impl(class, component, length)
-    }
-
-    #[track_caller]
-    fn create_array_impl(&self, class: ClassPtr, component: &Typ, length: i32) -> Object {
         if length < 0 {
             panic!("array length < 0")
         }
+        let class = self
+            .resolve_array_of(component)
+            .expect("Failed to resolve class");
+        self.create_array_internal(class, length)
+    }
+
+    #[track_caller]
+    pub(crate) fn create_array_internal(&self, class: ClassPtr, length: i32) -> Object {
         let data = FieldStorage::new(
             &self.heap,
-            object::header_size() + component.layout().size() * length as usize,
+            object::header_size()
+                + class.element_type.as_ref().unwrap().layout().size() * length as usize,
         );
         // SAFETY: object_size takes object head into account
         unsafe { data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true) };
