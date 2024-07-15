@@ -15,6 +15,7 @@ mod object;
 mod opcodes;
 mod parse;
 mod typ;
+mod value;
 mod verification;
 
 use std::{
@@ -389,11 +390,11 @@ pub enum Value<'a> {
 }
 
 impl<'a> Value<'a> {
-    fn new(jvm: &'a Jvm, value: jvm::Value, typ: Option<&Typ>) -> Self {
+    fn new(jvm: &'a Jvm, value: value::Value, typ: Option<&Typ>) -> Self {
         match value {
-            jvm::Value::Void => Self::Void,
-            jvm::Value::Ref(value) => Self::Ref(value.map(|value| Object::new(jvm, value))),
-            jvm::Value::Int(value) => match typ {
+            value::Value::Void => Self::Void,
+            value::Value::Ref(value) => Self::Ref(value.map(|value| Object::new(jvm, value))),
+            value::Value::Int(value) => match typ {
                 Some(Typ::Boolean) => Self::Boolean(value != 0),
                 Some(Typ::Byte) => Self::Byte(value as i8),
                 Some(Typ::Short) => Self::Short(value as i16),
@@ -401,24 +402,24 @@ impl<'a> Value<'a> {
                 Some(Typ::Int) => Self::Int(value),
                 _ => unreachable!(),
             },
-            jvm::Value::Long(value) => Self::Long(value),
-            jvm::Value::Float(value) => Self::Float(value),
-            jvm::Value::Double(value) => Self::Double(value),
+            value::Value::Long(value) => Self::Long(value),
+            value::Value::Float(value) => Self::Float(value),
+            value::Value::Double(value) => Self::Double(value),
         }
     }
 
-    fn into_inner(self, jvm: &Jvm) -> jvm::Value {
+    fn into_inner(self, jvm: &Jvm) -> value::Value {
         match self {
-            Self::Void => jvm::Value::Void,
-            Self::Ref(value) => jvm::Value::Ref(value.map(|value| value.into_inner(jvm))),
-            Self::Boolean(value) => jvm::Value::Int(value as i32),
-            Self::Byte(value) => jvm::Value::Int(value as i32),
-            Self::Char(value) => jvm::Value::Int(value as i32),
-            Self::Short(value) => jvm::Value::Int(value as i32),
-            Self::Int(value) => jvm::Value::Int(value),
-            Self::Long(value) => jvm::Value::Long(value),
-            Self::Float(value) => jvm::Value::Float(value),
-            Self::Double(value) => jvm::Value::Double(value),
+            Self::Void => value::Value::Void,
+            Self::Ref(value) => value::Value::Ref(value.map(|value| value.into_inner(jvm))),
+            Self::Boolean(value) => value::Value::Int(value as i32),
+            Self::Byte(value) => value::Value::Int(value as i32),
+            Self::Char(value) => value::Value::Int(value as i32),
+            Self::Short(value) => value::Value::Int(value as i32),
+            Self::Int(value) => value::Value::Int(value),
+            Self::Long(value) => value::Value::Long(value),
+            Self::Float(value) => value::Value::Float(value),
+            Self::Double(value) => value::Value::Double(value),
         }
     }
 }

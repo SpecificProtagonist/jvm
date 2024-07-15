@@ -300,6 +300,7 @@ pub(crate) fn read_stack_map_table(
         },
     );
     let Some(mut input) = input else {
+        // Implicit stack map table
         return Ok(frames);
     };
     let input = &mut input;
@@ -309,7 +310,13 @@ pub(crate) fn read_stack_map_table(
         let frame_type = read_u8(jvm, input)?;
         let (offset, current_frame) = if frame_type < 64 {
             // Same
-            (frame_type as u16, prev_frame.clone())
+            (
+                frame_type as u16,
+                StackMapFrame {
+                    locals: prev_frame.locals.clone(),
+                    stack: vec![],
+                },
+            )
         } else if frame_type < 128 {
             // Same locals 1 stack item
             (

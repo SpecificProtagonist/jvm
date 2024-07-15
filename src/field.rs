@@ -7,9 +7,9 @@ use crate::{
     class::{Class, ClassPtr},
     field_storage::FieldStorage,
     heap::NULL_PTR,
-    jvm::Value,
     object::Object,
     typ::Typ,
+    value::Value,
     AccessFlags,
 };
 

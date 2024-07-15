@@ -1,7 +1,8 @@
-This is a toy embeddable JVM in writen in Rust. It is very much WIP and aims to eventually 
-implement most of the Java 8 JVM specification (except for the loading of classes with version <50.0).
-As this is intended as a toy / a learning experience, the choice of which features to implement is
-not determined by practicality but by how interested I'm in doing so. It also uses large amounts of unsafe (the safety boundary essentially being the entire crate), is badly tested, doesn't have any benchmarks, and doesn't do any garbage collection.
+A toy embeddable JVM in writen in Rust. It is very much WIP and aims to eventually 
+implement most of the Java 8 JVM specification, except for the loading of classes with version <50.0
+and the Java SE class libraries. As this is intended as a toy / a learning experience, the choice of which features to implement is
+not determined by practicality but by how interested I'm in doing so. It also uses large amounts of *unsafe*
+(the safety boundary essentially being the entire crate), is badly tested, doesn't have any benchmarks, and doesn't do any garbage collection.
 
 ```rust, no_run
 use jvm::*;
@@ -36,11 +37,10 @@ Some mayor missing features:
 - locking
 
 This is only a JVM, not including a proper class library. The problem is that the JVM
-specification depends on a number of classes, but never bothers to specify what it requires
+specification depends on a number of classes, but never bothers to specify what exactly it requires
 of the class library. For example, each `CONSTANT_String` entry of a constant pool points
 to an instance of the class `String` that contains the codepoints. Leaving aside the fact
 that the correct class is `java.lang.String`, how does the JVM pass the data to the string /
-read it back? Not specified. As a result, JVMs and class libraries are tied together. There's
-a stub in the `java` directory but it's deliberately kept minimal to the point of uselessness,
-serving only to describe the API this JVM depends on. Violating said API may cause exceptions, 
-panics or infinite loops.
+read it back? As a result, JVMs and class libraries are tied together. There's a stub in the `java`
+directory but it's deliberately kept minimal to the point of uselessness, serving only to describe
+the API this JVM depends on. Violating said API may cause exceptions, panics or infinite loops.

@@ -101,9 +101,30 @@ impl std::hash::Hash for MethodPtr {
     }
 }
 
+impl std::fmt::Display for Method {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(ret) = &self.nat.typ.returns {
+            write!(f, "{}", ret)?;
+        } else {
+            write!(f, "void")?;
+        }
+        write!(f, " {}.{}(", self.class(), self.nat.name)?;
+        let mut first = true;
+        for arg in &self.nat.typ.args {
+            if !first {
+                write!(f, ", ")?;
+            }
+            first = false;
+            write!(f, "{}", arg)?;
+        }
+        write!(f, ")")?;
+        Ok(())
+    }
+}
+
 impl std::fmt::Debug for Method {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.nat)
+        write!(f, "{self}")
     }
 }
 

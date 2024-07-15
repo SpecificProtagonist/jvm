@@ -10,8 +10,8 @@ fn make_jvm() -> Jvm {
 fn circular_loading() {
     let jvm = make_jvm();
     assert_eq!(
-        jvm.resolve_class("CircularA").unwrap_err().class().name(),
-        "java.lang.ClassCircularityError"
+        format!("{:?}", jvm.resolve_class("CircularA").unwrap_err()),
+        "java.lang.ClassCircularityError{message: \"ClassCircularityError: CircularA\"}"
     )
 }
 
@@ -191,10 +191,6 @@ fn many_allocs() {
 #[test]
 fn exceptions() {
     let jvm = make_jvm();
-    unsafe {
-        // TODO: implement enough verification
-        jvm.disable_verification_by_type_checking()
-    }
     let method = jvm
         .resolve_method("Exceptions", "test", [Typ::Boolean], Some(Typ::Boolean))
         .unwrap();

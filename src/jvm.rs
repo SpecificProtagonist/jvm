@@ -7,9 +7,8 @@ use std::collections::hash_map::Entry;
 use std::{
     // TODO: posibly exchange for different hasher (benchmark)
     collections::HashMap,
-    fmt::Display,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc,
     },
 };
@@ -21,17 +20,8 @@ use crate::object;
 use crate::object::Object;
 use crate::parse;
 use crate::typ::Typ;
+use crate::value::Value;
 use crate::{class::*, default};
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Value {
-    Void,
-    Ref(Option<Object>),
-    Int(i32),
-    Long(i64),
-    Float(f32),
-    Double(f64),
-}
 
 // TODO: what to do if trying to throw an exception retursively throws infinite exceptions
 // (e.g. java.lang.Object is missing/corrupt)? Currently stackoverflow
@@ -54,8 +44,6 @@ pub struct Jvm {
     pub(crate) id: u64,
     /// Currently there's a single class loader per Jvm.
     pub bootstrap_class_loader: Box<dyn ClassLoader>,
-    /// Bypasses verification by type checking. This is unsafe!
-    pub(crate) verification_type_checking_disabled: AtomicBool,
     pub(crate) heap: Heap,
     // Classes (including arrays), methods, method descriptors and interned strings live as long as the JVM
     // TODO: alloc on heap
@@ -72,28 +60,11 @@ impl Jvm {
         Self {
             id: NEXT_ID.fetch_add(1, Ordering::SeqCst),
             bootstrap_class_loader: base_class_loader,
-            verification_type_checking_disabled: false.into(),
             heap,
             method_storage: default(),
             classes: default(),
             unbound_native_methods: default(),
         }
-    }
-
-    /// Bypasses bytecode verification. This is currently necessary
-    /// because veryfication is not yet implemented for all opcodes and
-    /// will be removed afterwards.
-    ///
-    /// # Safety
-    /// Undefined behavior if any invalid class gets initialized
-    pub unsafe fn disable_verification_by_type_checking(&self) {
-        self.verification_type_checking_disabled
-            .store(true, Ordering::SeqCst);
-    }
-
-    pub fn enable_verification_by_type_checking(&self) {
-        self.verification_type_checking_disabled
-            .store(false, Ordering::SeqCst)
     }
 
     /// Returns the class, loading it if it wasn't already loaded.
@@ -505,12 +476,13 @@ impl Drop for Jvm {
 /// For errors thrown by the JVM (instead of by athrow).
 /// `name` is unqualified.
 pub(crate) fn error(jvm: &Jvm, name: &str, message: &str) -> Object {
+    let message = format!("{name}: {message}");
     let object = throwable(jvm, name);
     let field = object
         .class()
         .field("message", Typ::Ref("java.lang.String".into()))
         .expect("java.lang.Throwable missing field java.lang.String message");
-    field.instance_set(object, Value::Ref(Some(str_to_java(jvm, message))));
+    field.instance_set(object, Value::Ref(Some(str_to_java(jvm, &message))));
     object
 }
 
@@ -550,55 +522,5 @@ pub(crate) fn str_to_java(jvm: &Jvm, utf8: &str) -> Object {
 fn _assert_jvm_is_send_sync<T: Send + Sync>() {
     if false {
         _assert_jvm_is_send_sync::<Jvm>()
-    }
-}
-
-impl Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Void => write!(f, "void"),
-            Self::Ref(None) => write!(f, "null"),
-            Self::Ref(Some(obj)) => write!(f, "@{:x}", obj.ptr()),
-            Self::Int(v) => write!(f, "{}", v),
-            Self::Long(v) => write!(f, "{}", v),
-            Self::Float(v) => write!(f, "{}", v),
-            Self::Double(v) => write!(f, "{}", v),
-        }
-    }
-}
-
-impl From<Option<Object>> for Value {
-    fn from(val: Option<Object>) -> Self {
-        Self::Ref(val)
-    }
-}
-
-impl From<Object> for Value {
-    fn from(val: Object) -> Self {
-        Self::Ref(Some(val))
-    }
-}
-
-impl From<i32> for Value {
-    fn from(val: i32) -> Self {
-        Self::Int(val)
-    }
-}
-
-impl From<i64> for Value {
-    fn from(val: i64) -> Self {
-        Self::Long(val)
-    }
-}
-
-impl From<f32> for Value {
-    fn from(val: f32) -> Self {
-        Self::Float(val)
-    }
-}
-
-impl From<f64> for Value {
-    fn from(val: f64) -> Self {
-        Self::Double(val)
     }
 }

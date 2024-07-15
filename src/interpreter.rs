@@ -6,12 +6,14 @@ use crate::{
     field::Field,
     field_storage::FieldStorage,
     heap::{JVMPtr, NULL_PTR},
-    jvm::{error, throwable, Jvm, JvmResult, Value},
+    jvm::{error, throwable, Jvm, JvmResult},
     method::{Bytecode, Code, Method, NativeCode},
     object::Object,
     opcodes::*,
     typ::Typ,
-    unreachable_verified, AccessFlags,
+    unreachable_verified,
+    value::Value,
+    AccessFlags,
 };
 
 pub(crate) fn invoke(
@@ -865,6 +867,29 @@ fn run_until_exception_or_return(
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
                 return Err(obj);
+            }
+            CHECKCAST => {
+                let index = frame.read_code_u16();
+                let check_class = const_pool.get_class_verified(index);
+                if let Some(object) = unsafe { frame.stack.last().unwrap_unchecked().as_ref() } {
+                    if !object.class().assignable_to(&check_class.name) {
+                        frame.pop();
+                        return Err(throwable(jvm, "ClassCastException"));
+                    }
+                }
+            }
+            INSTANCEOF => {
+                let index = frame.read_code_u16();
+                let check_class = const_pool.get_class_verified(index);
+                if let Some(object) = unsafe { frame.pop().as_ref() } {
+                    if object.class().assignable_to(&check_class.name) {
+                        frame.stack.push(IVal(1));
+                    } else {
+                        frame.stack.push(IVal(0));
+                    }
+                } else {
+                    frame.stack.push(IVal(0));
+                }
             }
             MULTIANEWARRAY => {
                 let index = frame.read_code_u16();
