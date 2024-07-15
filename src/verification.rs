@@ -23,18 +23,18 @@ pub(crate) struct StackMapFrame {
 }
 
 impl StackMapFrame {
-    fn is_assignable_to(&self, other: &Self) -> bool {
-        (self.locals.len() == other.locals.len())
-            & (self.stack.len() == other.stack.len())
+    fn is_assignable_to(&self, to: &Self) -> bool {
+        (self.locals.len() == to.locals.len())
+            & (self.stack.len() == to.stack.len())
             & self
                 .locals
                 .iter()
-                .zip(other.locals.iter())
+                .zip(to.locals.iter())
                 .all(|(s, o)| s.is_assignable_to(*o))
             & self
                 .stack
                 .iter()
-                .zip(other.stack.iter())
+                .zip(to.stack.iter())
                 .all(|(s, o)| s.is_assignable_to(*o))
     }
 
@@ -155,13 +155,22 @@ impl StackMapFrame {
             read_code_u16(jvm, bytes, pc)? as i16 as i32
         };
         let target = (base as i32 + target_offset as i32) as u16;
+        self.jump(jvm, stack_map_table, target)
+    }
+
+    fn jump(
+        &mut self,
+        jvm: &Jvm,
+        stack_map_table: &BTreeMap<u16, StackMapFrame>,
+        target: u16,
+    ) -> JvmResult<()> {
         if let Some(target_state) = stack_map_table.get(&target) {
             if self.is_assignable_to(target_state) {
                 Ok(())
             } else {
                 Err(ve(
                     jvm,
-                    &format!("invalid jump target typestate (pc: {base}): typestate {self:?}, target state {target_state:?}"),
+                    &format!("invalid jump target typestate: typestate {self:?}, target state {target_state:?}"),
                 ))
             }
         } else {
@@ -1017,7 +1026,62 @@ fn verify_bytecode(
                 type_state.relative_jump(jvm, &stack_map_table, bytes, pc, false)?;
                 connected_to_previous_block = false;
             }
-            // TODO: check for uninitialized this on return
+            TABLESWITCH => {
+                let base = *pc - 1;
+
+                // Skip up to 3 byte padding
+                *pc += 3;
+                *pc &= 0b1111111111111000;
+
+                let default = read_code_u32(jvm, bytes, pc)? as i32;
+                let low = read_code_u32(jvm, bytes, pc)? as i32;
+                let high = read_code_u32(jvm, bytes, pc)? as i32;
+                if low > high {
+                    return Err(ve(jvm, "invalid tableswitch"));
+                }
+
+                type_state.pop_type(jvm, &Typ::Int)?;
+
+                type_state.jump(jvm, &stack_map_table, (base as i32 + default) as u16)?;
+                let mut prev = i32::MIN;
+                for _ in low..=high {
+                    let offset = read_code_u32(jvm, bytes, pc)? as i32;
+                    type_state.jump(jvm, &stack_map_table, (base as i32 + offset) as u16)?;
+                    if offset < prev {
+                        return Err(ve(jvm, "invalid tableswitch"));
+                    }
+                    prev = offset;
+                }
+                connected_to_previous_block = false;
+            }
+            LOOKUPSWITCH => {
+                let base = *pc - 1;
+
+                // Skip up to 3 byte padding
+                *pc += 3;
+                *pc &= 0b1111111111111000;
+
+                let default = read_code_u32(jvm, bytes, pc)? as i32;
+                let npairs = read_code_u32(jvm, bytes, pc)? as i32;
+                if npairs < 0 {
+                    return Err(ve(jvm, "invalid lookupswitch"));
+                }
+
+                type_state.pop_type(jvm, &Typ::Int)?;
+
+                type_state.jump(jvm, &stack_map_table, (base as i32 + default) as u16)?;
+                let mut prev = i32::MIN;
+                for _ in 0..npairs {
+                    let i_match = read_code_u32(jvm, bytes, pc)? as i32;
+                    let offset = read_code_u32(jvm, bytes, pc)? as i32;
+                    type_state.jump(jvm, &stack_map_table, (base as i32 + offset) as u16)?;
+                    if i_match < prev {
+                        return Err(ve(jvm, "invalid lookupswitch"));
+                    }
+                    prev = i_match;
+                }
+                connected_to_previous_block = false;
+            }
             IRETURN => {
                 if !matches!(
                     method.nat.typ.returns,
@@ -1053,7 +1117,12 @@ fn verify_bytecode(
                 connected_to_previous_block = false
             }
             RETURN => {
-                if method.nat.typ.returns.is_some() {
+                if method.nat.typ.returns.is_some()
+                    | ((method.nat.name.deref() == "<init>")
+                        & type_state
+                            .locals
+                            .contains(&VerificationType::UninitializedThis))
+                {
                     return Err(ve(jvm, "invalid return"));
                 }
                 connected_to_previous_block = false

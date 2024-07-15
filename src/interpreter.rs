@@ -675,7 +675,7 @@ fn run_until_exception_or_return(
 
                 // Skip up to 3 byte padding
                 frame.pc += 3;
-                frame.pc &= 0xfffc;
+                frame.pc &= 0b1111111111111000;
 
                 let index = frame.pop().as_int();
                 let default = frame.read_code_u32() as i32;
@@ -695,7 +695,7 @@ fn run_until_exception_or_return(
 
                 // Skip up to 3 byte padding
                 frame.pc += 3;
-                frame.pc &= 0xfffc;
+                frame.pc &= 0b1111111111111000;
 
                 let key = frame.pop().as_int();
                 let default = frame.read_code_u32() as i32;

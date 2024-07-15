@@ -167,8 +167,8 @@ pub const IF_ICMPLE: u8 = 164;
 pub const GOTO: u8 = 167;
 // pub const JSR: u8 = 168; (forbidden since class version >= 50.0)
 // pub const RET: u8 = 169; (forbidden since class version >= 50.0)
-pub const TABLESWITCH: u8 = 170; // TODO: Verification
-pub const LOOKUPSWITCH: u8 = 171; // TODO: Verification
+pub const TABLESWITCH: u8 = 170;
+pub const LOOKUPSWITCH: u8 = 171;
 pub const IRETURN: u8 = 172;
 pub const LRETURN: u8 = 173;
 pub const FRETURN: u8 = 174;
