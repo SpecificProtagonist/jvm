@@ -163,7 +163,9 @@ fn arrays() {
 #[test]
 fn lazy_resolve() {
     let jvm = make_jvm();
+    // LazyResolve references LazyUnresolved
     jvm.resolve_class("LazyResolve").unwrap();
+    assert!(jvm.resolve_class("LazyUnresolved").is_err());
 }
 
 #[test]

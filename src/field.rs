@@ -3,6 +3,8 @@ use std::sync::{
     Arc,
 };
 
+use hashbrown::Equivalent;
+
 use crate::{
     class::{Class, ClassPtr},
     field_storage::FieldStorage,
@@ -29,9 +31,21 @@ pub(crate) struct Field {
 
 /// Contains a field's name and type.
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct FieldNaT {
+pub(crate) struct FieldNaT {
     pub name: Arc<str>,
     pub typ: Typ,
+}
+
+#[derive(Hash)]
+pub(crate) struct FieldNaTBorrow<'a> {
+    pub name: &'a str,
+    pub typ: Typ,
+}
+
+impl<'a> Equivalent<FieldNaT> for FieldNaTBorrow<'a> {
+    fn equivalent(&self, key: &FieldNaT) -> bool {
+        (self.name == key.name.as_ref()) & (self.typ == key.typ)
+    }
 }
 
 impl Field {

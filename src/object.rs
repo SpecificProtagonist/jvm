@@ -40,6 +40,10 @@ impl Object {
         })
     }
 
+    pub fn is_array(self) -> bool {
+        self.class().element_type.is_some()
+    }
+
     pub fn array_len(self) -> Option<i32> {
         self.class().element_type.as_ref().map(|base| {
             ((self.ptr.size() - crate::object::header_size()) / base.layout().size()) as i32

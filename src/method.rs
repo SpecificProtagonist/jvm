@@ -3,6 +3,7 @@ use std::sync::{
     Arc,
 };
 
+use hashbrown::Equivalent;
 use parking_lot::RwLock;
 
 use crate::{
@@ -20,10 +21,6 @@ pub(crate) struct Method {
 }
 
 impl Method {
-    pub fn nat(&self) -> MethodNaT {
-        self.nat.clone()
-    }
-
     pub fn class(&self) -> ClassPtr {
         // SAFETY: This reference will not outlive the JVM
         // and this function will only be called after class has been set
@@ -33,9 +30,21 @@ impl Method {
 
 /// Contains a method's name and type. Uniquely identifies method within class.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct MethodNaT {
+pub(crate) struct MethodNaT {
     pub name: Arc<str>,
     pub typ: MethodDescriptor,
+}
+
+#[derive(Hash)]
+pub(crate) struct MethodNaTBorrow<'a> {
+    pub name: &'a str,
+    pub typ: &'a MethodDescriptor,
+}
+
+impl<'a> Equivalent<MethodNaT> for MethodNaTBorrow<'a> {
+    fn equivalent(&self, key: &MethodNaT) -> bool {
+        (self.name == key.name.as_ref()) & (self.typ == &key.typ)
+    }
 }
 
 /// A method signature type signature

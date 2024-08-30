@@ -3,15 +3,12 @@ use crate::hot_reloading::{reload_method_bytecodes_for_class, ReloadErr};
 use crate::{class_loader::ClassLoader, AccessFlags};
 use fixed_typed_arena::ManuallyDropArena;
 use parking_lot::{Mutex, RwLock};
-use std::collections::hash_map::Entry;
-use std::{
-    // TODO: posibly exchange for different hasher (benchmark)
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
 };
+// TODO: posibly exchange for different hasher (benchmark)
+use hashbrown::HashMap;
 
 use crate::field_storage::FieldStorage;
 use crate::heap;
@@ -31,7 +28,7 @@ pub(crate) type JvmResult<T> = std::result::Result<T, Object>;
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Creates & manages classes and objects, which borrow from the Jvm.
-/// Multiple independent JVMs may exist.
+/// Multiple independent `Jvm`s may exist.
 /// Mutable shared access follows Java's rules.
 ///
 /// To operate correctly, the JVM requires a class library. The minimal
@@ -57,8 +54,12 @@ impl Jvm {
     /// Construct a new JVM.
     pub fn new(base_class_loader: Box<dyn ClassLoader>) -> Self {
         let heap = Heap::default();
+        let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+        if id == u64::MAX {
+            panic!("You've created 18446744073709551616 instances. Impressive, but also, NO.")
+        }
         Self {
-            id: NEXT_ID.fetch_add(1, Ordering::SeqCst),
+            id,
             bootstrap_class_loader: base_class_loader,
             heap,
             method_storage: default(),
@@ -127,12 +128,12 @@ impl Jvm {
         Ok(object)
     }
 
-    /// Creates an array on the heap.
+    /// Creates an array.
     ///
     /// # Panics
     /// Panics if length < 0
-    pub fn create_array<'a>(&'a self, typ: &Typ, length: i32) -> crate::Object<'a> {
-        crate::Object::new(self, self.create_array_of(typ, length))
+    pub fn create_array<'a>(&'a self, component: &Typ, length: i32) -> crate::Object<'a> {
+        crate::Object::new(self, self.create_array_of(component, length))
     }
 
     /// Register code for a native method. Method needs to be marked as native.
@@ -149,14 +150,12 @@ impl Jvm {
         returns: Option<Typ>,
         native: NativeCode,
     ) {
-        self.register_native_method_by_nat(
+        self.register_native_method_by_descriptor(
             class,
-            MethodNaT {
-                name: name.into(),
-                typ: MethodDescriptor {
-                    args: args.into_iter().collect(),
-                    returns,
-                },
+            name,
+            MethodDescriptor {
+                args: args.into_iter().collect(),
+                returns,
             },
             native,
         )
@@ -167,10 +166,11 @@ impl Jvm {
     ///
     /// # Panics
     /// Panics if the class is already loaded.
-    pub fn register_native_method_by_nat(
+    pub fn register_native_method_by_descriptor(
         &self,
         class: &str,
-        method: MethodNaT,
+        name: &str,
+        typ: MethodDescriptor,
         native: NativeCode,
     ) {
         let classes = self.classes.read();
@@ -182,19 +182,22 @@ impl Jvm {
             .lock()
             .entry(class.to_owned())
             .or_default()
-            .entry(method)
-        {
-            Entry::Occupied(entry) => {
+            .entry(MethodNaT {
+                name: name.into(),
+                typ,
+            }) {
+            hashbrown::hash_map::Entry::Occupied(entry) => {
                 panic!("Native method {class}.{} already registered", entry.key());
             }
-            Entry::Vacant(entry) => {
+            hashbrown::hash_map::Entry::Vacant(entry) => {
                 entry.insert(native);
             }
         }
     }
 
-    /// Reload the bytecodes of all methods in the class.
+    /// Reload the bytecodes of all methods in the class by querying the class loader.
     /// Fails if there are structural changes to the class (e.g. a field is added of a method signature has changed).
+    ///
     /// Reloading a class while it is getting verified or getting initialized (or vice-versa) may deadlock.
     pub fn reload_method_bytecodes_for_class<'a>(
         &'a self,
@@ -427,7 +430,8 @@ impl Jvm {
         Object { ptr }
     }
 
-    /// Creates an array on the heap.
+    /// Creates an array.
+    ///
     /// # Panics
     /// Panics if length < 0 or the component is a class that fails to load.
     #[track_caller]

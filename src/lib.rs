@@ -24,10 +24,10 @@ use std::{
 };
 
 pub use class_loader::{ClassLoader, FolderClassLoader};
-pub use field::FieldNaT;
 pub use jvm::Jvm;
+pub use method::MethodDescriptor;
+use method::MethodNaTBorrow;
 pub use method::NativeCode;
-pub use method::{MethodDescriptor, MethodNaT};
 pub use typ::Typ;
 
 fn default<T: Default>() -> T {
@@ -123,15 +123,53 @@ impl<'a> Object<'a> {
         Class::new(self.jvm, self.value.class())
     }
 
-    /// If the object is an array return its length, None otherwise.
-    pub fn array_len(self) -> Option<i32> {
-        self.value.array_len()
-    }
-
-    /// Returns either the value at index.
+    /// Get the value of an object's field.
     ///
     /// # Panics
-    /// Panics if the object is not an array or the index is out of bounds.
+    /// Panics if the field does not exist or is static.
+    pub fn get(self, field_name: &str, field_type: Typ) -> Value<'a> {
+        let Some(field) = self.class().field(field_name, field_type.clone()) else {
+            panic!(
+                "Field {field_name} of type {field_type} not found in object of type {}",
+                self.class().value
+            )
+        };
+        field.instance_get(self)
+    }
+
+    /// Set the value of an object's field.
+    ///
+    /// # Panics
+    /// Panics if the field does not exist or is static or
+    /// the value is not assignable to the field's type
+    /// or is an object created by a different JVM
+    pub fn set(self, field_name: &str, field_type: Typ, value: impl Into<Value<'a>>) {
+        let Some(field) = self.class().field(field_name, field_type.clone()) else {
+            panic!(
+                "Field {field_name} of type {field_type} not found in object of type {}",
+                self.class().value
+            )
+        };
+        field.instance_set(self, value.into())
+    }
+
+    /// Returns whether this is an array.
+    pub fn is_array(self) -> bool {
+        self.value.is_array()
+    }
+
+    /// Returns the number of items in this array.
+    ///
+    /// # Panics
+    /// Panics if the object is not an array.
+    pub fn array_len(self) -> i32 {
+        self.value.array_len().expect("not an array")
+    }
+
+    /// Get an array element.
+    ///
+    /// # Panics
+    /// Panics if the object is not an array or the `index` is out of bounds.
     pub fn array_read(self, index: i32) -> Value<'a> {
         Value::new(
             self.jvm,
@@ -144,7 +182,7 @@ impl<'a> Object<'a> {
     /// the `JvmValue::Int` is truncated
     ///
     /// # Panics
-    /// Panics if object is not an array, the element type mismatches, the index is out of bounds
+    /// Panics if object is not an array, the element type mismatches, `index` is out of bounds
     /// or the value is an object created by another JVM.
     pub fn array_write(self, index: i32, value: Value<'a>) {
         self.value.array_write(index, value.into_inner(self.jvm))
@@ -204,18 +242,8 @@ impl<'a> Class<'a> {
     /// Does not search the inheritance hierarchy.
     /// There may be multiple fields of the same name.
     pub fn field(self, name: &str, typ: Typ) -> Option<Field<'a>> {
-        self.field_by_nat(FieldNaT {
-            name: name.into(),
-            typ,
-        })
-    }
-
-    /// Look up a field in this class by its name and type.
-    /// Does not search the inheritance hierarchy.
-    /// There may be multiple fields of the same name.
-    pub fn field_by_nat(self, nat: FieldNaT) -> Option<Field<'a>> {
         self.value
-            .field_by_nat(nat)
+            .field(name, typ)
             .map(|value| Field::new(self.jvm, value))
     }
 
@@ -227,21 +255,21 @@ impl<'a> Class<'a> {
         args: impl IntoIterator<Item = Typ>,
         ret: Option<Typ>,
     ) -> Option<Method<'a>> {
-        self.method_by_nat(&MethodNaT {
-            name: name.into(),
-            typ: MethodDescriptor {
+        self.method_by_descriptor(
+            name,
+            &MethodDescriptor {
                 args: args.into_iter().collect(),
                 returns: ret,
             },
-        })
+        )
     }
 
     /// Look up a method by its name and type. There may be multiple methods of the same name.
     /// Includes inherited dynamic methods.
-    pub fn method_by_nat(self, nat: &MethodNaT) -> Option<Method<'a>> {
+    pub fn method_by_descriptor(self, name: &str, typ: &MethodDescriptor) -> Option<Method<'a>> {
         self.value
             .methods
-            .get(nat)
+            .get(&MethodNaTBorrow { name, typ })
             .map(|value| Method::new(self.jvm, value))
     }
 
@@ -279,10 +307,15 @@ impl<'a> Field<'a> {
         self.value.access_flags
     }
 
-    /// Name and type of this field. There may be multiple fields of the same name
+    /// Name of this field. There may be multiple fields of the same name
     /// but differing types on the same class.
-    pub fn name_and_type(&self) -> &FieldNaT {
-        &self.value.nat
+    pub fn name(&self) -> &str {
+        &self.value.nat.name
+    }
+
+    /// Type of this field.
+    pub fn typ(&self) -> &Typ {
+        &self.value.nat.typ
     }
 
     /// Get the value of a static field.
@@ -291,11 +324,7 @@ impl<'a> Field<'a> {
     /// # Panics
     /// Panics if the field is not static.
     pub fn static_get(&self) -> Value<'a> {
-        Value::new(
-            self.jvm,
-            self.value.static_get(),
-            Some(&self.name_and_type().typ),
-        )
+        Value::new(self.jvm, self.value.static_get(), Some(self.typ()))
     }
 
     /// Get the value of an object's field.
@@ -306,7 +335,7 @@ impl<'a> Field<'a> {
         Value::new(
             self.jvm,
             self.value.instance_get(object.into_inner(self.jvm)),
-            Some(&self.name_and_type().typ),
+            Some(self.typ()),
         )
     }
 
@@ -314,12 +343,12 @@ impl<'a> Field<'a> {
     ///
     /// # Panics
     /// Panics if the field is not static or the value is not assignable to the field's type
-    /// or the value is an object created by a different JVM
+    /// or is an object created by a different JVM
     pub fn static_set(&self, value: impl Into<Value<'a>>) {
         self.value.static_set(value.into().into_inner(self.jvm))
     }
 
-    /// Get the value of an object's field.
+    /// Set the value of an object's field.
     ///
     /// # Panics
     /// Panics if the field is static,
@@ -346,10 +375,15 @@ impl<'a> Method<'a> {
         Class::new(self.jvm, self.value.class())
     }
 
-    /// The name and type signature of the method. There may be multiple methods of the same
+    /// The name of this method. There may be multiple methods of the same
     /// name but differing types in the same class.
-    pub fn name_and_type(&self) -> MethodNaT {
-        self.value.nat()
+    pub fn name(&self) -> &str {
+        &self.value.nat.name
+    }
+
+    /// Type signature of this method.
+    pub fn typ(&self) -> &MethodDescriptor {
+        &self.value.nat.typ
     }
 
     pub fn access_flags(self) -> AccessFlags {
@@ -369,7 +403,7 @@ impl<'a> Method<'a> {
             self.value,
             args.iter().map(|arg| arg.into_inner(self.jvm)),
         )
-        .map(|value| Value::new(self.jvm, value, self.name_and_type().typ.returns.as_ref()))
+        .map(|value| Value::new(self.jvm, value, self.typ().returns.as_ref()))
         .map_err(|value| Object::new(self.jvm, value))
     }
 }
@@ -378,6 +412,7 @@ impl<'a> Method<'a> {
 pub enum Value<'a> {
     /// Lack of a value, only used for return types.
     Void,
+    // Split arrays and normal objects?
     Ref(Option<Object<'a>>),
     Boolean(bool),
     Byte(i8),

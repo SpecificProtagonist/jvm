@@ -18,6 +18,61 @@ macro_rules! error {
     };
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum VerificationType {
+    Top,
+    Integer,
+    Float,
+    Null,
+    Reference,
+    ObjectVariable(ClassPtr),
+    UninitializedThis,
+    UninitializedVariable { offset: u16 },
+    Long,
+    Double,
+}
+
+impl Default for VerificationType {
+    fn default() -> Self {
+        Self::Top
+    }
+}
+
+impl VerificationType {
+    fn is_assignable_to(self, other: Self) -> bool {
+        use VerificationType::*;
+        match (self, other) {
+            (a, b) if a == b => true,
+            (_, Top) => true,
+            (
+                Null | ObjectVariable(_) | UninitializedThis | UninitializedVariable { .. },
+                Reference,
+            ) => true,
+            (ObjectVariable(a), ObjectVariable(b)) => a.assignable_to(&b.name),
+            (Null, ObjectVariable(_)) => true,
+            _ => false,
+        }
+    }
+
+    pub fn category_2(self) -> bool {
+        matches!(self, VerificationType::Long | VerificationType::Double)
+    }
+
+    fn matches(self, typ: &Typ) -> bool {
+        matches!(
+            (self, typ),
+            (
+                Self::Integer,
+                Typ::Boolean | Typ::Byte | Typ::Char | Typ::Short | Typ::Int
+            ) | (Self::Long, Typ::Long)
+                | (Self::Float, Typ::Float)
+                | (Self::Double, Typ::Double)
+                | (Self::Null, Typ::Ref(_))
+        ) | matches!((self,typ), (Self::ObjectVariable(class), Typ::Ref(classname)) if &class.name == classname
+        )
+    }
+}
+
 #[derive(Clone, Default, Debug)]
 pub(crate) struct StackMapFrame {
     pub locals: Vec<VerificationType>,
@@ -179,82 +234,6 @@ impl StackMapFrame {
             Err(error!(jvm, "missing stack map frame"))
         }
     }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub(crate) enum VerificationType {
-    Top,
-    Integer,
-    Float,
-    Null,
-    Reference,
-    ObjectVariable(ClassPtr),
-    UninitializedThis,
-    UninitializedVariable { offset: u16 },
-    Long,
-    Double,
-}
-
-impl Default for VerificationType {
-    fn default() -> Self {
-        Self::Top
-    }
-}
-
-impl VerificationType {
-    fn is_assignable_to(self, other: Self) -> bool {
-        use VerificationType::*;
-        match (self, other) {
-            (a, b) if a == b => true,
-            (_, Top) => true,
-            (
-                Null | ObjectVariable(_) | UninitializedThis | UninitializedVariable { .. },
-                Reference,
-            ) => true,
-            (ObjectVariable(a), ObjectVariable(b)) => a.assignable_to(&b.name),
-            (Null, ObjectVariable(_)) => true,
-            _ => false,
-        }
-    }
-
-    pub fn category_2(self) -> bool {
-        matches!(self, VerificationType::Long | VerificationType::Double)
-    }
-
-    fn matches(self, typ: &Typ) -> bool {
-        matches!(
-            (self, typ),
-            (
-                Self::Integer,
-                Typ::Boolean | Typ::Byte | Typ::Char | Typ::Short | Typ::Int
-            ) | (Self::Long, Typ::Long)
-                | (Self::Float, Typ::Float)
-                | (Self::Double, Typ::Double)
-                | (Self::Null, Typ::Ref(_))
-        ) | matches!((self,typ), (Self::ObjectVariable(class), Typ::Ref(classname)) if &class.name == classname
-        )
-    }
-}
-
-pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Typ) -> JvmResult<()> {
-    match typ {
-        Typ::Boolean | Typ::Char | Typ::Byte | Typ::Short | Typ::Int => {
-            types.push(VerificationType::Integer)
-        }
-        Typ::Float => types.push(VerificationType::Float),
-        Typ::Double => {
-            types.push(VerificationType::Double);
-            types.push(VerificationType::Top);
-        }
-        Typ::Long => {
-            types.push(VerificationType::Long);
-            types.push(VerificationType::Top);
-        }
-        Typ::Ref(class) => types.push(VerificationType::ObjectVariable(
-            jvm.resolve_class_internal(class)?,
-        )),
-    }
-    Ok(())
 }
 
 /// Requires class to be resolved (→ only called from Class::verify)
@@ -1396,6 +1375,27 @@ fn verify_bytecode(
     // TODO: check specification
     if connected_to_previous_block {
         return Err(error!(jvm, "final block open"));
+    }
+    Ok(())
+}
+
+pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Typ) -> JvmResult<()> {
+    match typ {
+        Typ::Boolean | Typ::Char | Typ::Byte | Typ::Short | Typ::Int => {
+            types.push(VerificationType::Integer)
+        }
+        Typ::Float => types.push(VerificationType::Float),
+        Typ::Double => {
+            types.push(VerificationType::Double);
+            types.push(VerificationType::Top);
+        }
+        Typ::Long => {
+            types.push(VerificationType::Long);
+            types.push(VerificationType::Top);
+        }
+        Typ::Ref(class) => types.push(VerificationType::ObjectVariable(
+            jvm.resolve_class_internal(class)?,
+        )),
     }
     Ok(())
 }

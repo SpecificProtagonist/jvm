@@ -13,3 +13,5 @@ fixed-typed-arena = "0.2"
 parking_lot = "0.12"
 # Heap allocation
 libc = "0.2.125"
+# Lookups with borrowed key
+hashbrown = "0.14"

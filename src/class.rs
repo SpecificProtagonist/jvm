@@ -1,9 +1,10 @@
+use hashbrown::HashMap;
 use parking_lot::{Condvar, Mutex, RwLock};
-use std::{alloc::Layout, collections::HashMap, sync::Arc, thread::ThreadId};
+use std::{alloc::Layout, sync::Arc, thread::ThreadId};
 
 use crate::{
     const_pool::ConstPool,
-    field::{Field, FieldNaT},
+    field::{Field, FieldNaT, FieldNaTBorrow},
     field_storage::FieldStorage,
     jvm::{error, JvmResult},
     method::{MethodDescriptor, MethodNaT, MethodPtr},
@@ -27,7 +28,7 @@ pub(crate) struct Class {
     pub(crate) access_flags: AccessFlags,
     #[allow(dead_code)]
     pub(crate) interfaces: Vec<ClassPtr>,
-    /// Does not contain inherited fields. (Change this?)
+    /// Does not contain inherited fields.
     /// Note: JVM supports field overloading.
     pub(crate) fields: HashMap<FieldNaT, Field>,
     /// At the moment, this includes any inherited methods. Change this?
@@ -117,7 +118,7 @@ impl Class {
 
     pub(crate) fn iter_fields(&'static self) -> impl Iterator<Item = &'static Field> {
         struct FieldIterator {
-            fields: std::collections::hash_map::Values<'static, FieldNaT, Field>,
+            fields: hashbrown::hash_map::Values<'static, FieldNaT, Field>,
             class: &'static Class,
         }
         impl Iterator for FieldIterator {
@@ -142,13 +143,10 @@ impl Class {
     }
 
     pub(crate) fn field(&self, name: &str, typ: Typ) -> Option<&Field> {
-        self.field_by_nat(FieldNaT {
-            name: name.into(),
-            typ,
-        })
+        self.field_by_nat(FieldNaTBorrow { name, typ })
     }
 
-    pub(crate) fn field_by_nat(&self, nat: FieldNaT) -> Option<&Field> {
+    pub(crate) fn field_by_nat(&self, nat: FieldNaTBorrow) -> Option<&Field> {
         self.fields
             .get(&nat)
             .or_else(|| self.super_class.and_then(|c| c.field_by_nat(nat)))
