@@ -34,8 +34,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 /// To operate correctly, the JVM requires a class library. The minimal
 /// version necessary to implement this is available under the `classes`
 /// folder of this repository. These aren't loaded automatically, your
-/// class library needs to be provided by the class loader. Missing or
-/// invalid classes may cause the thread to hang or crash.
+/// class library needs to be provided by the class loader. Those classes missing
+/// or being invalid classes may cause the thread to hang or crash.
 pub struct Jvm {
     /// Uniquely identifies the Jvm to prevent mixing of objects between Jvms
     pub(crate) id: u64,
@@ -71,6 +71,7 @@ impl Jvm {
     /// Returns the class, loading it if it wasn't already loaded.
     /// This also loads its superclass and any interfaces it implements.
     /// Does not initialize this class, nor load any other class referenced.
+    /// `name` must be fully qualified and may be a [binary class name](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.2.1) or describe an array.
     pub fn resolve_class<'a>(&'a self, name: &str) -> crate::JvmResult<'a, crate::Class<'a>> {
         self.resolve_class_internal(name)
             .map(|value| crate::Class { jvm: self, value })
@@ -136,12 +137,10 @@ impl Jvm {
         crate::Object::new(self, self.create_array_of(component, length))
     }
 
-    /// Register code for a native method. Method needs to be marked as native.
-    /// If the method isn't static, the first argument passed will be the object it is invoked on.
+    /// Register code for a native method. If called multiple times for the same method, the previous registration will be replaced.
     ///
-    /// # Panics
-    /// Panics if the class is already loaded.
-    // TODO: remove the panic restriction; move lock from bytecode to code, make native option, move binding resolution to invokation
+    /// The method needs to be marked as native.
+    /// If it is an instance method, the first argument passed will be the object it is invoked on.
     pub fn register_native_method(
         &self,
         class: &str,
@@ -161,11 +160,10 @@ impl Jvm {
         )
     }
 
-    /// Register code for a native method. Method needs to be marked as native.
-    /// If the method isn't static, the first argument passed will be the object it is invoked on.
+    /// Register code for a native method. If called multiple times for the same method, the previous registration will be replaced.
     ///
-    /// # Panics
-    /// Panics if the class is already loaded.
+    /// The method needs to be marked as native.
+    /// If it is an instance method, the first argument passed will be the object it is invoked on.
     pub fn register_native_method_by_descriptor(
         &self,
         class: &str,
@@ -173,26 +171,17 @@ impl Jvm {
         typ: MethodDescriptor,
         native: NativeCode,
     ) {
-        let classes = self.classes.read();
-        if classes.contains_key(class) {
-            panic!("Failed to register native method: crate::Class already loaded");
-        }
-        match self
-            .unbound_native_methods
+        self.unbound_native_methods
             .lock()
             .entry(class.to_owned())
             .or_default()
-            .entry(MethodNaT {
-                name: name.into(),
-                typ,
-            }) {
-            hashbrown::hash_map::Entry::Occupied(entry) => {
-                panic!("Native method {class}.{} already registered", entry.key());
-            }
-            hashbrown::hash_map::Entry::Vacant(entry) => {
-                entry.insert(native);
-            }
-        }
+            .insert(
+                MethodNaT {
+                    name: name.into(),
+                    typ,
+                },
+                native,
+            );
     }
 
     /// Reload the bytecodes of all methods in the class by querying the class loader.
@@ -261,7 +250,7 @@ impl Jvm {
     /// Returns the class, loading it if it wasn't already loaded.
     /// This also loads its superclass and any interfaces it implements.
     /// Does not initialize this class nor load any other class referenced.
-    /// `name` must be fully qualified and may be a binary class name (https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.2.1) or describe an array.
+    /// `name` must be fully qualified and may be a [binary class name](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.2.1) or describe an array.
     pub(crate) fn resolve_class_internal(&self, name: &str) -> JvmResult<ClassPtr> {
         self.resolve_class_impl(name, Vec::new())
     }
@@ -300,11 +289,15 @@ impl Jvm {
 
         let mut class_desc = parse::read_class_file(&bytes, self)?;
 
-        // Bind native methods
         let mut methods = HashMap::default();
-        for (nat, mut method) in class_desc.methods.drain() {
+        for (nat, method) in class_desc.methods.drain() {
+            let method = &*self.method_storage.lock().alloc(method);
+            methods.insert(nat, method);
+        }
+
+        // Bind native methods
+        for (nat, method) in &methods {
             if method.access_flags.contains(AccessFlags::NATIVE) {
-                let mut native = self.unbound_native_methods.lock();
                 let err = || {
                     Err(error(
                         self,
@@ -313,16 +306,15 @@ impl Jvm {
                         &format!("Class {name} has native method {nat}, but method is not bound"),
                     ))
                 };
+                let mut native = self.unbound_native_methods.lock();
                 let Some(native) = native.get_mut(&name) else {
                     return err();
                 };
-                match native.remove(&nat) {
-                    Some(code) => method.code = Code::Native(code),
+                match native.remove(nat) {
+                    Some(code) => *method.code.write() = Code::Native(code),
                     None => return err(),
                 }
             }
-            let method = &*self.method_storage.lock().alloc(method);
-            methods.insert(nat, method);
         }
 
         if name != class_desc.name.as_ref() {

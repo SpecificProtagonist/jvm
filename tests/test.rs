@@ -127,7 +127,7 @@ fn invoke_native() {
         }),
     );
 
-    let method = jvm
+    let static_method = jvm
         .resolve_method(
             "Native",
             "call_static",
@@ -135,13 +135,13 @@ fn invoke_native() {
             Some(Typ::Long),
         )
         .unwrap();
-    assert_eq!(method.invoke(&[1.into(), 2.into()]).unwrap(), 3i64);
+    assert_eq!(static_method.invoke(&[1.into(), 2.into()]).unwrap(), 3i64);
 
     let object = jvm.create_object("Native", [], vec![]).unwrap();
-    let method = jvm
+    let instance_method = jvm
         .resolve_method("Native", "call_instance", [], None)
         .unwrap();
-    method.invoke(&[Value::Ref(Some(object))]).unwrap();
+    instance_method.invoke(&[Value::Ref(Some(object))]).unwrap();
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn arrays() {
 #[test]
 fn lazy_resolve() {
     let jvm = make_jvm();
-    // LazyResolve references LazyUnresolved
+    // LazyResolve references LazyUnresolved, which does not exist
     jvm.resolve_class("LazyResolve").unwrap();
     assert!(jvm.resolve_class("LazyUnresolved").is_err());
 }
@@ -216,7 +216,7 @@ fn strings() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic = "Wrong JVM accessed"]
 fn cross_jvms_field() {
     let jvm_1 = make_jvm();
     let jvm_2 = make_jvm();
@@ -234,7 +234,7 @@ fn cross_jvms_field() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic = "Wrong JVM accessed"]
 fn cross_jvms_method() {
     let jvm_1 = make_jvm();
     let jvm_2 = make_jvm();

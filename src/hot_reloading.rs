@@ -12,7 +12,7 @@ use crate::{
 #[derive(Debug)]
 pub enum ReloadErr<'a> {
     Exception(crate::Object<'a>),
-    ClassLayoutChanged,
+    ClassStructureChanged,
 }
 
 pub(crate) fn reload_method_bytecodes_for_class<'a>(
@@ -59,7 +59,7 @@ pub(crate) fn reload_method_bytecodes_for_class<'a>(
                 .any(|new| (m.nat == new.nat) & (m.access_flags == new.access_flags))
         })
     {
-        return Err(ReloadErr::ClassLayoutChanged);
+        return Err(ReloadErr::ClassStructureChanged);
     }
 
     // Set class pointers
@@ -106,10 +106,10 @@ pub(crate) fn reload_method_bytecodes_for_class<'a>(
     // Alright, swap out code
     *class.const_pool.write() = new_class.const_pool;
     for (nat, method) in &class.methods {
-        if let (Code::Bytecode(old), Code::Bytecode(new)) =
-            (&method.code, &new_class.methods.get(nat).unwrap().code)
-        {
-            std::mem::swap(&mut *old.write(), &mut *new.write());
+        let mut old = method.code.write();
+        let mut new = new_class.methods.get(nat).unwrap().code.write();
+        if let (Code::Bytecode(old), Code::Bytecode(new)) = (&mut *old, &mut *new) {
+            std::mem::swap(old, new);
         }
     }
     // Skip preparation & initialization to keep existing state

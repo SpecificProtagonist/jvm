@@ -268,14 +268,14 @@ pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) 
         }
     }
 
-    match &method.code {
+    match &*method.code.read() {
         Code::None => {
             if !method.access_flags.intersects(AccessFlags::ABSTRACT) {
                 return Err(error!(jvm, "{method}: missing code attribute"));
             }
         }
         Code::Bytecode(code) => {
-            verify_bytecode(jvm, const_pool, method, &code.read()).inspect_err(|err| {
+            verify_bytecode(jvm, const_pool, method, code).inspect_err(|err| {
                 // Include method in error
                 if err.class().name.deref() == "java.lang.VerifyError" {
                     let field = err

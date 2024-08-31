@@ -7,7 +7,7 @@ use crate::{
     field::{Field, FieldNaT, FieldNaTBorrow},
     field_storage::FieldStorage,
     jvm::{error, JvmResult},
-    method::{MethodDescriptor, MethodNaT, MethodPtr},
+    method::{MethodDescriptor, MethodNaT, MethodNaTBorrow, MethodPtr},
     object::{self, Object},
     typ::Typ,
     verification::verify,
@@ -22,11 +22,10 @@ pub(crate) struct Class {
     pub(crate) super_class: Option<ClassPtr>,
     /// For array classes, this is the type of the array elements; None for normal classes
     pub(crate) element_type: Option<Typ>,
-    /// When the class is initialized, write access is required for resolution.
-    /// Afterward (such as when executing a function in this class), only read access is required.
+    /// Write access is required for resolution and hot reloading.
+    /// Otherwise only read access is required.
     pub(crate) const_pool: RwLock<ConstPool>,
     pub(crate) access_flags: AccessFlags,
-    #[allow(dead_code)]
     pub(crate) interfaces: Vec<ClassPtr>,
     /// Does not contain inherited fields.
     /// Note: JVM supports field overloading.
@@ -106,8 +105,7 @@ impl Class {
         (fields, static_layout.size(), object_layout.size())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn interface(&self) -> bool {
+    pub(crate) fn is_interface(&self) -> bool {
         self.access_flags.contains(AccessFlags::INTERFACE)
     }
 
@@ -313,9 +311,9 @@ impl Class {
     /// Requires class to be verified, may only be called from self.ensure_init
     fn init(&'static self, jvm: &Jvm) -> JvmResult<()> {
         // Initialization
-        if let Some(initializer) = self.methods.get(&MethodNaT {
-            name: "<clinit>".into(),
-            typ: MethodDescriptor {
+        if let Some(initializer) = self.methods.get(&MethodNaTBorrow {
+            name: "<clinit>",
+            typ: &MethodDescriptor {
                 args: vec![],
                 returns: None,
             },

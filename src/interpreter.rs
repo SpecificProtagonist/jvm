@@ -69,9 +69,10 @@ struct IVal(SlotSize);
 
 /// Requires that the class is already initialized, or method is the initializer
 fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Value> {
-    match &method.code {
+    let code = method.code.read_recursive();
+    match &*code {
         Code::None => todo!("Abstract method"),
-        Code::Bytecode(code) => interpret(jvm, method, &code.read_recursive(), args),
+        Code::Bytecode(code) => interpret(jvm, method, code, args),
         Code::Native(code) => native(jvm, method, code, args),
     }
 }
@@ -787,14 +788,12 @@ fn run_until_exception_or_return(
 
                 let is_instance_init = nat.name.as_ref() == "<init>";
 
-                let class = if !is_instance_init
-                    & method.class().true_subclass_of(&named_class.name)
-                    & method.class().access_flags.contains(AccessFlags::SUPER)
-                {
-                    method.class().super_class.unwrap()
-                } else {
-                    named_class
-                };
+                let class =
+                    if !is_instance_init & method.class().true_subclass_of(&named_class.name) {
+                        method.class().super_class.unwrap()
+                    } else {
+                        named_class
+                    };
 
                 // TODO: move method linking (incl NoSuchMethodError and IncompatibleClassChangeError) to class init
                 let invoke_method = class

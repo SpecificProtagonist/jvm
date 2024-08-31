@@ -17,7 +17,7 @@ pub(crate) struct Method {
     pub(crate) access_flags: AccessFlags,
     /// Class is behind a AtomicCell to enable circular references
     pub(crate) class: AtomicPtr<Class>,
-    pub(crate) code: Code,
+    pub(crate) code: RwLock<Code>,
 }
 
 impl Method {
@@ -69,7 +69,7 @@ impl MethodDescriptor {
 pub(crate) enum Code {
     None,
     /// When also accessing the constant pool, lock the constant pool first
-    Bytecode(RwLock<Bytecode>),
+    Bytecode(Bytecode),
     Native(NativeCode),
 }
 

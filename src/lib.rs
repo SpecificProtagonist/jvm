@@ -1,4 +1,3 @@
-#![feature(hash_set_entry)]
 #![doc = include_str!("../README.md")]
 
 mod class;
@@ -58,6 +57,7 @@ fn default<T: Default>() -> T {
 macro_rules! define_guard {
     ($(#[$doc:meta])* $guard_typ:ident, $impl_typ:ty) => {
         $(#[$doc])*
+        #[derive(Copy, Clone, Eq)]
         pub struct $guard_typ<'a> {
             value: $impl_typ,
             jvm: &'a jvm::Jvm,
@@ -88,23 +88,16 @@ macro_rules! define_guard {
                 Debug::fmt(&self.value, f)
             }
         }
+
         impl<'a> Hash for $guard_typ<'a> {
             fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
                 self.value.hash(state);
             }
         }
+
         impl<'a> PartialEq for $guard_typ<'a> {
             fn eq(&self, other: &Self) -> bool {
                 self.value == other.value
-            }
-        }
-        impl<'a> Eq for $guard_typ<'a> {
-            fn assert_receiver_is_total_eq(&self) {}
-        }
-        impl<'a> Copy for $guard_typ<'a> {}
-        impl<'a> Clone for $guard_typ<'a> {
-            fn clone(&self) -> Self {
-                *self
             }
         }
     };
@@ -225,8 +218,12 @@ impl<'a> Class<'a> {
     }
 
     /// Convenience method for getting this class' type
-    pub(crate) fn typ(&self) -> Typ {
+    pub fn typ(&self) -> Typ {
         self.value.typ()
+    }
+
+    pub fn is_interface(&self) -> bool {
+        self.value.is_interface()
     }
 
     /// Is `Some()` for classes representing an array and `None` otherwise.
@@ -575,8 +572,7 @@ bitflags::bitflags! {
         ///
         /// Method: May not be overwritten by subclas.
         const FINAL = 0x0010;
-        /// Class: Treat superclass methods specially when invoked by the invokespecial instruction.
-        const SUPER = 0x0020;
+        // SUPER is removed since Java 8
         /// Invocation guarded by monitor (TODO).
         const SYNCHRONIZED = 0x0020;
         /// Reads and writes to this field are consistent across threads.

@@ -496,7 +496,7 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
         let (attr_name, bytes) = read_attribute(jvm, input, constant_pool)?;
         if attr_name.as_ref() == "Code" {
             if let Code::None = code {
-                code = Code::Bytecode(read_code(jvm, bytes, constant_pool)?.into());
+                code = Code::Bytecode(read_code(jvm, bytes, constant_pool)?);
             } else {
                 return Err(cfe(jvm, "Multiple code attributes on same method"));
             }
@@ -518,7 +518,7 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
         },
         access_flags,
         class: default(),
-        code,
+        code: code.into(),
     })
 }
 
@@ -559,6 +559,16 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
     let const_pool = read_const_pool(input, jvm)?;
 
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
+
+    if if access_flags.contains(AccessFlags::INTERFACE) {
+        access_flags.intersects(AccessFlags::FINAL | AccessFlags::ENUM)
+            | !access_flags.contains(AccessFlags::ABSTRACT)
+    } else {
+        access_flags.contains(AccessFlags::ANNOTATION)
+            | access_flags.contains(AccessFlags::FINAL | AccessFlags::ABSTRACT)
+    } {
+        return Err(cfe(jvm, "Invalid access flags"));
+    }
 
     let this_class = const_pool
         .get_unresolved_class(jvm, read_u16(jvm, input)?)?
