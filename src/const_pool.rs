@@ -4,7 +4,7 @@ use crate::{
     class::ClassPtr,
     field::{Field, FieldNaT},
     jvm::{error, JvmResult},
-    method::{MethodNaT, MethodPtr},
+    method::{MethodNaT, MethodNaTBorrow, MethodPtr},
     object::Object,
     parse,
     typ::Typ,
@@ -31,12 +31,14 @@ pub(crate) enum ConstPoolItem {
     StaticMethod(MethodPtr),
     // Class is neccessary for invoke_special
     VirtualMethod(ClassPtr, MethodNaT),
-    InterfaceMethodRef { class: u16, nat: u16 },
+    InterfaceMethod(ClassPtr, MethodNaT),
     NameAndType { name: u16, descriptor: u16 },
     // Only present before resolve
     FieldRef { class: u16, nat: u16 },
     // Only present before resolve
     MethodRef { class: u16, nat: u16 },
+    // Only present before resolve
+    InterfaceMethodRef { class: u16, nat: u16 },
     // Only present before resolve
     RawString(u16),
     RawClass(u16),
@@ -52,9 +54,9 @@ impl ConstPool {
     /// Must be called prior to initialization
     pub fn resolve(&mut self, jvm: &Jvm) -> JvmResult<()> {
         for i in 0..self.items.len() {
-            if let ConstPoolItem::RawClass(index) = self.items[i] {
-                self.items[i] =
-                    ConstPoolItem::Class(jvm.resolve_class_internal(&self.get_utf8(jvm, index)?)?);
+            if let ConstPoolItem::RawClass(_) = self.items[i] {
+                let name = self.get_unresolved_class(jvm, i as u16)?;
+                self.items[i] = ConstPoolItem::Class(jvm.resolve_class_internal(&name)?);
             }
         }
         for i in 0..self.items.len() {
@@ -62,23 +64,38 @@ impl ConstPool {
                 ConstPoolItem::MethodRef { class, nat } => {
                     // Arrays inherit methods from Object
                     let class = self.get_class(jvm, class)?;
+                    if class.is_interface() {
+                        return Err(cfe(jvm));
+                    }
                     let (name, descriptor) = self.get_raw_nat(jvm, nat)?;
                     let typ = parse::parse_method_descriptor(jvm, &descriptor)?;
-                    let nat = MethodNaT {
-                        name: name.clone(),
-                        typ: typ.clone(),
-                    };
+                    if name.starts_with('<') & ((&*name != "<init>") | typ.returns.is_some()) {
+                        return Err(cfe(jvm));
+                    }
+                    let nat = MethodNaT { name, typ };
                     let method = class
                         .methods
-                        .get(&nat)
+                        .get(&MethodNaTBorrow {
+                            name: &nat.name,
+                            typ: &nat.typ,
+                        })
                         .ok_or_else(|| error(jvm, "NoSuchMethodError", &format!("{nat:?}")))?;
                     if method.access_flags.contains(AccessFlags::STATIC) {
                         self.items[i] = ConstPoolItem::StaticMethod(method);
                     } else {
                         // TODO: check if returning java.lang.Object for arrays is correct for invokespecial
-                        self.items[i] =
-                            ConstPoolItem::VirtualMethod(class, MethodNaT { name, typ });
+                        self.items[i] = ConstPoolItem::VirtualMethod(class, nat);
                     }
+                }
+                ConstPoolItem::InterfaceMethodRef { class, nat } => {
+                    // Arrays inherit methods from Object
+                    let class = self.get_class(jvm, class)?;
+                    if !class.is_interface() {
+                        return Err(cfe(jvm));
+                    }
+                    let (name, descriptor) = self.get_raw_nat(jvm, nat)?;
+                    let typ = parse::parse_method_descriptor(jvm, &descriptor)?;
+                    self.items[i] = ConstPoolItem::InterfaceMethod(class, MethodNaT { name, typ });
                 }
                 ConstPoolItem::FieldRef { class, nat } => {
                     let class = self.get_class(jvm, class)?;
@@ -161,9 +178,19 @@ impl ConstPool {
     /// Converts binary to normal names
     pub fn get_unresolved_class(&self, jvm: &Jvm, index: u16) -> JvmResult<String> {
         match self.items.get(index as usize) {
-            Some(ConstPoolItem::RawClass(index)) => self
-                .get_utf8(jvm, *index)
-                .map(|name| name.replace('/', ".")),
+            Some(ConstPoolItem::RawClass(index)) => {
+                let mut name = self.get_utf8(jvm, *index)?.replace('/', ".");
+
+                while name.starts_with('[') {
+                    let (component, end) = parse::parse_typ_descriptor(jvm, name.as_str(), 1)?;
+                    if end != name.len() {
+                        return Err(error(jvm, "ClassFormatError", &name));
+                    }
+                    name = format!("{component}[]");
+                }
+
+                Ok(name)
+            }
             _ => Err(cfe(jvm)),
         }
     }
@@ -188,6 +215,14 @@ impl ConstPool {
     pub fn get_virtual_method(&self, jvm: &Jvm, index: u16) -> JvmResult<(ClassPtr, &MethodNaT)> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, nat)),
+            _ => Err(cfe(jvm)),
+        }
+    }
+
+    /// Requires resolution first
+    pub fn get_interface_method(&self, jvm: &Jvm, index: u16) -> JvmResult<(ClassPtr, &MethodNaT)> {
+        match self.items.get(index as usize) {
+            Some(ConstPoolItem::InterfaceMethod(class, nat)) => Ok((class, nat)),
             _ => Err(cfe(jvm)),
         }
     }

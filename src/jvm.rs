@@ -20,8 +20,6 @@ use crate::typ::Typ;
 use crate::value::Value;
 use crate::{class::*, default};
 
-// TODO: what to do if trying to throw an exception retursively throws infinite exceptions
-// (e.g. java.lang.Object is missing/corrupt)? Currently stackoverflow
 /// Err is an object that extends Throwable
 pub(crate) type JvmResult<T> = std::result::Result<T, Object>;
 
@@ -46,8 +44,6 @@ pub struct Jvm {
     // TODO: alloc on heap
     pub(crate) method_storage: Mutex<ManuallyDropArena<Method, 128>>,
     pub(crate) classes: RwLock<HashMap<Arc<str>, ClassPtr>>,
-    /// Native method code for classes not loaded yet
-    pub(crate) unbound_native_methods: Mutex<HashMap<String, HashMap<MethodNaT, NativeCode>>>,
 }
 
 impl Jvm {
@@ -64,14 +60,13 @@ impl Jvm {
             heap,
             method_storage: default(),
             classes: default(),
-            unbound_native_methods: default(),
         }
     }
 
     /// Returns the class, loading it if it wasn't already loaded.
     /// This also loads its superclass and any interfaces it implements.
     /// Does not initialize this class, nor load any other class referenced.
-    /// `name` must be fully qualified and may be a [binary class name](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.2.1) or describe an array.
+    /// `name` must be fully qualified and may describe an array.
     pub fn resolve_class<'a>(&'a self, name: &str) -> crate::JvmResult<'a, crate::Class<'a>> {
         self.resolve_class_internal(name)
             .map(|value| crate::Class { jvm: self, value })
@@ -137,53 +132,6 @@ impl Jvm {
         crate::Object::new(self, self.create_array_of(component, length))
     }
 
-    /// Register code for a native method. If called multiple times for the same method, the previous registration will be replaced.
-    ///
-    /// The method needs to be marked as native.
-    /// If it is an instance method, the first argument passed will be the object it is invoked on.
-    pub fn register_native_method(
-        &self,
-        class: &str,
-        name: &str,
-        args: impl IntoIterator<Item = Typ>,
-        returns: Option<Typ>,
-        native: NativeCode,
-    ) {
-        self.register_native_method_by_descriptor(
-            class,
-            name,
-            MethodDescriptor {
-                args: args.into_iter().collect(),
-                returns,
-            },
-            native,
-        )
-    }
-
-    /// Register code for a native method. If called multiple times for the same method, the previous registration will be replaced.
-    ///
-    /// The method needs to be marked as native.
-    /// If it is an instance method, the first argument passed will be the object it is invoked on.
-    pub fn register_native_method_by_descriptor(
-        &self,
-        class: &str,
-        name: &str,
-        typ: MethodDescriptor,
-        native: NativeCode,
-    ) {
-        self.unbound_native_methods
-            .lock()
-            .entry(class.to_owned())
-            .or_default()
-            .insert(
-                MethodNaT {
-                    name: name.into(),
-                    typ,
-                },
-                native,
-            );
-    }
-
     /// Reload the bytecodes of all methods in the class by querying the class loader.
     /// Fails if there are structural changes to the class (e.g. a field is added of a method signature has changed).
     ///
@@ -222,14 +170,11 @@ impl Jvm {
             super_class: Some(super_class),
             element_type: Some(component.clone()),
             const_pool: default(),
-            // TODO: correct access flags
-            access_flags: AccessFlags::empty(),
-            interfaces: vec![],
-            // TODO: implement interfaces
-            /*vec![
-                self.resolve_class("Clonable")?,
-                self.resolve_class("java.io.Serializable")?,
-            ]*/
+            access_flags: AccessFlags::PUBLIC | AccessFlags::FINAL | AccessFlags::SYNTHETIC,
+            interfaces: vec![
+                self.resolve_class_internal("java.lang.Cloneable")?,
+                self.resolve_class_internal("java.io.Serializable")?,
+            ],
             fields: default(),
             methods: super_class.methods.clone(),
             static_storage: FieldStorage::new(&self.heap, 0),
@@ -250,7 +195,7 @@ impl Jvm {
     /// Returns the class, loading it if it wasn't already loaded.
     /// This also loads its superclass and any interfaces it implements.
     /// Does not initialize this class nor load any other class referenced.
-    /// `name` must be fully qualified and may be a [binary class name](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.2.1) or describe an array.
+    /// `name` must be fully qualified and may describe an array.
     pub(crate) fn resolve_class_internal(&self, name: &str) -> JvmResult<ClassPtr> {
         self.resolve_class_impl(name, Vec::new())
     }
@@ -259,21 +204,10 @@ impl Jvm {
     fn resolve_class_impl(
         &self,
         name: &str,
-        mut check_circular: Vec<Arc<str>>,
+        mut check_circular: Vec<String>,
     ) -> JvmResult<ClassPtr> {
-        // Normalize binary class names
-        let name = name.replace('/', ".");
-
-        if let Some(class) = self.classes.read().get(name.as_str()) {
+        if let Some(class) = self.classes.read().get(name) {
             return Ok(*class);
-        }
-        // Do we want to load an array (binary class name)?
-        if name.starts_with('[') {
-            let (component, end) = parse::parse_typ_descriptor(self, name.as_str(), 1)?;
-            if end != name.len() {
-                return Err(error(self, "ClassFormatError", &name));
-            }
-            return self.resolve_array_of(&component);
         }
 
         // Do we want to load an array (normal name)?
@@ -281,11 +215,16 @@ impl Jvm {
             return self.resolve_array_of(&component.into());
         }
 
+        if check_circular.iter().any(|c| c == name) {
+            return Err(error(self, "ClassCircularityError", name));
+        }
+        check_circular.push(name.to_owned());
+
         // We want to load a normal class
         let bytes = self
             .bootstrap_class_loader
-            .load(&name)
-            .ok_or_else(|| error(self, "NoClassDefFoundError", &name))?;
+            .load(name)
+            .ok_or_else(|| error(self, "NoClassDefFoundError", name))?;
 
         let mut class_desc = parse::read_class_file(&bytes, self)?;
 
@@ -293,28 +232,6 @@ impl Jvm {
         for (nat, method) in class_desc.methods.drain() {
             let method = &*self.method_storage.lock().alloc(method);
             methods.insert(nat, method);
-        }
-
-        // Bind native methods
-        for (nat, method) in &methods {
-            if method.access_flags.contains(AccessFlags::NATIVE) {
-                let err = || {
-                    Err(error(
-                        self,
-                        // What exception to use here?
-                        "IncompatibleClassChangeError",
-                        &format!("Class {name} has native method {nat}, but method is not bound"),
-                    ))
-                };
-                let mut native = self.unbound_native_methods.lock();
-                let Some(native) = native.get_mut(&name) else {
-                    return err();
-                };
-                match native.remove(nat) {
-                    Some(code) => *method.code.write() = Code::Native(code),
-                    None => return err(),
-                }
-            }
         }
 
         if name != class_desc.name.as_ref() {
@@ -327,12 +244,18 @@ impl Jvm {
 
         let new_methods = methods.clone();
 
-        // Superclasses loading & verification
-        let super_class = if let Some(super_class_name) = class_desc.super_class {
-            if check_circular.contains(&super_class_name) {
-                return Err(error(self, "ClassCircularityError", &name));
+        // Interface resolution
+        let mut interfaces = Vec::new();
+        for interface in class_desc.interfaces {
+            let interface = self.resolve_class_impl(&interface, check_circular.clone())?;
+            if !interface.is_interface() {
+                return Err(error(self, "IncompatibleClassChangeError", name));
             }
-            check_circular.push(super_class_name.clone());
+            interfaces.push(interface);
+        }
+
+        // Superclasses resolution
+        let super_class = if let Some(super_class_name) = class_desc.super_class {
             let super_class = self.resolve_class_impl(&super_class_name, check_circular)?;
 
             if super_class.element_type.is_some()
@@ -340,12 +263,21 @@ impl Jvm {
                     .access_flags
                     .intersects(AccessFlags::FINAL | AccessFlags::INTERFACE)
             {
-                return Err(error(self, "IncompatibleClassChangeError", &name));
+                return Err(error(self, "IncompatibleClassChangeError", name));
             }
 
             // Method resolution
             for (nat, method) in &super_class.methods {
-                methods.entry(nat.clone()).or_insert(*method);
+                match methods.entry(nat.clone()) {
+                    hashbrown::hash_map::Entry::Occupied(_) => {
+                        if method.access_flags.contains(AccessFlags::FINAL) {
+                            return Err(error(self, "IncompatibleClassChangeError", name));
+                        }
+                    }
+                    hashbrown::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(*method);
+                    }
+                }
             }
             Some(super_class)
         } else {
@@ -354,18 +286,13 @@ impl Jvm {
 
         // Interfaces must directly inherit from object (5.3.5)
         if class_desc.access_flags.contains(AccessFlags::INTERFACE)
-            && match &super_class {
-                None => true,
-                Some(s) => *s.name != *"java.lang.Object",
-            }
+            & (super_class.map(|c| &*c.name) != Some("java.lang.Object"))
         {
-            return Err(error(self, "IncompatibleClassChangeError", &name));
+            return Err(error(self, "IncompatibleClassChangeError", name));
         }
 
         let (fields, static_size, object_size) = Class::set_layouts(super_class, class_desc.fields);
         let static_storage = FieldStorage::new(&self.heap, static_size);
-
-        let interfaces = class_desc.interfaces.into_iter().map(|_| todo!()).collect();
 
         let ref_type = unsafe {
             self.heap.alloc_typed(Class {
@@ -386,11 +313,11 @@ impl Jvm {
 
         let mut guard = self.classes.write();
         // Check if loaded by another thread in the meantime
-        if let Some(class) = guard.get(name.as_str()) {
+        if let Some(class) = guard.get(name) {
             return Ok(*class);
         }
-        guard.insert(name.as_str().into(), ref_type);
-        let class = guard.get(name.as_str()).unwrap();
+        guard.insert(name.into(), ref_type);
+        let class = guard.get(name).unwrap();
 
         // While parsing, each method has their class field set to a dummy
         // We can't use class.methods directly because that also includes parent classes
@@ -504,7 +431,7 @@ pub(crate) fn str_to_java(jvm: &Jvm, utf8: &str) -> Object {
         chars_object.array_write(i as i32, Value::Int(*char as i32));
     }
     let string_class = jvm
-        .resolve_class_internal("java/lang/String")
+        .resolve_class_internal("java.lang.String")
         .expect("java.lang.String missing");
     let object = jvm.create_object_uninitialized(string_class);
     let field = string_class

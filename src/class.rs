@@ -160,7 +160,9 @@ impl Class {
     }
 
     pub fn assignable_to(&self, other: &str) -> bool {
-        (self.name.as_ref() == other) || self.true_subclass_of(other)
+        (self.name.as_ref() == other)
+            || self.true_subclass_of(other)
+            || self.interfaces.iter().any(|i| other == &*i.name)
     }
 
     /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.
@@ -189,6 +191,10 @@ impl Class {
 
                     if let Some(super_class) = self.super_class {
                         super_class.ensure_init(jvm)?;
+                    }
+
+                    for interface in &self.interfaces {
+                        interface.ensure_init(jvm)?;
                     }
 
                     let result = self.init(jvm);

@@ -79,7 +79,6 @@ pub type NativeCode = Box<
         + Sync,
 >;
 
-// TODO: use verification data to construct a more efficient bytecode
 pub(crate) struct Bytecode {
     pub max_stack: u16,
     pub max_locals: u16,

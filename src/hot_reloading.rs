@@ -35,10 +35,12 @@ pub(crate) fn reload_method_bytecodes_for_class<'a>(
         || (class.access_flags != new_class.access_flags)
         || (class.super_class.map(|s| s.name.clone()) != new_class.super_class)
         || (class.interfaces.len() != new_class.interfaces.len())
-        || class
-            .interfaces
-            .iter()
-            .any(|i| new_class.interfaces.contains(&i.name))
+        || class.interfaces.iter().any(|i| {
+            new_class
+                .interfaces
+                .iter()
+                .any(|new| new == i.name.as_ref())
+        })
         || (class.fields.len() != new_class.fields.len())
         || class.fields.values().any(|f| {
             !new_class

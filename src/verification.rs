@@ -39,16 +39,23 @@ impl Default for VerificationType {
 }
 
 impl VerificationType {
-    fn is_assignable_to(self, other: Self) -> bool {
+    fn is_assignable_to(self, to: Self) -> bool {
+        pub fn is_java_assignable(from: ClassPtr, to: ClassPtr) -> bool {
+            // Interfaces are to be treated as java.lang.Object
+            to.is_interface()
+                || std::ptr::eq(from, to)
+                || from.super_class.is_some_and(|s| is_java_assignable(s, to))
+        }
+
         use VerificationType::*;
-        match (self, other) {
-            (a, b) if a == b => true,
+        match (self, to) {
+            (from, to) if from == to => true,
             (_, Top) => true,
             (
                 Null | ObjectVariable(_) | UninitializedThis | UninitializedVariable { .. },
                 Reference,
             ) => true,
-            (ObjectVariable(a), ObjectVariable(b)) => a.assignable_to(&b.name),
+            (ObjectVariable(from), ObjectVariable(to)) => is_java_assignable(from, to),
             (Null, ObjectVariable(_)) => true,
             _ => false,
         }
@@ -1225,6 +1232,30 @@ fn verify_bytecode(
                     return Err(error!(jvm, "invalid invokestatic"));
                 }
             }
+            INVOKEINTERFACE => {
+                let index = read_code_u16(jvm, bytes, pc)?;
+                let (interface, invoke_nat) = const_pool.get_interface_method(jvm, index)?;
+                let count = read_code_u8(jvm, bytes, pc)?;
+                let zero = read_code_u8(jvm, bytes, pc)?;
+                let mut valid =
+                    (zero == 0) & !matches!(invoke_nat.name.as_ref(), "<init>" | "<clinit>");
+                let stack_in = type_state.stack.len();
+                for arg in invoke_nat.typ.args.iter().rev() {
+                    valid &= type_state.pop(jvm)?.matches(arg);
+                }
+                valid &= type_state.stack.len() + count as usize == stack_in;
+                if let VerificationType::ObjectVariable(invoke_class) = type_state.pop(jvm)? {
+                    valid &= invoke_class.assignable_to(&interface.name);
+                } else {
+                    valid = false;
+                }
+                if let Some(return_type) = &invoke_nat.typ.returns {
+                    push_type(jvm, &mut type_state.stack, return_type)?
+                }
+                if !valid {
+                    return Err(error!(jvm, "invalid invokeinterface"));
+                }
+            }
             NEW => {
                 let uninit = VerificationType::UninitializedVariable { offset: *pc - 1 };
                 let index = read_code_u16(jvm, bytes, pc)?;
@@ -1372,7 +1403,6 @@ fn verify_bytecode(
             }
         }
     }
-    // TODO: check specification
     if connected_to_previous_block {
         return Err(error!(jvm, "final block open"));
     }

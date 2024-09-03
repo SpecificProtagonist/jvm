@@ -27,13 +27,11 @@ impl ClassLoader for FolderClassLoader {
             path.push(name.replace('.', "/"));
             path.set_extension("class");
 
-            if path.exists() {
-                let mut bytes = Vec::new();
-                let error = "Failed to read class. TODO: What error to throw when the class is found but could not be read?";
-                std::fs::File::open(path)
-                    .expect(error)
-                    .read_to_end(&mut bytes)
-                    .expect(error);
+            let mut bytes = Vec::new();
+            if std::fs::File::open(path)
+                .map(|mut f| f.read_to_end(&mut bytes))
+                .is_ok()
+            {
                 return Some(bytes);
             }
         }

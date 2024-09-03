@@ -10,6 +10,7 @@ use crate::{
     object,
 };
 
+// TODO: split into field storage and array storage types
 // TODO: use usize instead of u64 for size (consider alignment of Long/Double)
 /// Contains pointer to heap allocation containing allocation size followed by space for fields/array items
 #[derive(Clone, Copy, Hash)]

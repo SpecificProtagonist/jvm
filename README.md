@@ -1,4 +1,4 @@
-A toy embeddable JVM in writen in Rust. It is very much WIP and aims to eventually 
+A toy embeddable JVM writen in Rust. It is very much WIP and aims to eventually 
 implement most of the Java 8 JVM specification, except for the loading of classes with version <50.0
 and the Java SE class libraries. As this is intended as a toy / a learning experience, the choice of which features to implement is
 not determined by practicality but by how interested I'm in doing so. It also uses large amounts of *unsafe*
@@ -11,9 +11,9 @@ let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes"]));
 // Load class `Foo`
 let class = jvm.resolve_class("Foo").unwrap();
 // Resolve its method `void bar(int, String)`
-let method = class.method("bar", vec![Typ::Int, "java.lang.String".into()], None).unwrap();
+let method = class.method("bar", [Typ::Int, "java.lang.String".into()], None)?;
 // And call it: `Foo.bar(0, null)`
-method.invoke(&[0.into(), None.into()]).expect("bar threw an exception");
+method.invoke(&[Value::Int(0), Value::Ref(None)])?;
 // Resolve field `Foo.baz` of type bool
 let field = class.field("baz", Typ::Boolean).unwrap();
 // And read its value (panicking if it's not a static field)
@@ -35,10 +35,10 @@ Some mayor missing features:
 - method references
 - private/protected
 - locking
+- protection from stack overflow & memory exhaustion
 
 This is only a JVM, not including a proper class library. The problem is that the JVM
-specification depends on a number of classes, but never bothers to specify what exactly it requires
-of the class library. For example, each `CONSTANT_String` entry of a constant pool points
+specification and class library depend on each other. For example, each `CONSTANT_String` entry of a constant pool points
 to an instance of the class `String` that contains the codepoints. Leaving aside the fact
 that the correct class is `java.lang.String`, how does the JVM pass the data to the string /
 read it back? As a result, JVMs and class libraries are tied together. There's a stub in the `java`

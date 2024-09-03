@@ -7,7 +7,7 @@ use crate::{
     field_storage::FieldStorage,
     heap::{JVMPtr, NULL_PTR},
     jvm::{error, throwable, Jvm, JvmResult},
-    method::{Bytecode, Code, Method, NativeCode},
+    method::{Bytecode, Code, Method, MethodNaT, NativeCode},
     object::Object,
     opcodes::*,
     typ::Typ,
@@ -71,7 +71,23 @@ struct IVal(SlotSize);
 fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Value> {
     let code = method.code.read_recursive();
     match &*code {
-        Code::None => todo!("Abstract method"),
+        Code::None => {
+            if method.access_flags.contains(AccessFlags::ABSTRACT) {
+                Err(error(
+                    jvm,
+                    "AbstractMethodError",
+                    &format!("{}", method.nat),
+                ))
+            } else if method.access_flags.contains(AccessFlags::NATIVE) {
+                Err(error(
+                    jvm,
+                    "UnsatisfiedLinkError",
+                    &format!("{}", method.nat),
+                ))
+            } else {
+                unreachable!()
+            }
+        }
         Code::Bytecode(code) => interpret(jvm, method, code, args),
         Code::Native(code) => native(jvm, method, code, args),
     }
@@ -777,9 +793,6 @@ fn run_until_exception_or_return(
                 if invoke_method.access_flags.contains(AccessFlags::STATIC) {
                     return Err(throwable(jvm, "IncompatibleClassChangeError"));
                 }
-                if invoke_method.access_flags.contains(AccessFlags::ABSTRACT) {
-                    return Err(throwable(jvm, "AbstractMethodError"));
-                }
                 execute_invoke_instr(jvm, frame, invoke_method)?;
             }
             INVOKESPECIAL => {
@@ -813,6 +826,55 @@ fn run_until_exception_or_return(
                 let invoke_method = const_pool.get_static_method_verified(index);
                 invoke_method.class().ensure_init(jvm)?;
                 execute_invoke_instr(jvm, frame, invoke_method)?;
+            }
+            INVOKEINTERFACE => {
+                let index = frame.read_code_u16();
+                let (interface, nat) = const_pool.get_virtual_method_verified(index);
+                let obj_index = frame.stack.len() - nat.typ.arg_slots() - 1;
+                let obj = unsafe { frame.stack[obj_index].as_ref() }
+                    .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
+                if !obj.class().interfaces.contains(&interface) {
+                    return Err(throwable(jvm, "IncompatibleClassChangeError"));
+                }
+                if let Some(invoke_method) = obj.class().methods.get(nat) {
+                    execute_invoke_instr(jvm, frame, invoke_method)?;
+                }
+                // TODO: Do this search at load time
+                let mut default = None;
+                let mut multiple_found = false;
+                fn iter_interfaces(
+                    in_class: ClassPtr,
+                    nat: &MethodNaT,
+                    default: &mut Option<&Method>,
+                    multiple_found: &mut bool,
+                ) {
+                    for interface in &in_class.interfaces {
+                        match interface.methods.get(nat) {
+                            Some(found)
+                                if !found
+                                    .access_flags
+                                    .intersects(AccessFlags::ABSTRACT | AccessFlags::PRIVATE) =>
+                            {
+                                if default.is_none() {
+                                    *default = Some(found);
+                                } else {
+                                    *multiple_found = true;
+                                }
+                            }
+                            _ => iter_interfaces(interface, nat, default, multiple_found),
+                        }
+                    }
+                }
+                iter_interfaces(obj.class(), nat, &mut default, &mut multiple_found);
+                match default {
+                    Some(default) if !multiple_found => {
+                        execute_invoke_instr(jvm, frame, default)?;
+                    }
+                    _ if multiple_found => {
+                        return Err(throwable(jvm, "IncompatibleClassChangeError"))
+                    }
+                    _ => return Err(throwable(jvm, "AbstractMethodError")),
+                }
             }
             NEW => {
                 let index = frame.read_code_u16();

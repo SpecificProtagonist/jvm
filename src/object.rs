@@ -12,7 +12,7 @@ use crate::{
     AccessFlags,
 };
 
-// TODO: Maybe omit size in case of non-array objects?
+// TODO: Maybe omit size in case of non-array objects? (What about deallocation?)
 // TODO: These are handed out to the user. When garbage collection gets implemented, only hand them out in a non-copy wrapper.
 // Object layout:
 // size (u64, handled by FieldStorage)
@@ -25,6 +25,7 @@ pub(crate) struct Object {
 }
 
 impl Object {
+    #[inline]
     pub fn class(self) -> ClassPtr {
         unsafe { &*(heap::ptr_decode(self.ptr.read_ptr(0, false)) as *const Class) }
     }

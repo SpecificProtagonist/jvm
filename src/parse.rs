@@ -135,19 +135,11 @@ fn read_const_pool(input: &mut &[u8], jvm: &Jvm) -> JvmResult<ConstPool> {
     Ok(ConstPool { items })
 }
 
-fn read_interfaces(
-    jvm: &Jvm,
-    input: &mut &[u8],
-    const_pool: &ConstPool,
-) -> JvmResult<Vec<Arc<str>>> {
+fn read_interfaces(jvm: &Jvm, input: &mut &[u8], const_pool: &ConstPool) -> JvmResult<Vec<String>> {
     let length = read_u16(jvm, input)?;
     let mut vec = Vec::with_capacity(length as usize);
     for _ in 0..length {
-        vec.push(
-            const_pool
-                .get_unresolved_class(jvm, read_u16(jvm, input)?)?
-                .into(),
-        );
+        vec.push(const_pool.get_unresolved_class(jvm, read_u16(jvm, input)?)?);
     }
     Ok(vec)
 }
@@ -282,7 +274,6 @@ fn read_verification_type(
     })
 }
 
-// TODO: check how inefficient this is
 /// This is called during varification, as it is only needed then and because the const pool has been resolved by then.
 pub(crate) fn read_stack_map_table(
     jvm: &Jvm,
@@ -584,6 +575,24 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
 
     let interfaces = read_interfaces(jvm, input, &const_pool)?;
     let fields = read_fields(input, &const_pool, jvm)?;
+    if access_flags.contains(AccessFlags::INTERFACE)
+        && fields.iter().any(|field| {
+            !field
+                .access_flags
+                .contains(AccessFlags::FINAL | AccessFlags::STATIC)
+                | field.access_flags.intersects(
+                    AccessFlags::PUBLIC
+                        | AccessFlags::PRIVATE
+                        | AccessFlags::PROTECTED
+                        | AccessFlags::VOLATILE
+                        | AccessFlags::TRANSIENT
+                        | AccessFlags::ENUM,
+                )
+        })
+    {
+        return Err(cfe(jvm, "Invalid access flags"));
+    }
+
     let methods = read_methods(input, &const_pool, jvm)?;
 
     let attributes_count = read_u16(jvm, input)?;
@@ -612,7 +621,7 @@ pub(crate) struct ClassDescriptor {
     pub(crate) access_flags: AccessFlags,
     pub(crate) name: Arc<str>,
     pub(crate) super_class: Option<Arc<str>>,
-    pub(crate) interfaces: Vec<Arc<str>>,
+    pub(crate) interfaces: Vec<String>,
     pub(crate) fields: Vec<Field>,
     pub(crate) methods: HashMap<MethodNaT, Method>,
 }

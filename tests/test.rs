@@ -100,32 +100,31 @@ fn invoke_virtual() {
 #[test]
 fn invoke_native() {
     let jvm = make_jvm();
-    jvm.register_native_method(
+    jvm.resolve_method(
         "Native",
         "call_static",
         [Typ::Int, Typ::Int],
         Some(Typ::Long),
-        Box::new(|_, args| {
-            let (Value::Int(a), Value::Int(b)) = (args[0], args[1]) else {
-                panic!()
-            };
-            Ok(Value::Long(a as i64 + b as i64))
-        }),
-    );
-    jvm.register_native_method(
-        "Native",
-        "call_instance",
-        [],
-        None,
-        Box::new(|_, args| {
+    )
+    .unwrap()
+    .register_native_code(Box::new(|_, args| {
+        let (Value::Int(a), Value::Int(b)) = (args[0], args[1]) else {
+            panic!()
+        };
+        Ok(Value::Long(a as i64 + b as i64))
+    }))
+    .unwrap();
+    jvm.resolve_method("Native", "call_instance", [], None)
+        .unwrap()
+        .register_native_code(Box::new(|_, args| {
             let Value::Ref(Some(this)) = args[0] else {
                 panic!()
             };
             let field = this.class().field("value", Typ::Long).unwrap();
             assert_eq!(field.instance_get(this), 1i64);
             Ok(Value::Void)
-        }),
-    );
+        }))
+        .unwrap();
 
     let static_method = jvm
         .resolve_method(

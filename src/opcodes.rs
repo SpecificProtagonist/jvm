@@ -164,6 +164,8 @@ pub const IF_ICMPLT: u8 = 161;
 pub const IF_ICMPGE: u8 = 162;
 pub const IF_ICMPGT: u8 = 163;
 pub const IF_ICMPLE: u8 = 164;
+pub const IF_ACMPEQ: u8 = 165; // TODO: Interpretation + Verification
+pub const IF_ACMPNE: u8 = 166; // TODO: Interpretation + Verification
 pub const GOTO: u8 = 167;
 // pub const JSR: u8 = 168; (forbidden since class version >= 50.0)
 // pub const RET: u8 = 169; (forbidden since class version >= 50.0)
@@ -182,6 +184,8 @@ pub const PUTFIELD: u8 = 181;
 pub const INVOKEVIRTUAL: u8 = 182;
 pub const INVOKESPECIAL: u8 = 183;
 pub const INVOKESTATIC: u8 = 184;
+pub const INVOKEINTERFACE: u8 = 185;
+pub const INVOKEDYNAMIC: u8 = 186; // TODO: Interpretation + Verification
 pub const NEW: u8 = 187;
 pub const NEWARRAY: u8 = 188;
 pub const ANEWARRAY: u8 = 189;

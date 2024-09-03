@@ -25,8 +25,8 @@ use std::{
 pub use class_loader::{ClassLoader, FolderClassLoader};
 pub use jvm::Jvm;
 pub use method::MethodDescriptor;
-use method::MethodNaTBorrow;
 pub use method::NativeCode;
+use method::{Code, MethodNaTBorrow};
 pub use typ::Typ;
 
 fn default<T: Default>() -> T {
@@ -194,7 +194,7 @@ impl<'a> std::fmt::Pointer for Object<'a> {
 }
 
 define_guard!(
-    /// A class, interface (TODO), enum or array class.
+    /// A class, interface, enum or array class.
     Class,
     &'static class::Class
 );
@@ -387,7 +387,6 @@ impl<'a> Method<'a> {
         self.value.access_flags
     }
 
-    // TODO: publicly accessible dynamic method resolution
     /// Calls the method, initializing its class if necessary.
     /// Returns either the function's return value or the exception that was thrown
     ///
@@ -403,7 +402,33 @@ impl<'a> Method<'a> {
         .map(|value| Value::new(self.jvm, value, self.typ().returns.as_ref()))
         .map_err(|value| Object::new(self.jvm, value))
     }
+
+    /// Register code for a native method. If called multiple times for the same method, the previous registration will be replaced and returned.
+    ///
+    /// The method needs to be marked as native.
+    /// If it is an instance method, the first argument passed to `code` will be the object it is invoked on.
+    pub fn register_native_code(
+        &self,
+        code: NativeCode,
+    ) -> Result<Option<NativeCode>, MethodNotNative> {
+        if self.value.access_flags.contains(AccessFlags::NATIVE) {
+            Ok(
+                if let Code::Native(prev) =
+                    std::mem::replace(&mut *self.value.code.write(), Code::Native(code))
+                {
+                    Some(prev)
+                } else {
+                    None
+                },
+            )
+        } else {
+            Err(MethodNotNative)
+        }
+    }
 }
+
+#[derive(Debug)]
+pub struct MethodNotNative;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Value<'a> {
@@ -575,24 +600,23 @@ bitflags::bitflags! {
         // SUPER is removed since Java 8
         /// Invocation guarded by monitor (TODO).
         const SYNCHRONIZED = 0x0020;
-        /// Reads and writes to this field are consistent across threads.
+        /// Field: Reads and writes are consistent across threads.
         const VOLATILE = 0x0040;
         /// Field: Not written or read by a persistent object manager.
         const TRANSIENT = 0x0080;
-        /// This method is implemented in native code (TODO).
+        /// Method: Implemented in native code.
         const NATIVE = 0x0100;
-        /// This class is an interface.
+        /// Class: Is an interface.
         const INTERFACE = 0x0200;
         /// Class: Must not be instantiated.
         ///
         /// Method: Not implemented in this class; may be implemented by subclasses.
-        /// If the concrete class of the instance it is called on does not
         const ABSTRACT = 0x0400;
-        /// Method is FP-strict. This JVM always uses FP-strict mode.
+        /// Method: FP-strict. This JVM always uses FP-strict mode.
         const STRICT = 0x0800;
         /// Not extant in source code.
         const SYNTHETIC = 0x1000;
-        /// This class is an annotation.
+        /// Class: Is an annotation.
         const ANNOTATION = 0x2000;
         /// Class: Is an enum.
         ///

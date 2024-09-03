@@ -15,7 +15,7 @@ pub enum Typ {
     Double,
     // Classes are represented unresolved so we can talk about classes without
     // having all classes resolved already (which wouldn't work as the graph can be cyclic)
-    /// A reference type (class, interface (TODO), enum or array).
+    /// A reference type (class, interface, enum or array).
     Ref(Arc<str>),
 }
 
