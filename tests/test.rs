@@ -1,3 +1,4 @@
+#![feature(closure_lifetime_binder)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use jvm::*;
@@ -100,6 +101,9 @@ fn invoke_virtual() {
 #[test]
 fn invoke_native() {
     let jvm = make_jvm();
+    fn call_static(_: &Jvm, a: i32, b: i32) -> JvmResult<i64> {
+        Ok(a as i64 + b as i64)
+    }
     jvm.resolve_method(
         "Native",
         "call_static",
@@ -107,23 +111,17 @@ fn invoke_native() {
         Some(Typ::Long),
     )
     .unwrap()
-    .register_native_code(Box::new(|_, args| {
-        let (Value::Int(a), Value::Int(b)) = (args[0], args[1]) else {
-            panic!()
-        };
-        Ok(Value::Long(a as i64 + b as i64))
-    }))
+    .bind_native_code(call_static)
     .unwrap();
+
+    fn call_instance<'a>(_: &'a Jvm, this: Option<Object>) -> JvmResult<'a, ()> {
+        let field = this.unwrap().class().field("value", Typ::Long).unwrap();
+        assert_eq!(field.instance_get(this.unwrap()), 1i64);
+        Ok(())
+    }
     jvm.resolve_method("Native", "call_instance", [], None)
         .unwrap()
-        .register_native_code(Box::new(|_, args| {
-            let Value::Ref(Some(this)) = args[0] else {
-                panic!()
-            };
-            let field = this.class().field("value", Typ::Long).unwrap();
-            assert_eq!(field.instance_get(this), 1i64);
-            Ok(Value::Void)
-        }))
+        .bind_native_code(call_instance)
         .unwrap();
 
     let static_method = jvm

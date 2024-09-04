@@ -3,6 +3,7 @@
 mod class;
 mod class_loader;
 mod const_pool;
+mod fake_variadics;
 mod field;
 mod field_storage;
 mod heap;
@@ -23,10 +24,11 @@ use std::{
 };
 
 pub use class_loader::{ClassLoader, FolderClassLoader};
+use fake_variadics::{NativeBindError, NativeFn};
 pub use jvm::Jvm;
 pub use method::MethodDescriptor;
+use method::MethodNaTBorrow;
 pub use method::NativeCode;
-use method::{Code, MethodNaTBorrow};
 pub use typ::Typ;
 
 fn default<T: Default>() -> T {
@@ -136,7 +138,7 @@ impl<'a> Object<'a> {
     /// Panics if the field does not exist or is static or
     /// the value is not assignable to the field's type
     /// or is an object created by a different JVM
-    pub fn set(self, field_name: &str, field_type: Typ, value: impl Into<Value<'a>>) {
+    pub fn set<'b>(self, field_name: &str, field_type: Typ, value: impl Into<Value<'b>>) {
         let Some(field) = self.class().field(field_name, field_type.clone()) else {
             panic!(
                 "Field {field_name} of type {field_type} not found in object of type {}",
@@ -184,6 +186,10 @@ impl<'a> Object<'a> {
     /// Creates a debug representation of the object. For a full object tree, use `Debug`.
     pub fn format_short(self) -> String {
         self.value.format_short()
+    }
+
+    pub fn extend_lifetime(self, jvm: &Jvm) -> Object {
+        Object::new(jvm, self.into_inner(jvm))
     }
 }
 
@@ -341,7 +347,7 @@ impl<'a> Field<'a> {
     /// # Panics
     /// Panics if the field is not static or the value is not assignable to the field's type
     /// or is an object created by a different JVM
-    pub fn static_set(&self, value: impl Into<Value<'a>>) {
+    pub fn static_set<'b>(&self, value: impl Into<Value<'b>>) {
         self.value.static_set(value.into().into_inner(self.jvm))
     }
 
@@ -352,7 +358,7 @@ impl<'a> Field<'a> {
     /// the object is not an instance of the class corresponding to this field,
     /// the value is not assignable to the field's type
     /// or the value is an object created by a different JVM
-    pub fn instance_set(&self, object: Object, value: impl Into<Value<'a>>) {
+    pub fn instance_set<'b>(&self, object: Object, value: impl Into<Value<'b>>) {
         self.value.instance_set(
             object.into_inner(self.jvm),
             value.into().into_inner(self.jvm),
@@ -392,7 +398,7 @@ impl<'a> Method<'a> {
     ///
     /// # Panics
     /// Panics if any of the [`Value`]s is an object created by another JVM
-    pub fn invoke(&self, args: &[Value<'a>]) -> JvmResult<'a, Value<'a>> {
+    pub fn invoke(&self, args: &[Value]) -> JvmResult<'a, Value<'a>> {
         // TODO: Check for argument type mismatch
         interpreter::invoke(
             self.jvm,
@@ -403,35 +409,29 @@ impl<'a> Method<'a> {
         .map_err(|value| Object::new(self.jvm, value))
     }
 
-    /// Register code for a native method. If called multiple times for the same method, the previous registration will be replaced and returned.
+    /// Register code for a native method. If called multiple times for the same method, the previous registration will be replaced.
     ///
-    /// The method needs to be marked as native.
-    /// If it is an instance method, the first argument passed to `code` will be the object it is invoked on.
-    pub fn register_native_code(
-        &self,
-        code: NativeCode,
-    ) -> Result<Option<NativeCode>, MethodNotNative> {
-        if self.value.access_flags.contains(AccessFlags::NATIVE) {
-            Ok(
-                if let Code::Native(prev) =
-                    std::mem::replace(&mut *self.value.code.write(), Code::Native(code))
-                {
-                    Some(prev)
-                } else {
-                    None
-                },
-            )
-        } else {
-            Err(MethodNotNative)
-        }
+    /// `code` must be a function of the following form:
+    /// - the first argument is of type &Jvm
+    /// - the remaining arguments consist of either `&[Value]` or up to 16 arguments of a translateable type
+    /// - the return type must be `JvmResult<T>` where `T` is a translatable type
+    ///
+    /// Translatable types:  
+    /// `bool`, `i8`, `i16`, `u16`, `i32`, `i64`, `f32`, `f64`, `()` (only for return type), `Option<Object>`
+    ///
+    /// The method must be marked as native and match the signature of `code`.
+    /// If it is an instance method, its first argument will be the object it is invoked on.
+    ///
+    /// Note that you need `closure_lifetime_binder` or a helper function to use this with closures.
+    #[allow(private_bounds)]
+    pub fn bind_native_code<F: NativeFn<T>, T>(&self, code: F) -> Result<(), NativeBindError> {
+        fake_variadics::bind_native_code(self, code)
     }
 }
 
-#[derive(Debug)]
-pub struct MethodNotNative;
-
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Value<'a> {
+    // TODO: Represent as Option<Value> instead?
     /// Lack of a value, only used for return types.
     Void,
     // Split arrays and normal objects?

@@ -74,7 +74,7 @@ pub(crate) enum Code {
 }
 
 pub type NativeCode = Box<
-    dyn for<'a> Fn(&Jvm, &[crate::Value<'a>]) -> crate::JvmResult<'a, crate::Value<'a>>
+    dyn for<'a> Fn(&'a Jvm, &'a [crate::Value<'a>]) -> crate::JvmResult<'a, crate::Value<'a>>
         + Send
         + Sync,
 >;

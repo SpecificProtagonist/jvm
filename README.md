@@ -4,7 +4,7 @@ and the Java SE class libraries. As this is intended as a toy / a learning exper
 not determined by practicality but by how interested I'm in doing so. It also uses large amounts of *unsafe*
 (the safety boundary essentially being the entire crate), is badly tested, doesn't have any benchmarks, and doesn't do any garbage collection.
 
-```rust, no_run
+```rust,ignore
 use jvm::*;
 // Create a new JVM that loads classes from a folder called `classes`
 let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes"]));
@@ -18,10 +18,17 @@ method.invoke(&[Value::Int(0), Value::Ref(None)])?;
 let field = class.field("baz", Typ::Boolean).unwrap();
 // And read its value (panicking if it's not a static field)
 let field_value = field.static_get();
+// Bind a native method
+fn add(_: &Jvm, a: f32, b: f32) -> JvmResult<f32> {
+    Ok(a + b)
+}
+class.method("add", [Typ::Float, Typ::Float], Some(Typ::Float))?
+  .bind_native_code(add).unwrap();
 ```
 
 Currently implemented:
-- class loading/initialization
+- classes, arrays, interfaces
+- loading/initialization
 - verification by type checking
 - almost all instructions (see `src/opcodes.rs`)
 - exceptions
@@ -31,10 +38,10 @@ Currently implemented:
 
 Some mayor missing features:
 - garbage collection
-- interfaces
 - method references
 - private/protected
 - locking
+- string interning
 - protection from stack overflow & memory exhaustion
 
 This is only a JVM, not including a proper class library. The problem is that the JVM
