@@ -10,19 +10,16 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub enum ReloadErr<'a> {
-    Exception(crate::Object<'a>),
+pub enum ReloadErr {
+    Exception(crate::Object),
     ClassStructureChanged,
 }
 
-pub(crate) fn reload_method_bytecodes_for_class<'a>(
-    jvm: &'a Jvm,
-    name: &str,
-) -> Result<(), ReloadErr<'a>> {
+pub(crate) fn reload_method_bytecodes_for_class(jvm: &Jvm, name: &str) -> Result<(), ReloadErr> {
     let class = jvm.resolve_class(name).map_err(ReloadErr::Exception)?.value;
 
     // Load new class
-    let map_exception = |e| ReloadErr::Exception(crate::Object::new(jvm, e));
+    let map_exception = |e| ReloadErr::Exception(crate::Object::new(jvm.id, e));
     let name = name.replace('/', ".");
     let bytes = jvm
         .bootstrap_class_loader

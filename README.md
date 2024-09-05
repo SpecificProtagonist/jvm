@@ -13,17 +13,14 @@ let class = jvm.resolve_class("Foo").unwrap();
 // Resolve its method `void bar(int, String)`
 let method = class.method("bar", [Typ::Int, "java.lang.String".into()], None)?;
 // And call it: `Foo.bar(0, null)`
-method.invoke(&[Value::Int(0), Value::Ref(None)])?;
+method.invoke(&jvm, &[Value::Int(0), Value::Ref(None)])?;
 // Resolve field `Foo.baz` of type bool
 let field = class.field("baz", Typ::Boolean).unwrap();
 // And read its value (panicking if it's not a static field)
-let field_value = field.static_get();
+let field_value = field.static_get(&jvm);
 // Bind a native method
-fn add(_: &Jvm, a: f32, b: f32) -> JvmResult<f32> {
-    Ok(a + b)
-}
 class.method("add", [Typ::Float, Typ::Float], Some(Typ::Float))?
-  .bind_native_code(add).unwrap();
+  .bind_native_code(|_: &Jvm, a: f32, b: f32| Ok(a + b)).unwrap();
 ```
 
 Currently implemented:

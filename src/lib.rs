@@ -25,7 +25,7 @@ use std::{
 
 pub use class_loader::{ClassLoader, FolderClassLoader};
 use fake_variadics::{NativeBindError, NativeFn};
-pub use jvm::Jvm;
+pub use jvm::{Jvm, JvmId};
 pub use method::MethodDescriptor;
 use method::MethodNaTBorrow;
 pub use method::NativeCode;
@@ -54,50 +54,44 @@ fn default<T: Default>() -> T {
 // - when accessing fields (in `fields_storage.rs` and when dereferencing pointers to objects)
 // Unfortunately, for most of this the safety boundary is at the crate level.
 
-/// Guard types ensure types don't outlive the Jvm
-/// they belong to or get used with a different Jvm.
+/// Guard types ensure values can't be used without the vm they belong to / be used with the wrong vm.
 macro_rules! define_guard {
     ($(#[$doc:meta])* $guard_typ:ident, $impl_typ:ty) => {
         $(#[$doc])*
         #[derive(Copy, Clone, Eq)]
-        pub struct $guard_typ<'a> {
+        pub struct $guard_typ {
             value: $impl_typ,
-            jvm: &'a jvm::Jvm,
+            jvm: JvmId,
         }
 
-        impl<'a> $guard_typ<'a> {
-            fn new(jvm: &'a jvm::Jvm, value: $impl_typ) -> Self {
+        impl $guard_typ {
+            fn new(jvm: JvmId, value: $impl_typ) -> Self {
                 Self { value, jvm }
             }
 
             #[allow(dead_code)]
-            fn into_inner(self, jvm: &jvm::Jvm) -> $impl_typ {
-                if self.jvm.id == jvm.id {
+            fn into_inner(self, jvm: JvmId) -> $impl_typ {
+                if self.jvm == jvm {
                     self.value
                 } else {
                     panic!("Wrong JVM accessed")
                 }
             }
-
-            /// Returns a reference to the [`Jvm`] this belongs to.
-            pub fn jvm(self) -> &'a Jvm {
-                self.jvm
-            }
         }
 
-        impl<'a> Debug for $guard_typ<'a> {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        impl Debug for $guard_typ {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 Debug::fmt(&self.value, f)
             }
         }
 
-        impl<'a> Hash for $guard_typ<'a> {
+        impl Hash for $guard_typ {
             fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
                 self.value.hash(state);
             }
         }
 
-        impl<'a> PartialEq for $guard_typ<'a> {
+        impl PartialEq for $guard_typ {
             fn eq(&self, other: &Self) -> bool {
                 self.value == other.value
             }
@@ -112,9 +106,9 @@ define_guard!(
     object::Object
 );
 
-impl<'a> Object<'a> {
+impl Object {
     /// The class this is an instance of.
-    pub fn class(self) -> Class<'a> {
+    pub fn class(self) -> Class {
         Class::new(self.jvm, self.value.class())
     }
 
@@ -122,7 +116,7 @@ impl<'a> Object<'a> {
     ///
     /// # Panics
     /// Panics if the field does not exist or is static.
-    pub fn get(self, field_name: &str, field_type: Typ) -> Value<'a> {
+    pub fn get(self, field_name: &str, field_type: Typ) -> Value {
         let Some(field) = self.class().field(field_name, field_type.clone()) else {
             panic!(
                 "Field {field_name} of type {field_type} not found in object of type {}",
@@ -138,7 +132,7 @@ impl<'a> Object<'a> {
     /// Panics if the field does not exist or is static or
     /// the value is not assignable to the field's type
     /// or is an object created by a different JVM
-    pub fn set<'b>(self, field_name: &str, field_type: Typ, value: impl Into<Value<'b>>) {
+    pub fn set(self, field_name: &str, field_type: Typ, value: impl Into<Value>) {
         let Some(field) = self.class().field(field_name, field_type.clone()) else {
             panic!(
                 "Field {field_name} of type {field_type} not found in object of type {}",
@@ -165,7 +159,7 @@ impl<'a> Object<'a> {
     ///
     /// # Panics
     /// Panics if the object is not an array or the `index` is out of bounds.
-    pub fn array_read(self, index: i32) -> Value<'a> {
+    pub fn array_read(self, index: i32) -> Value {
         Value::new(
             self.jvm,
             self.value.array_read(index),
@@ -179,7 +173,7 @@ impl<'a> Object<'a> {
     /// # Panics
     /// Panics if object is not an array, the element type mismatches, `index` is out of bounds
     /// or the value is an object created by another JVM.
-    pub fn array_write(self, index: i32, value: Value<'a>) {
+    pub fn array_write(self, index: i32, value: Value) {
         self.value.array_write(index, value.into_inner(self.jvm))
     }
 
@@ -187,14 +181,10 @@ impl<'a> Object<'a> {
     pub fn format_short(self) -> String {
         self.value.format_short()
     }
-
-    pub fn extend_lifetime(self, jvm: &Jvm) -> Object {
-        Object::new(jvm, self.into_inner(jvm))
-    }
 }
 
-impl<'a> std::fmt::Pointer for Object<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Pointer for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         std::fmt::Pointer::fmt(&self.value, f)
     }
 }
@@ -205,9 +195,9 @@ define_guard!(
     &'static class::Class
 );
 
-impl<'a> Class<'a> {
-    /// Returns the fully qualified internal name
-    pub fn name(self) -> &'a str {
+impl Class {
+    /// Returns the fully qualified name
+    pub fn name(&self) -> &str {
         &self.value.name
     }
 
@@ -219,8 +209,8 @@ impl<'a> Class<'a> {
     }
 
     /// Returns the array class which has this class as its element type.
-    pub fn array_class(self) -> Self {
-        Class::new(self.jvm, self.jvm.resolve_array_of(&self.typ()).unwrap())
+    pub fn array_class(self, jvm: &Jvm) -> Self {
+        Class::new(jvm.id, jvm.resolve_array_of(&self.typ()).unwrap())
     }
 
     /// Convenience method for getting this class' type
@@ -244,7 +234,7 @@ impl<'a> Class<'a> {
     /// Look up a field in this class by its name and type.
     /// Does not search the inheritance hierarchy.
     /// There may be multiple fields of the same name.
-    pub fn field(self, name: &str, typ: Typ) -> Option<Field<'a>> {
+    pub fn field(self, name: &str, typ: Typ) -> Option<Field> {
         self.value
             .field(name, typ)
             .map(|value| Field::new(self.jvm, value))
@@ -257,7 +247,7 @@ impl<'a> Class<'a> {
         name: &str,
         args: impl IntoIterator<Item = Typ>,
         ret: Option<Typ>,
-    ) -> Option<Method<'a>> {
+    ) -> Option<Method> {
         self.method_by_descriptor(
             name,
             &MethodDescriptor {
@@ -269,7 +259,7 @@ impl<'a> Class<'a> {
 
     /// Look up a method by its name and type. There may be multiple methods of the same name.
     /// Includes inherited dynamic methods.
-    pub fn method_by_descriptor(self, name: &str, typ: &MethodDescriptor) -> Option<Method<'a>> {
+    pub fn method_by_descriptor(self, name: &str, typ: &MethodDescriptor) -> Option<Method> {
         self.value
             .methods
             .get(&MethodNaTBorrow { name, typ })
@@ -278,9 +268,9 @@ impl<'a> Class<'a> {
 
     /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.
     /// This happens automatically when a method belonging to this class is called.
-    pub fn ensure_init(self) -> JvmResult<'a, ()> {
-        self.value
-            .ensure_init(self.jvm)
+    pub fn ensure_init(self, jvm: &Jvm) -> JvmResult<()> {
+        self.into_inner(jvm.id)
+            .ensure_init(jvm)
             .map_err(|value| Object::new(self.jvm, value))
     }
 
@@ -288,8 +278,11 @@ impl<'a> Class<'a> {
     ///
     /// # Panics
     /// Panics if this is an array class.
-    pub fn create_object_uninit(self) -> Object<'a> {
-        Object::new(self.jvm, self.jvm.create_object_uninitialized(self.value))
+    pub fn create_object_uninit(self, jvm: &Jvm) -> Object {
+        Object::new(
+            self.jvm,
+            jvm.create_object_uninitialized(self.into_inner(jvm.id)),
+        )
     }
 }
 
@@ -299,7 +292,7 @@ define_guard!(
     &'static field::Field
 );
 
-impl<'a> Field<'a> {
+impl Field {
     /// The class this field is defined by.
     pub fn class(&self) -> Class {
         Class::new(self.jvm, self.value.class())
@@ -326,15 +319,19 @@ impl<'a> Field<'a> {
     ///
     /// # Panics
     /// Panics if the field is not static.
-    pub fn static_get(&self) -> Value<'a> {
-        Value::new(self.jvm, self.value.static_get(), Some(self.typ()))
+    pub fn static_get(&self, jvm: &Jvm) -> Value {
+        Value::new(
+            self.jvm,
+            self.into_inner(jvm.id).static_get(),
+            Some(self.typ()),
+        )
     }
 
     /// Get the value of an object's field.
     ///
     /// # Panics
     /// Panics if the field is static or the object is not an instance of the class corresponding to this field.
-    pub fn instance_get(&self, object: Object) -> Value<'a> {
+    pub fn instance_get(&self, object: Object) -> Value {
         Value::new(
             self.jvm,
             self.value.instance_get(object.into_inner(self.jvm)),
@@ -347,7 +344,7 @@ impl<'a> Field<'a> {
     /// # Panics
     /// Panics if the field is not static or the value is not assignable to the field's type
     /// or is an object created by a different JVM
-    pub fn static_set<'b>(&self, value: impl Into<Value<'b>>) {
+    pub fn static_set(&self, value: impl Into<Value>) {
         self.value.static_set(value.into().into_inner(self.jvm))
     }
 
@@ -358,7 +355,7 @@ impl<'a> Field<'a> {
     /// the object is not an instance of the class corresponding to this field,
     /// the value is not assignable to the field's type
     /// or the value is an object created by a different JVM
-    pub fn instance_set<'b>(&self, object: Object, value: impl Into<Value<'b>>) {
+    pub fn instance_set(&self, object: Object, value: impl Into<Value>) {
         self.value.instance_set(
             object.into_inner(self.jvm),
             value.into().into_inner(self.jvm),
@@ -372,7 +369,7 @@ define_guard!(
     &'static method::Method
 );
 
-impl<'a> Method<'a> {
+impl Method {
     /// The class this method is defined by.
     pub fn class(&self) -> Class {
         Class::new(self.jvm, self.value.class())
@@ -398,11 +395,11 @@ impl<'a> Method<'a> {
     ///
     /// # Panics
     /// Panics if any of the [`Value`]s is an object created by another JVM
-    pub fn invoke(&self, args: &[Value]) -> JvmResult<'a, Value<'a>> {
+    pub fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Value> {
         // TODO: Check for argument type mismatch
         interpreter::invoke(
-            self.jvm,
-            self.value,
+            jvm,
+            self.into_inner(jvm.id),
             args.iter().map(|arg| arg.into_inner(self.jvm)),
         )
         .map(|value| Value::new(self.jvm, value, self.typ().returns.as_ref()))
@@ -421,8 +418,6 @@ impl<'a> Method<'a> {
     ///
     /// The method must be marked as native and match the signature of `code`.
     /// If it is an instance method, its first argument will be the object it is invoked on.
-    ///
-    /// Note that you need `closure_lifetime_binder` or a helper function to use this with closures.
     #[allow(private_bounds)]
     pub fn bind_native_code<F: NativeFn<T>, T>(&self, code: F) -> Result<(), NativeBindError> {
         fake_variadics::bind_native_code(self, code)
@@ -430,12 +425,12 @@ impl<'a> Method<'a> {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum Value<'a> {
+pub enum Value {
     // TODO: Represent as Option<Value> instead?
     /// Lack of a value, only used for return types.
     Void,
     // Split arrays and normal objects?
-    Ref(Option<Object<'a>>),
+    Ref(Option<Object>),
     Boolean(bool),
     Byte(i8),
     Char(u16),
@@ -446,8 +441,8 @@ pub enum Value<'a> {
     Double(f64),
 }
 
-impl<'a> Value<'a> {
-    fn new(jvm: &'a Jvm, value: value::Value, typ: Option<&Typ>) -> Self {
+impl Value {
+    fn new(jvm: JvmId, value: value::Value, typ: Option<&Typ>) -> Self {
         match value {
             value::Value::Void => Self::Void,
             value::Value::Ref(value) => Self::Ref(value.map(|value| Object::new(jvm, value))),
@@ -465,7 +460,7 @@ impl<'a> Value<'a> {
         }
     }
 
-    fn into_inner(self, jvm: &Jvm) -> value::Value {
+    fn into_inner(self, jvm: JvmId) -> value::Value {
         match self {
             Self::Void => value::Value::Void,
             Self::Ref(value) => value::Value::Ref(value.map(|value| value.into_inner(jvm))),
@@ -481,8 +476,8 @@ impl<'a> Value<'a> {
     }
 }
 
-impl<'a> Display for Value<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Void => write!(f, "void"),
             Self::Ref(None) => write!(f, "null"),
@@ -501,16 +496,16 @@ impl<'a> Display for Value<'a> {
 
 macro_rules! partialeq_into_and_try_from_value {
     ($variant:ident, $typ:ty, $err:literal) => {
-        impl<'a> From<$typ> for Value<'a> {
+        impl From<$typ> for Value {
             fn from(value: $typ) -> Self {
                 Self::$variant(value)
             }
         }
 
-        impl<'a> TryFrom<Value<'a>> for $typ {
+        impl TryFrom<Value> for $typ {
             type Error = &'static str;
 
-            fn try_from(value: Value<'a>) -> Result<Self, Self::Error> {
+            fn try_from(value: Value) -> Result<Self, Self::Error> {
                 if let Value::$variant(value) = value {
                     Ok(value)
                 } else {
@@ -520,15 +515,15 @@ macro_rules! partialeq_into_and_try_from_value {
         }
 
         // Can't do
-        // `impl<'a, T: Into<Value<'a>>> PartialEq<T> for Value<'a>`
+        // `impl<'a, T: Into<Value>> PartialEq<T> for Value`
         // because that would conflict for T = Value
-        impl<'a> PartialEq<$typ> for Value<'a> {
+        impl PartialEq<$typ> for Value {
             fn eq(&self, other: &$typ) -> bool {
-                self == &Into::<Value<'a>>::into(*other)
+                self == &Into::<Value>::into(*other)
             }
         }
 
-        impl<'a> PartialEq<Value<'a>> for $typ {
+        impl PartialEq<Value> for $typ {
             fn eq(&self, other: &Value) -> bool {
                 other == self
             }
@@ -536,7 +531,7 @@ macro_rules! partialeq_into_and_try_from_value {
     };
 }
 
-partialeq_into_and_try_from_value!(Ref, Option<Object<'a>>, "Not a reference");
+partialeq_into_and_try_from_value!(Ref, Option<Object>, "Not a reference");
 partialeq_into_and_try_from_value!(Boolean, bool, "Not a boolean");
 partialeq_into_and_try_from_value!(Byte, i8, "Not a byte");
 partialeq_into_and_try_from_value!(Char, u16, "Not a char");
@@ -546,16 +541,16 @@ partialeq_into_and_try_from_value!(Long, i64, "Not a long");
 partialeq_into_and_try_from_value!(Float, f32, "Not a float");
 partialeq_into_and_try_from_value!(Double, f64, "Not a double");
 
-impl<'a> From<()> for Value<'a> {
+impl From<()> for Value {
     fn from(_: ()) -> Self {
         Self::Void
     }
 }
 
-impl<'a> TryFrom<Value<'a>> for () {
+impl TryFrom<Value> for () {
     type Error = &'static str;
 
-    fn try_from(value: Value<'a>) -> Result<Self, Self::Error> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         if value == Value::Void {
             Ok(())
         } else {
@@ -564,13 +559,13 @@ impl<'a> TryFrom<Value<'a>> for () {
     }
 }
 
-impl<'a> PartialEq<()> for Value<'a> {
+impl PartialEq<()> for Value {
     fn eq(&self, _: &()) -> bool {
         self == &Self::Void
     }
 }
 
-impl<'a> PartialEq<Value<'a>> for () {
+impl PartialEq<Value> for () {
     fn eq(&self, other: &Value) -> bool {
         other == self
     }
@@ -578,7 +573,7 @@ impl<'a> PartialEq<Value<'a>> for () {
 
 /// Err is an object that extends Throwable.
 /// Currently no call stack is provided.
-pub type JvmResult<'a, T> = std::result::Result<T, Object<'a>>;
+pub type JvmResult<T> = std::result::Result<T, Object>;
 
 bitflags::bitflags! {
     /// Access flags of a class, field or method

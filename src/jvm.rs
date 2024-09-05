@@ -25,6 +25,9 @@ pub(crate) type JvmResult<T> = std::result::Result<T, Object>;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct JvmId(u64);
+
 /// Creates & manages classes and objects, which borrow from the Jvm.
 /// Multiple independent `Jvm`s may exist.
 /// Mutable shared access follows Java's rules.
@@ -36,7 +39,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 /// or being invalid classes may cause the thread to hang or crash.
 pub struct Jvm {
     /// Uniquely identifies the Jvm to prevent mixing of objects between Jvms
-    pub(crate) id: u64,
+    pub(crate) id: JvmId,
     /// Currently there's a single class loader per Jvm.
     pub bootstrap_class_loader: Box<dyn ClassLoader>,
     pub(crate) heap: Heap,
@@ -50,8 +53,8 @@ impl Jvm {
     /// Construct a new JVM.
     pub fn new(base_class_loader: Box<dyn ClassLoader>) -> Self {
         let heap = Heap::default();
-        let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-        if id == u64::MAX {
+        let id = JvmId(NEXT_ID.fetch_add(1, Ordering::SeqCst));
+        if id.0 == u64::MAX {
             panic!("You've created 18446744073709551616 instances. Impressive, but also, NO.")
         }
         Self {
@@ -67,21 +70,24 @@ impl Jvm {
     /// This also loads its superclass and any interfaces it implements.
     /// Does not initialize this class, nor load any other class referenced.
     /// `name` must be fully qualified and may describe an array.
-    pub fn resolve_class<'a>(&'a self, name: &str) -> crate::JvmResult<'a, crate::Class<'a>> {
+    pub fn resolve_class(&self, name: &str) -> crate::JvmResult<crate::Class> {
         self.resolve_class_internal(name)
-            .map(|value| crate::Class { jvm: self, value })
-            .map_err(|value| crate::Object::new(self, value))
+            .map(|value| crate::Class {
+                jvm: self.id,
+                value,
+            })
+            .map_err(|value| crate::Object::new(self.id, value))
     }
 
     /// Convenience method.
     /// Includes inherited dynamic methods.
-    pub fn resolve_method<'a>(
-        &'a self,
+    pub fn resolve_method(
+        &self,
         class: &str,
         method: &str,
         args: impl IntoIterator<Item = Typ>,
         returns: Option<Typ>,
-    ) -> crate::JvmResult<'a, crate::Method<'a>> {
+    ) -> crate::JvmResult<crate::Method> {
         let nat = MethodNaT {
             name: method.into(),
             typ: MethodDescriptor {
@@ -90,7 +96,7 @@ impl Jvm {
             },
         };
         self.resolve_class_internal(class)
-            .map_err(|value| crate::Object::new(self, value))?
+            .map_err(|value| crate::Object::new(self.id, value))?
             .methods
             .get(&nat)
             .ok_or_else(|| {
@@ -100,27 +106,30 @@ impl Jvm {
                     &format!("{class}.{method}:{nat:?}"),
                 )
             })
-            .map(|value| crate::Method { jvm: self, value })
-            .map_err(|value| crate::Object::new(self, value))
+            .map(|value| crate::Method {
+                jvm: self.id,
+                value,
+            })
+            .map_err(|value| crate::Object::new(self.id, value))
     }
 
     /// Creates an object via constructor.
-    pub fn create_object<'a>(
-        &'a self,
+    pub fn create_object(
+        &self,
         class: &str,
         arg_types: impl IntoIterator<Item = Typ>,
-        mut args: Vec<crate::Value<'a>>,
-    ) -> crate::JvmResult<'a, crate::Object<'a>> {
+        mut args: Vec<crate::Value>,
+    ) -> crate::JvmResult<crate::Object> {
         let class_ptr = self.resolve_class(class)?;
-        let object = crate::Object::new(self, self.create_object_uninitialized(class_ptr.value));
+        let object = crate::Object::new(self.id, self.create_object_uninitialized(class_ptr.value));
         args.insert(0, crate::Value::Ref(Some(object)));
         let constructor = class_ptr.method("<init>", arg_types, None).ok_or_else(|| {
             crate::Object::new(
-                self,
+                self.id,
                 error(self, "NoSuchMethodError", &format!("{class} <init> …")),
             )
         })?;
-        constructor.invoke(&args)?;
+        constructor.invoke(self, &args)?;
         Ok(object)
     }
 
@@ -128,18 +137,15 @@ impl Jvm {
     ///
     /// # Panics
     /// Panics if length < 0
-    pub fn create_array<'a>(&'a self, component: &Typ, length: i32) -> crate::Object<'a> {
-        crate::Object::new(self, self.create_array_of(component, length))
+    pub fn create_array(&self, component: &Typ, length: i32) -> crate::Object {
+        crate::Object::new(self.id, self.create_array_of(component, length))
     }
 
     /// Reload the bytecodes of all methods in the class by querying the class loader.
     /// Fails if there are structural changes to the class (e.g. a field is added of a method signature has changed).
     ///
     /// Reloading a class while it is getting verified or getting initialized (or vice-versa) may deadlock.
-    pub fn reload_method_bytecodes_for_class<'a>(
-        &'a self,
-        class: &str,
-    ) -> Result<(), ReloadErr<'a>> {
+    pub fn reload_method_bytecodes_for_class(&self, class: &str) -> Result<(), ReloadErr> {
         reload_method_bytecodes_for_class(self, class)
     }
 

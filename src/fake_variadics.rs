@@ -4,7 +4,7 @@
 // TODO: Allow first argument to be Object (for instance methods)
 
 use crate::{
-    method::Code, object, AccessFlags, Jvm, JvmResult, Method, MethodDescriptor, Object, Typ, Value,
+    method::Code, AccessFlags, Jvm, JvmResult, Method, MethodDescriptor, Object, Typ, Value,
 };
 
 #[derive(Debug)]
@@ -21,10 +21,9 @@ where
     if !valid_signature::<F, T>(&method.value.nat.typ) {
         return Err(NativeBindError::SignatureMismatch);
     }
-    // closure_lifetime_binder isn't stable yet
     fn specify_lifetimes(
-        f: impl for<'b> Fn(&'b Jvm, &'b [Value<'b>]) -> JvmResult<'b, Value<'b>>,
-    ) -> Box<impl for<'b> Fn(&'b Jvm, &'b [Value<'b>]) -> JvmResult<'b, Value<'b>>> {
+        f: impl for<'a, 'b> Fn(&'a Jvm, &'b [Value]) -> JvmResult<Value>,
+    ) -> Box<impl for<'a, 'b> Fn(&'a Jvm, &'b [Value]) -> JvmResult<Value>> {
         Box::new(f)
     }
     let boxed = specify_lifetimes(move |jvm, args| F::invoke(&code, jvm, args));
@@ -80,23 +79,20 @@ enum ArgTyp {
 #[allow(private_interfaces)]
 pub(crate) trait NativeFn<T>: Send + Sync + 'static {
     fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)>;
-    fn invoke<'a>(&self, jvm: &'a Jvm, args: &'a [Value<'a>]) -> JvmResult<'a, Value<'a>>;
+    fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Value>;
 }
 
 trait Arg {
-    type Item<'new>;
     fn typ() -> ArgTyp;
-    fn get<'a>(values: &[Value<'a>], index: &mut usize) -> Self::Item<'a>;
+    fn get(values: &[Value], index: &mut usize) -> Self;
 }
 
 impl Arg for bool {
-    type Item<'new> = bool;
-
     fn typ() -> ArgTyp {
         ArgTyp::Boolean
     }
 
-    fn get<'a>(values: &[Value<'a>], index: &mut usize) -> Self::Item<'a> {
+    fn get(values: &[Value], index: &mut usize) -> Self {
         match values[*index] {
             Value::Boolean(value) => {
                 *index += 1;
@@ -108,13 +104,11 @@ impl Arg for bool {
 }
 
 impl Arg for i8 {
-    type Item<'new> = i8;
-
     fn typ() -> ArgTyp {
         ArgTyp::Byte
     }
 
-    fn get<'a>(values: &[Value<'a>], index: &mut usize) -> Self::Item<'a> {
+    fn get(values: &[Value], index: &mut usize) -> Self {
         match values[*index] {
             Value::Byte(value) => {
                 *index += 1;
@@ -126,13 +120,11 @@ impl Arg for i8 {
 }
 
 impl Arg for i16 {
-    type Item<'new> = i16;
-
     fn typ() -> ArgTyp {
         ArgTyp::Short
     }
 
-    fn get<'a>(values: &[Value<'a>], index: &mut usize) -> Self::Item<'a> {
+    fn get(values: &[Value], index: &mut usize) -> Self {
         match values[*index] {
             Value::Short(value) => {
                 *index += 1;
@@ -144,13 +136,11 @@ impl Arg for i16 {
 }
 
 impl Arg for u16 {
-    type Item<'new> = u16;
-
     fn typ() -> ArgTyp {
         ArgTyp::Char
     }
 
-    fn get<'a>(values: &[Value<'a>], index: &mut usize) -> Self::Item<'a> {
+    fn get(values: &[Value], index: &mut usize) -> Self {
         match values[*index] {
             Value::Char(value) => {
                 *index += 1;
@@ -162,13 +152,11 @@ impl Arg for u16 {
 }
 
 impl Arg for i32 {
-    type Item<'new> = i32;
-
     fn typ() -> ArgTyp {
         ArgTyp::Int
     }
 
-    fn get<'a>(values: &[Value<'a>], index: &mut usize) -> Self::Item<'a> {
+    fn get(values: &[Value], index: &mut usize) -> Self {
         match values[*index] {
             Value::Int(value) => {
                 *index += 1;
@@ -180,13 +168,11 @@ impl Arg for i32 {
 }
 
 impl Arg for i64 {
-    type Item<'new> = i64;
-
     fn typ() -> ArgTyp {
         ArgTyp::Long
     }
 
-    fn get<'a>(values: &[Value<'a>], index: &mut usize) -> Self::Item<'a> {
+    fn get(values: &[Value], index: &mut usize) -> Self {
         match values[*index] {
             Value::Long(value) => {
                 *index += 1;
@@ -198,13 +184,11 @@ impl Arg for i64 {
 }
 
 impl Arg for f32 {
-    type Item<'new> = f32;
-
     fn typ() -> ArgTyp {
         ArgTyp::Float
     }
 
-    fn get<'a>(values: &[Value<'a>], index: &mut usize) -> Self::Item<'a> {
+    fn get(values: &[Value], index: &mut usize) -> Self {
         match values[*index] {
             Value::Float(value) => {
                 *index += 1;
@@ -216,13 +200,11 @@ impl Arg for f32 {
 }
 
 impl Arg for f64 {
-    type Item<'new> = f64;
-
     fn typ() -> ArgTyp {
         ArgTyp::Double
     }
 
-    fn get<'a>(values: &[Value<'a>], index: &mut usize) -> Self::Item<'a> {
+    fn get(values: &[Value], index: &mut usize) -> Self {
         match values[*index] {
             Value::Double(value) => {
                 *index += 1;
@@ -233,14 +215,12 @@ impl Arg for f64 {
     }
 }
 
-impl<'old> Arg for Option<Object<'old>> {
+impl Arg for Option<Object> {
     fn typ() -> ArgTyp {
         ArgTyp::Object
     }
 
-    type Item<'new> = Option<Object<'new>>;
-
-    fn get<'a>(values: &[Value<'a>], index: &mut usize) -> Self::Item<'a> {
+    fn get(values: &[Value], index: &mut usize) -> Self {
         match values[*index] {
             Value::Ref(value) => {
                 *index += 1;
@@ -251,7 +231,7 @@ impl<'old> Arg for Option<Object<'old>> {
     }
 }
 
-trait Return: Into<Value<'static>> {
+trait Return: Into<Value> {
     fn typ() -> Option<ArgTyp>;
 }
 
@@ -303,59 +283,31 @@ impl Return for f64 {
         Some(ArgTyp::Double)
     }
 }
-
-impl<F> NativeFn<&'static ()> for F
-where
-    F: for<'a> Fn(&'a Jvm, &[Value<'a>]) -> JvmResult<'a, ()> + Send + Sync + 'static,
-{
-    fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)> {
-        None
-    }
-
-    fn invoke<'a>(&self, jvm: &'a Jvm, args: &'a [Value<'a>]) -> JvmResult<'a, Value<'a>> {
-        self(jvm, args).map(|_| Value::Void)
+impl Return for Option<Object> {
+    fn typ() -> Option<ArgTyp> {
+        Some(ArgTyp::Object)
     }
 }
 
 impl<F, R> NativeFn<(R, &'static ())> for F
 where
-    F: for<'a> Fn(&'a Jvm, &[Value<'a>]) -> JvmResult<'a, R> + Send + Sync + 'static,
+    F: for<'a> Fn(&'a Jvm, &[Value]) -> JvmResult<R> + Send + Sync + 'static,
     R: Return,
 {
     fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)> {
         None
     }
 
-    fn invoke<'a>(&self, jvm: &'a Jvm, args: &'a [Value<'a>]) -> JvmResult<'a, Value<'a>> {
+    fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Value> {
         self(jvm, args).map(|r| r.into())
     }
 }
 
 macro_rules! impl_args {
     ($($param: ident),*) => {
-        impl<F, $($param,)*> NativeFn<(object::Object,$($param,)*)> for F
-        where
-            for<'a> F: Fn(&'a Jvm, $($param),*) -> JvmResult<'a, Option<Object>>
-                + Fn(&'a Jvm, $($param::Item<'a>),*) -> JvmResult<'a, Option<Object<'a>>>
-                + Send
-                + Sync
-                + 'static,
-            $($param: Arg,)*
-        {
-            fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)> {
-                Some((vec![$($param::typ()),*], Some(ArgTyp::Object)))
-            }
-
-            #[allow(unused_variables, unused_mut)]
-            fn invoke<'a>(&self, jvm: &'a Jvm, args: &'a [Value<'a>]) -> JvmResult<'a, Value<'a>> {
-                let mut i = 0;
-                self(jvm, $($param::get(args, &mut i)),*).map(|r| r.into())
-            }
-        }
         impl<F, $($param,)* R> NativeFn<(R,$($param,)*)> for F
         where
-            for<'a> F: Fn(&'a Jvm, $($param),*) -> JvmResult<'a, R>
-                + Fn(&'a Jvm, $($param::Item<'a>),*) -> JvmResult<'a, R>
+            F: Fn(&Jvm, $($param),*) -> JvmResult<R>
                 + Send
                 + Sync
                 + 'static,
@@ -367,7 +319,7 @@ macro_rules! impl_args {
             }
 
             #[allow(unused_variables, unused_mut)]
-            fn invoke<'a>(&self, jvm: &'a Jvm, args: &'a [Value<'a>]) -> JvmResult<'a, Value<'a>> {
+            fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Value> {
                 let mut i = 0;
                 self(jvm, $($param::get(args, &mut i)),*).map(|r| r.into())
             }

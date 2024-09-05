@@ -99,7 +99,9 @@ fn native(jvm: &Jvm, method: &Method, code: &NativeCode, args: &[IVal]) -> JvmRe
     let mut i = 0;
     if !method.access_flags.contains(AccessFlags::STATIC) {
         values.push(crate::Value::Ref(unsafe {
-            args[0].as_ref().map(|value| crate::Object::new(jvm, value))
+            args[0]
+                .as_ref()
+                .map(|value| crate::Object::new(jvm.id, value))
         }));
         i += 1;
     }
@@ -139,7 +141,9 @@ fn native(jvm: &Jvm, method: &Method, code: &NativeCode, args: &[IVal]) -> JvmRe
             }
             Typ::Ref(_) => {
                 values.push(crate::Value::Ref(unsafe {
-                    args[i].as_ref().map(|value| crate::Object::new(jvm, value))
+                    args[i]
+                        .as_ref()
+                        .map(|value| crate::Object::new(jvm.id, value))
                 }));
                 i += 1;
             }
@@ -149,9 +153,9 @@ fn native(jvm: &Jvm, method: &Method, code: &NativeCode, args: &[IVal]) -> JvmRe
     match code(jvm, &values) {
         Ok(ret) => {
             // TODO: Validate return type
-            Ok(ret.into_inner(jvm))
+            Ok(ret.into_inner(jvm.id))
         }
-        Err(err) => Err(err.into_inner(jvm)),
+        Err(err) => Err(err.into_inner(jvm.id)),
     }
 }
 
