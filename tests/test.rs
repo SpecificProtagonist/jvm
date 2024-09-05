@@ -111,12 +111,12 @@ fn invoke_native() {
         Some(Typ::Long),
     )
     .unwrap()
-    .bind_native_code(|_: &Jvm, a: i32, b: i32| Ok(a as i64 + b as i64))
+    .bind_native_code(|a: i32, b: i32| Ok(a as i64 + b as i64))
     .unwrap();
 
     jvm.resolve_method("Native", "call_instance", [], None)
         .unwrap()
-        .bind_native_code(|_: &Jvm, this: Option<Object>| {
+        .bind_native_code(|this: Option<Object>| {
             let field = this.unwrap().class().field("value", Typ::Long).unwrap();
             assert_eq!(field.instance_get(this.unwrap()), 1i64);
             Ok(())

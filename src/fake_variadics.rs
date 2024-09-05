@@ -1,11 +1,8 @@
 #![allow(private_interfaces)]
 
 // TODO: Directly use &[IVal]
-// TODO: Allow first argument to be Object (for instance methods)
 
-use crate::{
-    method::Code, AccessFlags, Jvm, JvmResult, Method, MethodDescriptor, Object, Typ, Value,
-};
+use crate::{method::Code, AccessFlags, Jvm, JvmResult, Method, Object, Typ, Value};
 
 #[derive(Debug)]
 pub enum NativeBindError {
@@ -18,7 +15,7 @@ pub fn bind_native_code<F, T>(method: &Method, code: F) -> Result<(), NativeBind
 where
     F: NativeFn<T>,
 {
-    if !valid_signature::<F, T>(&method.value.nat.typ) {
+    if !valid_signature::<F, T>(method) {
         return Err(NativeBindError::SignatureMismatch);
     }
     fn specify_lifetimes(
@@ -35,7 +32,7 @@ where
     }
 }
 
-pub(crate) fn valid_signature<F, T>(descriptor: &MethodDescriptor) -> bool
+pub(crate) fn valid_signature<F, T>(method: &Method) -> bool
 where
     F: NativeFn<T>,
 {
@@ -56,8 +53,16 @@ where
     let Some((args, ret)) = F::descriptor() else {
         return true;
     };
-    descriptor.args.iter().zip(args).all(ok)
-        & match (&descriptor.returns, ret) {
+    let mut iter = method.value.nat.typ.args.iter();
+    let mut args = args.into_iter();
+    if !method.access_flags().contains(AccessFlags::STATIC) {
+        iter.next();
+        if !matches!(args.next(), Some(ArgTyp::This | ArgTyp::Object)) {
+            return false;
+        }
+    }
+    iter.zip(args).all(ok)
+        & match (&method.value.nat.typ.returns, ret) {
             (Some(a), Some(b)) => ok((a, b)),
             (None, None) => true,
             _ => false,
@@ -74,6 +79,7 @@ enum ArgTyp {
     Float,
     Double,
     Object,
+    This,
 }
 
 #[allow(private_interfaces)]
@@ -231,6 +237,22 @@ impl Arg for Option<Object> {
     }
 }
 
+impl Arg for Object {
+    fn typ() -> ArgTyp {
+        ArgTyp::This
+    }
+
+    fn get(values: &[Value], index: &mut usize) -> Self {
+        match values[*index] {
+            Value::Ref(value) => {
+                *index += 1;
+                value.unwrap()
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
 trait Return: Into<Value> {
     fn typ() -> Option<ArgTyp>;
 }
@@ -291,6 +313,20 @@ impl Return for Option<Object> {
 
 impl<F, R> NativeFn<(R, &'static ())> for F
 where
+    F: Fn(&[Value]) -> JvmResult<R> + Send + Sync + 'static,
+    R: Return,
+{
+    fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)> {
+        None
+    }
+
+    fn invoke(&self, _: &Jvm, args: &[Value]) -> JvmResult<Value> {
+        self(args).map(|r| r.into())
+    }
+}
+
+impl<F, R> NativeFn<(Jvm, R, &'static ())> for F
+where
     F: for<'a> Fn(&'a Jvm, &[Value]) -> JvmResult<R> + Send + Sync + 'static,
     R: Return,
 {
@@ -306,6 +342,26 @@ where
 macro_rules! impl_args {
     ($($param: ident),*) => {
         impl<F, $($param,)* R> NativeFn<(R,$($param,)*)> for F
+        where
+            F: Fn($($param),*) -> JvmResult<R>
+                + Send
+                + Sync
+                + 'static,
+            $($param: Arg,)*
+            R: Return,
+        {
+            fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)> {
+                Some((vec![$($param::typ()),*], R::typ()))
+            }
+
+            #[allow(unused_variables, unused_mut)]
+            fn invoke(&self, _: &Jvm, args: &[Value]) -> JvmResult<Value> {
+                let mut i = 0;
+                self($($param::get(args, &mut i)),*).map(|r| r.into())
+            }
+        }
+
+        impl<F, $($param,)* R> NativeFn<(Jvm, R,$($param,)*)> for F
         where
             F: Fn(&Jvm, $($param),*) -> JvmResult<R>
                 + Send

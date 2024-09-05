@@ -409,12 +409,12 @@ impl Method {
     /// Register code for a native method. If called multiple times for the same method, the previous registration will be replaced.
     ///
     /// `code` must be a function of the following form:
-    /// - the first argument is of type &Jvm
+    /// - optionally, a first argument of type &Jvm
     /// - the remaining arguments consist of either `&[Value]` or up to 16 arguments of a translateable type
     /// - the return type must be `JvmResult<T>` where `T` is a translatable type
     ///
     /// Translatable types:  
-    /// `bool`, `i8`, `i16`, `u16`, `i32`, `i64`, `f32`, `f64`, `()` (only for return type), `Option<Object>`
+    /// `bool`, `i8`, `i16`, `u16`, `i32`, `i64`, `f32`, `f64`, `()` (only for return type), `Option<Object>`, `Object` (only for `this`)
     ///
     /// The method must be marked as native and match the signature of `code`.
     /// If it is an instance method, its first argument will be the object it is invoked on.
