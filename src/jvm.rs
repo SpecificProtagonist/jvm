@@ -2,11 +2,11 @@ use crate::heap::Heap;
 use crate::hot_reloading::{reload_method_bytecodes_for_class, ReloadErr};
 use crate::{class_loader::ClassLoader, AccessFlags};
 use fixed_typed_arena::ManuallyDropArena;
-use parking_lot::{Mutex, RwLock};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
+use std::sync::{Mutex, RwLock};
 // TODO: posibly exchange for different hasher (benchmark)
 use hashbrown::HashMap;
 
@@ -154,7 +154,7 @@ impl Jvm {
     /// Does not initialize this class nor load any other class referenced.
     pub(crate) fn resolve_array_of(&self, component: &Typ) -> JvmResult<ClassPtr> {
         let name: Arc<str> = format!("{component}[]").into();
-        if let Some(class) = self.classes.read().get(&name) {
+        if let Some(class) = self.classes.read().unwrap().get(&name) {
             return Ok(*class);
         }
 
@@ -189,7 +189,7 @@ impl Jvm {
             init_waiter: default(),
         };
         let array = unsafe { self.heap.alloc_typed(array) };
-        let mut guard = self.classes.write();
+        let mut guard = self.classes.write().unwrap();
         // Check if loaded by another thread in the meantime
         if let Some(array) = guard.get(&name) {
             return Ok(*array);
@@ -212,7 +212,7 @@ impl Jvm {
         name: &str,
         mut check_circular: Vec<String>,
     ) -> JvmResult<ClassPtr> {
-        if let Some(class) = self.classes.read().get(name) {
+        if let Some(class) = self.classes.read().unwrap().get(name) {
             return Ok(*class);
         }
 
@@ -236,7 +236,7 @@ impl Jvm {
 
         let mut methods = HashMap::default();
         for (nat, method) in class_desc.methods.drain() {
-            let method = &*self.method_storage.lock().alloc(method);
+            let method = &*self.method_storage.lock().unwrap().alloc(method);
             methods.insert(nat, method);
         }
 
@@ -317,7 +317,7 @@ impl Jvm {
             })
         };
 
-        let mut guard = self.classes.write();
+        let mut guard = self.classes.write().unwrap();
         // Check if loaded by another thread in the meantime
         if let Some(class) = guard.get(name) {
             return Ok(*class);
@@ -397,7 +397,7 @@ impl Drop for Jvm {
     fn drop(&mut self) {
         // SAFETY: All references have lifetime 'a and no member of JVM has a drop impl that dereferences them
         unsafe {
-            ManuallyDropArena::drop(&mut self.method_storage.lock());
+            ManuallyDropArena::drop(&mut self.method_storage.lock().unwrap());
         }
     }
 }

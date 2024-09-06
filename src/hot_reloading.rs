@@ -73,10 +73,12 @@ pub(crate) fn reload_method_bytecodes_for_class(jvm: &Jvm, name: &str) -> Result
             .store(class as *const Class as *mut Class, Ordering::SeqCst);
     }
 
-    let mut guard = class.init.lock();
+    let mut guard = class.init.lock().unwrap();
     loop {
         match *guard {
-            ClassState::InProgress(_) => class.init_waiter.wait(&mut guard),
+            ClassState::InProgress(_) => {
+                guard = class.init_waiter.wait(guard).unwrap();
+            }
             ClassState::Error(_) => {
                 // Reset in case the error was caused by bytecode verification
                 *guard = ClassState::Unverified;
@@ -103,10 +105,10 @@ pub(crate) fn reload_method_bytecodes_for_class(jvm: &Jvm, name: &str) -> Result
     }
 
     // Alright, swap out code
-    *class.const_pool.write() = new_class.const_pool;
+    *class.const_pool.write().unwrap() = new_class.const_pool;
     for (nat, method) in &class.methods {
-        let mut old = method.code.write();
-        let mut new = new_class.methods.get(nat).unwrap().code.write();
+        let mut old = method.code.write().unwrap();
+        let mut new = new_class.methods.get(nat).unwrap().code.write().unwrap();
         if let (Code::Bytecode(old), Code::Bytecode(new)) = (&mut *old, &mut *new) {
             std::mem::swap(old, new);
         }

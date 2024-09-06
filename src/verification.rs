@@ -252,7 +252,7 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassPtr) -> JvmResult<()>
         return Err(error!(jvm, "{class} has no superclass"));
     }
 
-    let const_pool = class.const_pool.read();
+    let const_pool = class.const_pool.read().unwrap();
 
     for method in class.methods.values() {
         if method.class() == class {
@@ -275,7 +275,7 @@ pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) 
         }
     }
 
-    match &*method.code.read() {
+    match &*method.code.read().unwrap() {
         Code::None => {
             if !method.access_flags.intersects(AccessFlags::ABSTRACT) {
                 return Err(error!(jvm, "{method}: missing code attribute"));

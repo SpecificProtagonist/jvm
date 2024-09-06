@@ -1,6 +1,9 @@
 use hashbrown::HashMap;
-use parking_lot::{Condvar, Mutex, RwLock};
-use std::{alloc::Layout, sync::Arc, thread::ThreadId};
+use std::{
+    alloc::Layout,
+    sync::{Arc, Condvar, Mutex, RwLock},
+    thread::ThreadId,
+};
 
 use crate::{
     const_pool::ConstPool,
@@ -170,13 +173,13 @@ impl Class {
     // May only be called by the library consumer or instuctions new, getstatic, putstatic or invokestatic or by being the initial class
     pub fn ensure_init(&'static self, jvm: &Jvm) -> JvmResult<()> {
         loop {
-            let mut guard = self.init.lock();
+            let mut guard = self.init.lock().unwrap();
             match *guard {
                 ClassState::InProgress(thread) => {
                     if thread == std::thread::current().id() {
                         return Ok(());
                     } else {
-                        self.init_waiter.wait(&mut guard);
+                        drop(self.init_waiter.wait(guard).unwrap());
                     }
                 }
                 ClassState::Unverified => {
@@ -198,7 +201,7 @@ impl Class {
                     }
 
                     let result = self.init(jvm);
-                    *self.init.lock() = match result {
+                    *self.init.lock().unwrap() = match result {
                         Ok(()) => ClassState::Initialized,
                         Err(err) => ClassState::Error(err),
                     };
@@ -212,7 +215,7 @@ impl Class {
     }
 
     pub(crate) fn verify(&'static self, jvm: &Jvm) -> JvmResult<()> {
-        let mut guard = self.init.lock();
+        let mut guard = self.init.lock().unwrap();
         loop {
             match *guard {
                 ClassState::Unverified => break,
@@ -220,7 +223,7 @@ impl Class {
                     if thread == std::thread::current().id() {
                         break;
                     } else {
-                        self.init_waiter.wait(&mut guard);
+                        guard = self.init_waiter.wait(guard).unwrap();
                     }
                 }
                 ClassState::Verified | ClassState::Initialized => return Ok(()),
@@ -236,7 +239,7 @@ impl Class {
     }
 
     pub(crate) fn verify_impl(&'static self, jvm: &Jvm) -> JvmResult<()> {
-        let mut const_pool = self.const_pool.write();
+        let mut const_pool = self.const_pool.write().unwrap();
         // Preparation
         for field in self.fields.values() {
             if let Some(index) = field.const_value_index {

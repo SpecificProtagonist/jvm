@@ -25,7 +25,7 @@ where
     }
     let boxed = specify_lifetimes(move |jvm, args| F::invoke(&code, jvm, args));
     if method.value.access_flags.contains(AccessFlags::NATIVE) {
-        *method.value.code.write() = Code::Native(boxed);
+        *method.value.code.write().unwrap() = Code::Native(boxed);
         Ok(())
     } else {
         Err(NativeBindError::MethodNotNative)

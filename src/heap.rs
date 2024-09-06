@@ -17,10 +17,12 @@
 
 // Currently, provenance goes ignored. This shouldn't be a problem, but TODO: check out the impact of this
 
-use parking_lot::Mutex;
 use std::{
     alloc::Layout,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    },
 };
 
 // TODO: grow downwards
@@ -156,7 +158,7 @@ impl Heap {
             } else {
                 // Not enough space left
 
-                let mut blocks = self.backing.lock();
+                let mut blocks = self.backing.lock().unwrap();
                 // Has another thread already set a new block?
                 if end != self.current_end.load(Ordering::SeqCst) {
                     continue;

@@ -69,7 +69,7 @@ struct IVal(SlotSize);
 
 /// Requires that the class is already initialized, or method is the initializer
 fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Value> {
-    let code = method.code.read_recursive();
+    let code = method.code.read().unwrap();
     match &*code {
         Code::None => {
             if method.access_flags.contains(AccessFlags::ABSTRACT) {
@@ -163,10 +163,13 @@ fn native(jvm: &Jvm, method: &Method, code: &NativeCode, args: &[IVal]) -> JvmRe
 fn interpret(jvm: &Jvm, method: &Method, code: &Bytecode, args: &[IVal]) -> JvmResult<Value> {
     debug_assert!(
         (method.nat.name.deref() == "<clinit>")
-            | matches!(*method.class().init.lock(), ClassState::Initialized)
+            | matches!(
+                *method.class().init.lock().unwrap(),
+                ClassState::Initialized
+            )
     );
     // The class is already initialized, so we can hold the read lock for as long as we like
-    let const_pool = method.class().const_pool.read();
+    let const_pool = method.class().const_pool.read().unwrap();
 
     let mut frame = Frame {
         code_bytes: &code.bytes,

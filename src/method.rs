@@ -1,10 +1,9 @@
 use std::sync::{
     atomic::{AtomicPtr, Ordering},
-    Arc,
+    Arc, RwLock,
 };
 
 use hashbrown::Equivalent;
-use parking_lot::RwLock;
 
 use crate::{
     class::{Class, ClassPtr},
