@@ -39,7 +39,7 @@ Some mayor missing features:
 - private/protected
 - locking
 - string interning
-- protection from stack overflow & memory exhaustion
+- reliable protection from stack & memory exhaustion
 
 This is only a JVM, not including a proper class library. The problem is that the JVM
 specification and class library depend on each other. For example, each `CONSTANT_String` entry of a constant pool points

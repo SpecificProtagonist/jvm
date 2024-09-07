@@ -458,6 +458,7 @@ impl Method {
     /// If it is an instance method, its first argument will be the object it is invoked on.
     ///
     /// The callback returning a value of wrong type will result in a panic.
+    // TODO: Note guarantees about available stack size
     #[allow(private_bounds)]
     pub fn bind_native_code<F: NativeFn<T>, T>(&self, code: F) -> Result<(), NativeBindError> {
         fake_variadics::bind_native_code(self, code)

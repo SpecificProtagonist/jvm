@@ -13,3 +13,5 @@ fixed-typed-arena = "0.2"
 libc = "0.2"
 # Lookups with borrowed key
 hashbrown = "0.14"
+# Stack exhaustion check
+stacker = "0.1"

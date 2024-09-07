@@ -292,3 +292,14 @@ fn hot_reloading() {
     assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), 2);
     assert_eq!(field.static_get(&jvm), 1);
 }
+
+#[test]
+fn stackoverflow() {
+    let jvm = make_jvm();
+    let err = jvm
+        .resolve_method("Stackoverflow", "overflow", [], None)
+        .unwrap()
+        .invoke(&jvm, &[])
+        .unwrap_err();
+    assert_eq!(err.class().name(), "java.lang.StackOverflowError");
+}

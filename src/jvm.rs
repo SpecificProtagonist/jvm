@@ -57,13 +57,20 @@ impl Jvm {
         if id.0 == u64::MAX {
             panic!("You've created 18446744073709551616 instances. Impressive, but also, NO.")
         }
-        Self {
+        let jvm = Self {
             id,
             bootstrap_class_loader: base_class_loader,
             heap,
             method_storage: default(),
             classes: default(),
+        };
+        if let Err(err) = jvm
+            .resolve_class("java.lang.StackOverflowError")
+            .and_then(|c| c.ensure_init(&jvm))
+        {
+            panic!("{err:?}");
         }
+        jvm
     }
 
     /// Returns the class, loading it if it wasn't already loaded.

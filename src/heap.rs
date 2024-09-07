@@ -6,11 +6,11 @@
 //! This module is responsible for managing the jvm heap and providing 32-bit pointers.
 //! On 32-bit platforms we can just use normal pointers.
 //! On amd64 Linux, we can use mmap with MAP_32BIT.
-//! On other architectures (test with qemu) or when >4gb heap is required,
+//! TODO: on other architectures (test with qemu) or when >4gb heap is required,
 //! - check posix_mem_offset() or parse /proc/self/maps (proc-maps crate) and mmap with MAP_FIXED_NOREPLACE
 //! - in case of larger heap, shift pointers by log2(object_alignment) before use
 //!
-//! On Windows, use VirtualAlloc/NtAllocateVirtualMemory
+//! TODO: on Windows, use VirtualAlloc/NtAllocateVirtualMemory
 //! On an unsupported architecture, use usize for pointers & local/stack values
 //!
 //! There's no GC (for now), so just this is a simple (but threadsafe) bump allocator.
