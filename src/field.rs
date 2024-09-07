@@ -57,9 +57,11 @@ impl Field {
 
     /// Get the value of a static field.
     /// Note that this might not be initialized yet unless a method has been called on this class.
+    ///
     /// # Panics
     /// Panics if the field is not static.
-    pub fn static_get(&self) -> Value {
+    #[track_caller]
+    pub(crate) fn static_get(&self) -> Value {
         if !self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is not static", self.nat.name)
         }
@@ -67,9 +69,11 @@ impl Field {
     }
 
     /// Get the value of an object's field.
+    ///
     /// # Panics
     /// Panics if the field is static or the object is not an instance of the class corresponding to this field.
-    pub fn instance_get(&self, object: Object) -> Value {
+    #[track_caller]
+    pub(crate) fn instance_get(&self, object: Object) -> Value {
         if self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is static", self.nat.name)
         }
@@ -106,9 +110,11 @@ impl Field {
     }
 
     /// Set the value of a static field.
+    ///
     /// # Panics
     /// Panics if the field is not static or the value is not assignable to the field's type
-    pub fn static_set(&self, value: Value) {
+    #[track_caller]
+    pub(crate) fn static_set(&self, value: Value) {
         if !self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is not static", self.nat.name)
         }
@@ -116,11 +122,13 @@ impl Field {
     }
 
     /// Get the value of an object's field.
+    ///
     /// # Panics
     /// Panics if the field is static,
     /// the object is not an instance of the class corresponding to this field
     /// or the value is not assignable to the field's type
-    pub fn instance_set(&self, object: Object, value: Value) {
+    #[track_caller]
+    pub(crate) fn instance_set(&self, object: Object, value: Value) {
         if self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is static", self.nat.name)
         }

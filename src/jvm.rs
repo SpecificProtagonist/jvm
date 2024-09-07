@@ -26,7 +26,7 @@ pub(crate) type JvmResult<T> = std::result::Result<T, Object>;
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct JvmId(u64);
+pub(crate) struct JvmId(u64);
 
 /// Creates & manages classes and objects, which borrow from the Jvm.
 /// Multiple independent `Jvm`s may exist.
@@ -111,34 +111,6 @@ impl Jvm {
                 value,
             })
             .map_err(|value| crate::Object::new(self.id, value))
-    }
-
-    /// Creates an object via constructor.
-    pub fn create_object(
-        &self,
-        class: &str,
-        arg_types: impl IntoIterator<Item = Type>,
-        mut args: Vec<crate::Value>,
-    ) -> crate::JvmResult<crate::Object> {
-        let class_ptr = self.resolve_class(class)?;
-        let object = crate::Object::new(self.id, self.create_object_uninitialized(class_ptr.value));
-        args.insert(0, crate::Value::Ref(Some(object)));
-        let constructor = class_ptr.method("<init>", arg_types, None).ok_or_else(|| {
-            crate::Object::new(
-                self.id,
-                error(self, "NoSuchMethodError", &format!("{class} <init> …")),
-            )
-        })?;
-        constructor.invoke(self, &args)?;
-        Ok(object)
-    }
-
-    /// Creates an array.
-    ///
-    /// # Panics
-    /// Panics if length < 0
-    pub fn create_array(&self, component: &Type, length: i32) -> crate::Object {
-        crate::Object::new(self.id, self.create_array_of(component, length))
     }
 
     /// Reload the bytecodes of all methods in the class by querying the class loader.
@@ -342,17 +314,51 @@ impl Jvm {
     }
 
     /// Creates an instance of a non-array class on the heap.
+    ///
     /// # Panics
-    /// Panics if class is an array class
+    /// Panics if class is an array class or interface.
     #[track_caller]
     pub(crate) fn create_object_uninitialized(&self, class: ClassPtr) -> Object {
-        if class.element_type.is_some() {
-            panic!("{} is an array type", class.name)
+        if class.element_type.is_some() | class.is_interface() {
+            panic!("{} is an array or interface type", class.name)
         }
         let ptr = FieldStorage::new(&self.heap, class.object_size);
         // SAFETY: object_size takes object head into account
         unsafe { ptr.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true) };
         Object { ptr }
+    }
+
+    /// Creates an object via constructor.
+    ///
+    /// # Panics
+    /// Panics if class is an array class or interface.
+    #[track_caller]
+    pub fn create_object(
+        &self,
+        class: &str,
+        arg_types: impl IntoIterator<Item = Type>,
+        mut args: Vec<crate::Value>,
+    ) -> crate::JvmResult<crate::Object> {
+        let class_ptr = self.resolve_class(class)?;
+        let object = crate::Object::new(self.id, self.create_object_uninitialized(class_ptr.value));
+        args.insert(0, crate::Value::Ref(Some(object)));
+        let constructor = class_ptr.method("<init>", arg_types, None).ok_or_else(|| {
+            crate::Object::new(
+                self.id,
+                error(self, "NoSuchMethodError", &format!("{class} <init> …")),
+            )
+        })?;
+        constructor.invoke(self, &args)?;
+        Ok(object)
+    }
+
+    /// Creates an array.
+    ///
+    /// # Panics
+    /// Panics if length < 0
+    #[track_caller]
+    pub fn create_array(&self, component: &Type, length: i32) -> crate::Object {
+        crate::Object::new(self.id, self.create_array_of(component, length))
     }
 
     /// Creates an array.

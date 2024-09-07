@@ -68,7 +68,7 @@ fn field_access_inheritance() {
     let super_class = class.super_class().unwrap();
     let a = super_class.field("a", Type::Int).unwrap();
     let b = class.field("b", Type::Int).unwrap();
-    let instance = class.create_object_uninit(&jvm);
+    let instance = class.create_object_uninitialized(&jvm);
     a.instance_set(instance, 1);
     b.instance_set(instance, 2);
     assert_eq!(a.instance_get(instance), 1);
@@ -234,7 +234,7 @@ fn cross_jvms_field() {
     let object_from_1 = jvm_1
         .resolve_class("java.lang.Object")
         .unwrap()
-        .create_object_uninit(&jvm_1);
+        .create_object_uninitialized(&jvm_1);
 
     let class_from_2 = jvm_2.resolve_class("CrossJvm").unwrap();
     let field = class_from_2
@@ -252,7 +252,7 @@ fn cross_jvms_method() {
     let object_from_1 = jvm_1
         .resolve_class("java.lang.Object")
         .unwrap()
-        .create_object_uninit(&jvm_1);
+        .create_object_uninitialized(&jvm_1);
 
     let class_from_2 = jvm_2.resolve_class("CrossJvm").unwrap();
     let method = class_from_2

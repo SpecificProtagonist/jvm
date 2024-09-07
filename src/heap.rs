@@ -25,28 +25,26 @@ use std::{
     },
 };
 
-// TODO: grow downwards
-
 use backend::{alloc_block, dealloc_block};
-pub use backend::{ptr_decode, ptr_encode, AtomicJVMPtr, JVMPtr, JVMPtrNonNull, NULL_PTR};
+pub use backend::{ptr_decode, ptr_encode, AtomicJvmPtr, JvmPtr, JvmPtrNonNull, NULL_PTR};
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod backend {
 
-    pub type JVMPtr = u32;
-    pub type JVMPtrNonNull = std::num::NonZeroU32;
+    pub type JvmPtr = u32;
+    pub type JvmPtrNonNull = std::num::NonZeroU32;
     /// Only used by field_storage for read/write
-    pub type AtomicJVMPtr = std::sync::atomic::AtomicU32;
+    pub type AtomicJvmPtr = std::sync::atomic::AtomicU32;
 
-    pub fn ptr_encode(ptr: *mut u8) -> JVMPtr {
-        ptr as usize as JVMPtr
+    pub fn ptr_encode(ptr: *mut u8) -> JvmPtr {
+        ptr as usize as JvmPtr
     }
 
-    pub fn ptr_decode(ptr: JVMPtr) -> *mut u8 {
+    pub fn ptr_decode(ptr: JvmPtr) -> *mut u8 {
         ptr as usize as *mut u8
     }
 
-    pub const NULL_PTR: JVMPtr = 0;
+    pub const NULL_PTR: JvmPtr = 0;
 
     pub fn alloc_block(len: usize, addr_hint: usize) -> *mut u8 {
         unsafe {
@@ -79,20 +77,20 @@ mod backend {
 mod backend {
     use std::alloc::Layout;
 
-    pub type JVMPtr = usize;
-    pub type JVMPtrNonNull = std::num::NonZeroUsize;
+    pub type JvmPtr = usize;
+    pub type JvmPtrNonNull = std::num::NonZeroUsize;
     /// Only used by field_storage for read/write
-    pub type AtomicJVMPtr = std::sync::atomic::AtomicUsize;
+    pub type AtomicJvmPtr = std::sync::atomic::AtomicUsize;
 
-    pub fn ptr_encode(ptr: *mut u8) -> JVMPtr {
+    pub fn ptr_encode(ptr: *mut u8) -> JvmPtr {
         ptr as usize
     }
 
-    pub fn ptr_decode(ptr: JVMPtr) -> *mut u8 {
+    pub fn ptr_decode(ptr: JvmPtr) -> *mut u8 {
         ptr as *mut u8
     }
 
-    pub const NULL_PTR: JVMPtr = 0;
+    pub const NULL_PTR: JvmPtr = 0;
 
     pub fn alloc_block(len: usize, _addr_hint: usize) -> *mut u8 {
         unsafe {

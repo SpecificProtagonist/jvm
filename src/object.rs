@@ -6,7 +6,7 @@ use std::{
 use crate::{
     class::{Class, ClassPtr},
     field_storage::FieldStorage,
-    heap::{self, JVMPtr, JVMPtrNonNull},
+    heap::{self, JvmPtr, JvmPtrNonNull},
     typ::Type,
     value::Value,
     AccessFlags,
@@ -16,7 +16,7 @@ use crate::{
 // TODO: These are handed out to the user. When garbage collection gets implemented, only hand them out in a non-copy wrapper.
 // Object layout:
 // size (u64, handled by FieldStorage)
-// JVMPtrSize to RefType
+// JvmPtrSize to RefType
 // fields (sorted by alignment) | array elements
 #[derive(Clone, Copy)]
 #[repr(transparent)]
@@ -30,13 +30,13 @@ impl Object {
         unsafe { &*(heap::ptr_decode(self.ptr.read_ptr(0, false)) as *const Class) }
     }
 
-    pub fn ptr(self) -> JVMPtrNonNull {
+    pub fn ptr(self) -> JvmPtrNonNull {
         self.ptr.ptr()
     }
 
     /// SAFETY: Must be either null, or a valid pointer to an object
-    pub(crate) unsafe fn from_ptr(addr: JVMPtr) -> Option<Self> {
-        JVMPtrNonNull::new(addr).map(|addr| Self {
+    pub(crate) unsafe fn from_ptr(addr: JvmPtr) -> Option<Self> {
+        JvmPtrNonNull::new(addr).map(|addr| Self {
             ptr: FieldStorage::from_ptr(addr),
         })
     }
@@ -235,7 +235,7 @@ impl std::fmt::Pointer for Object {
 pub fn header_size() -> usize {
     // Afaik the alignment of 64-bit ints is usize even on 32-bit systems,
     // but better make sure of this (as there would be unaligned accesses elsewise):
-    size_of::<JVMPtr>().max(align_of::<u64>())
+    size_of::<JvmPtr>().max(align_of::<u64>())
 }
 
 #[test]

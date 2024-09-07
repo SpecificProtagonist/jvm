@@ -5,7 +5,7 @@ use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     field::Field,
     field_storage::FieldStorage,
-    heap::{JVMPtr, NULL_PTR},
+    heap::{JvmPtr, NULL_PTR},
     jvm::{error, throwable, Jvm, JvmResult},
     method::{Bytecode, Code, Method, MethodNaT, NativeCode},
     object::Object,
@@ -74,16 +74,10 @@ pub(crate) fn invoke_initializer(jvm: &Jvm, initializer: &Method) -> JvmResult<(
 /// Stack or local entry.
 /// Doesn't store type information as it was already checked during verification.
 /// Ideally we don't want to use 64 bits if we can avoid this, so
-/// use the size of a possibly compressed pointer (but at least 32 bits).
-#[cfg(target_pointer_width = "64")]
-type SlotSize = JVMPtr;
-#[cfg(any(target_pointer_width = "16", target_pointer_width = "32"))]
-type SlotSize = u32;
-
-/// Interpreter value
-#[derive(Clone, Copy, Debug)]
+/// use the size of a possibly compressed pointer.
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(transparent)]
-struct IVal(SlotSize);
+struct IVal(JvmPtr);
 
 /// Requires that the class is already initialized, or method is the initializer
 fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Option<Value>> {
@@ -726,6 +720,20 @@ fn run_until_exception_or_return(
                     frame.jump_relative(base, target_offset as i32);
                 }
             }
+            IF_ACMPEQ => {
+                let base = frame.pc - 1;
+                let target_offset = frame.read_code_u16() as i16;
+                if frame.pop() == frame.pop() {
+                    frame.jump_relative(base, target_offset as i32);
+                }
+            }
+            IF_ACMPNE => {
+                let base = frame.pc - 1;
+                let target_offset = frame.read_code_u16() as i16;
+                if frame.pop() != frame.pop() {
+                    frame.jump_relative(base, target_offset as i32);
+                }
+            }
             GOTO => {
                 let base = frame.pc - 1;
                 let target_offset = frame.read_code_u16() as i16;
@@ -1124,13 +1132,13 @@ fn execute_invoke_instr(jvm: &Jvm, frame: &mut Frame, method: &Method) -> JvmRes
 
 impl From<i32> for IVal {
     fn from(value: i32) -> Self {
-        Self(value as u32 as SlotSize)
+        Self(value as u32 as JvmPtr)
     }
 }
 
 impl From<f32> for IVal {
     fn from(value: f32) -> Self {
-        Self(value.to_bits() as SlotSize)
+        Self(value.to_bits() as JvmPtr)
     }
 }
 
@@ -1153,8 +1161,8 @@ impl IVal {
     /// Returns (low half, high half)
     fn from_long(value: i64) -> (Self, Self) {
         (
-            Self((value as u64 & 0xFFFFFFFF) as SlotSize),
-            Self((value as u64 >> 32) as SlotSize),
+            Self((value as u64 & 0xFFFFFFFF) as JvmPtr),
+            Self((value as u64 >> 32) as JvmPtr),
         )
     }
 
@@ -1168,7 +1176,8 @@ impl IVal {
     }
 
     fn as_float(self) -> f32 {
-        f32::from_bits(self.0)
+        #[allow(clippy::unnecessary_cast)]
+        f32::from_bits(self.0 as u32)
     }
 
     fn as_long(low: IVal, high: IVal) -> i64 {

@@ -1,6 +1,6 @@
 use std::{alloc::Layout, sync::Arc};
 
-use crate::heap::JVMPtr;
+use crate::heap::JvmPtr;
 
 /// A Java type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -27,7 +27,7 @@ impl Type {
             Short | Char => Layout::new::<u16>(),
             Int | Float => Layout::new::<u32>(),
             Long | Double => Layout::new::<u64>(),
-            Ref(..) => Layout::new::<JVMPtr>(),
+            Ref(..) => Layout::new::<JvmPtr>(),
         }
     }
 

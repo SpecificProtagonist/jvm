@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    heap::{self, AtomicJVMPtr, Heap, JVMPtr, JVMPtrNonNull},
+    heap::{self, AtomicJvmPtr, Heap, JvmPtr, JvmPtrNonNull},
     jvm::{throwable, Jvm, JvmResult},
     object,
 };
@@ -15,7 +15,7 @@ use crate::{
 /// Contains pointer to heap allocation containing allocation size followed by space for fields/array items
 #[derive(Clone, Copy, Hash)]
 #[repr(transparent)]
-pub(crate) struct FieldStorage(JVMPtrNonNull);
+pub(crate) struct FieldStorage(JvmPtrNonNull);
 
 macro_rules! access {
     ($read:ident, $write:ident, $array_read:ident, $array_write:ident, $array_read_freestanding:ident, $array_write_freestanding:ident, $atomic:ident, $typ:ident, $convert_read:path, $convert_write:ident) => {
@@ -97,16 +97,16 @@ impl FieldStorage {
             let ptr = heap.alloc(layout(size)) as *mut u8;
             // Store allocation size for safety checks
             *(ptr as *mut u64) = size as u64;
-            JVMPtrNonNull::new_unchecked(heap::ptr_encode(ptr.wrapping_add(size_of::<u64>())))
+            JvmPtrNonNull::new_unchecked(heap::ptr_encode(ptr.wrapping_add(size_of::<u64>())))
         })
     }
 
     /// SAFETY: Must have been allocated by a FieldStorage
-    pub unsafe fn from_ptr(ptr: JVMPtrNonNull) -> Self {
+    pub unsafe fn from_ptr(ptr: JvmPtrNonNull) -> Self {
         Self(ptr)
     }
 
-    pub fn ptr(self) -> JVMPtrNonNull {
+    pub fn ptr(self) -> JvmPtrNonNull {
         self.0
     }
 
@@ -172,8 +172,8 @@ impl FieldStorage {
         array_write_ptr,
         array_read_ptr_freestanding,
         array_write_ptr_freestanding,
-        AtomicJVMPtr,
-        JVMPtr,
+        AtomicJvmPtr,
+        JvmPtr,
         std::convert::identity,
         into
     );

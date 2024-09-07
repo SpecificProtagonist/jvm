@@ -65,6 +65,7 @@ impl VerificationType {
         matches!(self, VerificationType::Long | VerificationType::Double)
     }
 
+    // TODO: Does this need to do subtyping?
     fn matches(self, typ: &Type) -> bool {
         matches!(
             (self, typ),
@@ -1007,6 +1008,19 @@ fn verify_bytecode(
                     | (type_state.pop(jvm)? != VerificationType::Integer)
                 {
                     return Err(error!(jvm, "invalid if_cmp"));
+                }
+                type_state.relative_jump(jvm, &stack_map_table, bytes, pc, false)?;
+                connected_to_previous_block = false;
+            }
+            IF_ACMPEQ | IF_ACMPNE => {
+                if (!type_state
+                    .pop(jvm)?
+                    .is_assignable_to(VerificationType::Reference))
+                    | (!type_state
+                        .pop(jvm)?
+                        .is_assignable_to(VerificationType::Reference))
+                {
+                    return Err(error!(jvm, "invalid if_acmp"));
                 }
                 type_state.relative_jump(jvm, &stack_map_table, bytes, pc, false)?;
                 connected_to_previous_block = false;

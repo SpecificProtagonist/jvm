@@ -25,7 +25,8 @@ use std::{
 
 pub use class_loader::{ClassLoader, FolderClassLoader};
 use fake_variadics::{NativeBindError, NativeFn};
-pub use jvm::{Jvm, JvmId};
+pub use jvm::Jvm;
+use jvm::{error, JvmId};
 pub use method::MethodDescriptor;
 use method::MethodNaTBorrow;
 pub use method::NativeCode;
@@ -196,7 +197,7 @@ define_guard!(
 );
 
 impl Class {
-    /// Returns the fully qualified name
+    /// Fully qualified name.
     pub fn name(&self) -> &str {
         &self.value.name
     }
@@ -213,7 +214,7 @@ impl Class {
         Class::new(jvm.id, jvm.resolve_array_of(&self.typ()).unwrap())
     }
 
-    /// Convenience method for getting this class' type
+    /// Convenience method for getting this class' type.
     pub fn typ(&self) -> Type {
         self.value.typ()
     }
@@ -240,7 +241,8 @@ impl Class {
             .map(|value| Field::new(self.jvm, value))
     }
 
-    /// Look up a method by its name and type. There may be multiple methods of the same name.
+    /// Look up a method by its name and type.
+    /// There may be multiple methods of the same name, as long as they differ in type.
     /// Includes inherited dynamic methods.
     pub fn method(
         self,
@@ -257,7 +259,8 @@ impl Class {
         )
     }
 
-    /// Look up a method by its name and type. There may be multiple methods of the same name.
+    /// Look up a method by its name and type.
+    /// There may be multiple methods of the same name, as long as they differ in type.
     /// Includes inherited dynamic methods.
     pub fn method_by_descriptor(self, name: &str, typ: &MethodDescriptor) -> Option<Method> {
         self.value
@@ -274,15 +277,48 @@ impl Class {
             .map_err(|value| Object::new(self.jvm, value))
     }
 
-    /// Creates an instance of a non-array class on the heap without invoking its constructor
+    /// Creates an instance of a non-array class on the heap without invoking its constructor.
     ///
     /// # Panics
-    /// Panics if this is an array class.
-    pub fn create_object_uninit(self, jvm: &Jvm) -> Object {
+    /// Panics if this is an array class or interface.
+    #[track_caller]
+    pub fn create_object_uninitialized(self, jvm: &Jvm) -> Object {
         Object::new(
             self.jvm,
             jvm.create_object_uninitialized(self.into_inner(jvm.id)),
         )
+    }
+
+    /// Creates an object via constructor.
+    ///
+    /// # Panics
+    /// Panics if this is an array class or interface.
+    #[track_caller]
+    pub fn create_object(
+        &self,
+        jvm: &Jvm,
+        arg_types: impl IntoIterator<Item = Type>,
+        mut args: Vec<Value>,
+    ) -> JvmResult<Object> {
+        let object = Object::new(
+            jvm.id,
+            jvm.create_object_uninitialized(self.into_inner(jvm.id)),
+        );
+        args.insert(0, Value::Ref(Some(object)));
+        let constructor = self.method("<init>", arg_types, None).ok_or_else(|| {
+            crate::Object::new(
+                jvm.id,
+                error(jvm, "NoSuchMethodError", &format!("{self} <init> …")),
+            )
+        })?;
+        constructor.invoke(jvm, &args)?;
+        Ok(object)
+    }
+}
+
+impl std::fmt::Display for Class {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.value)
     }
 }
 
@@ -319,6 +355,7 @@ impl Field {
     ///
     /// # Panics
     /// Panics if the field is not static.
+    #[track_caller]
     pub fn static_get(&self, jvm: &Jvm) -> Value {
         Value::new(self.jvm, self.into_inner(jvm.id).static_get(), self.typ())
     }
@@ -327,6 +364,7 @@ impl Field {
     ///
     /// # Panics
     /// Panics if the field is static or the object is not an instance of the class corresponding to this field.
+    #[track_caller]
     pub fn instance_get(&self, object: Object) -> Value {
         Value::new(
             self.jvm,
@@ -340,6 +378,7 @@ impl Field {
     /// # Panics
     /// Panics if the field is not static or the value is not assignable to the field's type
     /// or is an object created by a different JVM
+    #[track_caller]
     pub fn static_set(&self, value: impl Into<Value>) {
         self.value.static_set(value.into().into_inner(self.jvm))
     }
@@ -351,6 +390,7 @@ impl Field {
     /// the object is not an instance of the class corresponding to this field,
     /// the value is not assignable to the field's type
     /// or the value is an object created by a different JVM
+    #[track_caller]
     pub fn instance_set(&self, object: Object, value: impl Into<Value>) {
         self.value.instance_set(
             object.into_inner(self.jvm),
@@ -426,7 +466,6 @@ impl Method {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Value {
-    // Split arrays and normal objects?
     Ref(Option<Object>),
     Boolean(bool),
     Byte(i8),
@@ -548,7 +587,7 @@ bitflags::bitflags! {
         const PRIVATE = 0x0002;
         /// May be accessed only from inside its defining class or subclasses. (TODO)
         const PROTECTED = 0x0004;
-        /// Declared static
+        /// Declared static.
         const STATIC = 0x0008;
         /// Class: May not be subclassed.
         ///
