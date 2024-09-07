@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::object::Object;
+use crate::{object::Object, Typ};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Value {
@@ -10,6 +10,28 @@ pub(crate) enum Value {
     Long(i64),
     Float(f32),
     Double(f64),
+}
+
+impl Value {
+    pub fn assignable_to(self, typ: &Option<Typ>) -> bool {
+        match (typ, self) {
+            (Some(Typ::Ref(declared)), Value::Ref(object))
+                if object
+                    .map(|o| o.class().assignable_to(declared))
+                    .unwrap_or(true) =>
+            {
+                true
+            }
+            (Some(Typ::Boolean | Typ::Byte | Typ::Short | Typ::Char | Typ::Int), Value::Int(_)) => {
+                true
+            }
+            (Some(Typ::Long), Value::Long(_)) => true,
+            (Some(Typ::Float), Value::Float(_)) => true,
+            (Some(Typ::Double), Value::Double(_)) => true,
+            (None, Value::Void) => true,
+            _ => false,
+        }
+    }
 }
 
 impl Display for Value {

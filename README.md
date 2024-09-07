@@ -2,7 +2,8 @@ A toy embeddable JVM writen in Rust. It is very much WIP and aims to eventually
 implement most of the Java 8 JVM specification, except for the loading of classes with version <50.0
 and the Java SE class libraries. As this is intended as a toy / a learning experience, the choice of which features to implement is
 not determined by practicality but by how interested I'm in doing so. It also uses large amounts of *unsafe*
-(the safety boundary essentially being the entire crate), is badly tested, doesn't have any benchmarks, and doesn't do any garbage collection.
+(the safety boundary essentially being the entire crate), is badly tested, doesn't have any benchmarks, and doesn't do any garbage collection,
+so if you're new to Rust, this isn't a representative example.
 
 ```rust,ignore
 use jvm::*;

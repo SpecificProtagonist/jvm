@@ -116,9 +116,9 @@ fn invoke_native() {
 
     jvm.resolve_method("Native", "call_instance", [], None)
         .unwrap()
-        .bind_native_code(|this: Option<Object>| {
-            let field = this.unwrap().class().field("value", Typ::Long).unwrap();
-            assert_eq!(field.instance_get(this.unwrap()), 1i64);
+        .bind_native_code(|this: Object| {
+            let field = this.class().field("value", Typ::Long).unwrap();
+            assert_eq!(field.instance_get(this), 1i64);
             Ok(())
         })
         .unwrap();

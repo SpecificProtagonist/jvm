@@ -17,6 +17,7 @@ pub(crate) struct Method {
     /// Class is behind a AtomicCell to enable circular references
     pub(crate) class: AtomicPtr<Class>,
     pub(crate) code: RwLock<Code>,
+    // TODO: declared exceptions
 }
 
 impl Method {
@@ -46,7 +47,7 @@ impl<'a> Equivalent<MethodNaT> for MethodNaTBorrow<'a> {
     }
 }
 
-/// A method signature type signature
+/// A method type signature. Does not include declared exceptions.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct MethodDescriptor {
     pub args: Vec<Typ>,

@@ -381,22 +381,22 @@ impl Method {
         &self.value.nat.name
     }
 
-    /// Type signature of this method.
+    /// Argument and return types of this method.
     pub fn typ(&self) -> &MethodDescriptor {
         &self.value.nat.typ
     }
 
+    /// Access flags of this method.
     pub fn access_flags(self) -> AccessFlags {
         self.value.access_flags
     }
 
     /// Calls the method, initializing its class if necessary.
-    /// Returns either the function's return value or the exception that was thrown
+    /// Returns either the function's return value or the exception that was thrown.
     ///
     /// # Panics
-    /// Panics if any of the [`Value`]s is an object created by another JVM
+    /// Panics if any of the [`Value`]s is an object created by another JVM.
     pub fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Value> {
-        // TODO: Check for argument type mismatch
         interpreter::invoke(
             jvm,
             self.into_inner(jvm.id),
@@ -418,6 +418,8 @@ impl Method {
     ///
     /// The method must be marked as native and match the signature of `code`.
     /// If it is an instance method, its first argument will be the object it is invoked on.
+    ///
+    /// The callback returning a value of wrong type will result in a panic.
     #[allow(private_bounds)]
     pub fn bind_native_code<F: NativeFn<T>, T>(&self, code: F) -> Result<(), NativeBindError> {
         fake_variadics::bind_native_code(self, code)

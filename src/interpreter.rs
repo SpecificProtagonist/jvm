@@ -23,22 +23,30 @@ pub(crate) fn invoke(
 ) -> JvmResult<Value> {
     method.class().ensure_init(jvm)?;
     let mut arg_values = Vec::new();
-    for arg in args {
-        match arg {
-            Value::Void => panic!("invoke with void argument"),
-            Value::Ref(object) => arg_values.push(object.into()),
-            Value::Int(value) => arg_values.push(value.into()),
-            Value::Long(value) => {
+    for (declared, value) in method.nat.typ.args.iter().zip(args) {
+        match (declared, value) {
+            (Typ::Ref(declared), Value::Ref(object))
+                if object
+                    .map(|o| o.class().assignable_to(declared))
+                    .unwrap_or(true) =>
+            {
+                arg_values.push(object.into())
+            }
+            (Typ::Boolean | Typ::Byte | Typ::Short | Typ::Char | Typ::Int, Value::Int(value)) => {
+                arg_values.push(value.into())
+            }
+            (Typ::Long, Value::Long(value)) => {
                 let (low, high) = IVal::from_long(value);
                 arg_values.push(low);
                 arg_values.push(high);
             }
-            Value::Float(value) => arg_values.push(value.into()),
-            Value::Double(value) => {
+            (Typ::Float, Value::Float(value)) => arg_values.push(value.into()),
+            (Typ::Double, Value::Double(value)) => {
                 let (low, high) = IVal::from_double(value);
                 arg_values.push(low);
                 arg_values.push(high);
             }
+            _ => panic!("Invoked {method} with values of wrong type"),
         }
     }
     invoke_initialized(jvm, method, &arg_values)
@@ -152,8 +160,11 @@ fn native(jvm: &Jvm, method: &Method, code: &NativeCode, args: &[IVal]) -> JvmRe
     // TODO: StackOverflowError
     match code(jvm, &values) {
         Ok(ret) => {
-            // TODO: Validate return type
-            Ok(ret.into_inner(jvm.id))
+            let returned = ret.into_inner(jvm.id);
+            if !returned.assignable_to(&method.nat.typ.returns) {
+                panic!("native method {method} returned value of wrong type");
+            }
+            Ok(returned)
         }
         Err(err) => Err(err.into_inner(jvm.id)),
     }
