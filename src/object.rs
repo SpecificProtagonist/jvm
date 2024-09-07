@@ -56,7 +56,7 @@ impl Object {
     /// if the object is not an array or the index is out of bounds
     pub fn array_read(self, index: i32) -> Value {
         match self.class().element_type {
-            None => panic!("not an array"),
+            None => panic!("Tried to read array item of non-array object"),
             Some(Typ::Boolean) | Some(Typ::Byte) => {
                 (self.ptr.array_read_i8_freestanding(index) as u8 as i32).into()
             }
@@ -110,7 +110,7 @@ impl Object {
                 _ => panic!("element type mismatch"),
             }
         } else {
-            panic!("not an array")
+            panic!("Tried to read array item of non-array object");
         }
     }
 

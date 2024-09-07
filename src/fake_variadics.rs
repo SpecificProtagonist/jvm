@@ -19,8 +19,8 @@ where
         return Err(NativeBindError::SignatureMismatch);
     }
     fn specify_lifetimes(
-        f: impl for<'a, 'b> Fn(&'a Jvm, &'b [Value]) -> JvmResult<Value>,
-    ) -> Box<impl for<'a, 'b> Fn(&'a Jvm, &'b [Value]) -> JvmResult<Value>> {
+        f: impl for<'a, 'b> Fn(&'a Jvm, &'b [Value]) -> JvmResult<Option<Value>>,
+    ) -> Box<impl for<'a, 'b> Fn(&'a Jvm, &'b [Value]) -> JvmResult<Option<Value>>> {
         Box::new(f)
     }
     let boxed = specify_lifetimes(move |jvm, args| F::invoke(&code, jvm, args));
@@ -85,7 +85,7 @@ enum ArgTyp {
 #[allow(private_interfaces)]
 pub(crate) trait NativeFn<T>: Send + Sync + 'static {
     fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)>;
-    fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Value>;
+    fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Option<Value>>;
 }
 
 trait Arg {
@@ -253,12 +253,17 @@ impl Arg for Object {
     }
 }
 
-trait Return: Into<Value> {
+trait Return {
     fn typ() -> Option<ArgTyp>;
+    fn value(self) -> Option<Value>;
 }
 
 impl Return for () {
     fn typ() -> Option<ArgTyp> {
+        None
+    }
+
+    fn value(self) -> Option<Value> {
         None
     }
 }
@@ -267,11 +272,19 @@ impl Return for bool {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Boolean)
     }
+
+    fn value(self) -> Option<Value> {
+        Some(self.into())
+    }
 }
 
 impl Return for i8 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Byte)
+    }
+
+    fn value(self) -> Option<Value> {
+        Some(self.into())
     }
 }
 
@@ -279,35 +292,63 @@ impl Return for i16 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Short)
     }
+
+    fn value(self) -> Option<Value> {
+        Some(self.into())
+    }
 }
 impl Return for u16 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Char)
+    }
+
+    fn value(self) -> Option<Value> {
+        Some(self.into())
     }
 }
 impl Return for i32 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Int)
     }
+
+    fn value(self) -> Option<Value> {
+        Some(self.into())
+    }
 }
 impl Return for i64 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Long)
+    }
+
+    fn value(self) -> Option<Value> {
+        Some(self.into())
     }
 }
 impl Return for f32 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Float)
     }
+
+    fn value(self) -> Option<Value> {
+        Some(self.into())
+    }
 }
 impl Return for f64 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Double)
     }
+
+    fn value(self) -> Option<Value> {
+        Some(self.into())
+    }
 }
 impl Return for Option<Object> {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Object)
+    }
+
+    fn value(self) -> Option<Value> {
+        Some(self.into())
     }
 }
 
@@ -320,8 +361,8 @@ where
         None
     }
 
-    fn invoke(&self, _: &Jvm, args: &[Value]) -> JvmResult<Value> {
-        self(args).map(|r| r.into())
+    fn invoke(&self, _: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
+        self(args).map(|r| r.value())
     }
 }
 
@@ -334,8 +375,8 @@ where
         None
     }
 
-    fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Value> {
-        self(jvm, args).map(|r| r.into())
+    fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
+        self(jvm, args).map(|r| r.value())
     }
 }
 
@@ -355,9 +396,9 @@ macro_rules! impl_args {
             }
 
             #[allow(unused_variables, unused_mut)]
-            fn invoke(&self, _: &Jvm, args: &[Value]) -> JvmResult<Value> {
+            fn invoke(&self, _: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
                 let mut i = 0;
-                self($($param::get(args, &mut i)),*).map(|r| r.into())
+                self($($param::get(args, &mut i)),*).map(|r| r.value())
             }
         }
 
@@ -375,9 +416,9 @@ macro_rules! impl_args {
             }
 
             #[allow(unused_variables, unused_mut)]
-            fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Value> {
+            fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
                 let mut i = 0;
-                self(jvm, $($param::get(args, &mut i)),*).map(|r| r.into())
+                self(jvm, $($param::get(args, &mut i)),*).map(|r| r.value())
             }
         }
     }

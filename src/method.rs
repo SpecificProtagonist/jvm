@@ -74,7 +74,7 @@ pub(crate) enum Code {
 }
 
 pub type NativeCode =
-    Box<dyn Fn(&Jvm, &[crate::Value]) -> crate::JvmResult<crate::Value> + Send + Sync>;
+    Box<dyn Fn(&Jvm, &[crate::Value]) -> crate::JvmResult<Option<crate::Value>> + Send + Sync>;
 
 pub(crate) struct Bytecode {
     pub max_stack: u16,

@@ -4,7 +4,6 @@ use crate::{object::Object, Typ};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Value {
-    Void,
     Ref(Option<Object>),
     Int(i32),
     Long(i64),
@@ -13,22 +12,19 @@ pub(crate) enum Value {
 }
 
 impl Value {
-    pub fn assignable_to(self, typ: &Option<Typ>) -> bool {
+    pub fn assignable_to(self, typ: &Typ) -> bool {
         match (typ, self) {
-            (Some(Typ::Ref(declared)), Value::Ref(object))
+            (Typ::Ref(declared), Value::Ref(object))
                 if object
                     .map(|o| o.class().assignable_to(declared))
                     .unwrap_or(true) =>
             {
                 true
             }
-            (Some(Typ::Boolean | Typ::Byte | Typ::Short | Typ::Char | Typ::Int), Value::Int(_)) => {
-                true
-            }
-            (Some(Typ::Long), Value::Long(_)) => true,
-            (Some(Typ::Float), Value::Float(_)) => true,
-            (Some(Typ::Double), Value::Double(_)) => true,
-            (None, Value::Void) => true,
+            (Typ::Boolean | Typ::Byte | Typ::Short | Typ::Char | Typ::Int, Value::Int(_)) => true,
+            (Typ::Long, Value::Long(_)) => true,
+            (Typ::Float, Value::Float(_)) => true,
+            (Typ::Double, Value::Double(_)) => true,
             _ => false,
         }
     }
@@ -37,7 +33,6 @@ impl Value {
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Void => write!(f, "void"),
             Self::Ref(None) => write!(f, "null"),
             Self::Ref(Some(obj)) => write!(f, "@{:x}", obj.ptr()),
             Self::Int(v) => write!(f, "{}", v),

@@ -163,7 +163,7 @@ impl Object {
         Value::new(
             self.jvm,
             self.value.array_read(index),
-            self.class().element_type().as_ref(),
+            self.class().element_type().as_ref().unwrap(),
         )
     }
 
@@ -320,11 +320,7 @@ impl Field {
     /// # Panics
     /// Panics if the field is not static.
     pub fn static_get(&self, jvm: &Jvm) -> Value {
-        Value::new(
-            self.jvm,
-            self.into_inner(jvm.id).static_get(),
-            Some(self.typ()),
-        )
+        Value::new(self.jvm, self.into_inner(jvm.id).static_get(), self.typ())
     }
 
     /// Get the value of an object's field.
@@ -335,7 +331,7 @@ impl Field {
         Value::new(
             self.jvm,
             self.value.instance_get(object.into_inner(self.jvm)),
-            Some(self.typ()),
+            self.typ(),
         )
     }
 
@@ -396,14 +392,16 @@ impl Method {
     ///
     /// # Panics
     /// Panics if any of the [`Value`]s is an object created by another JVM.
-    pub fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Value> {
+    pub fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
         interpreter::invoke(
             jvm,
             self.into_inner(jvm.id),
             args.iter().map(|arg| arg.into_inner(self.jvm)),
         )
-        .map(|value| Value::new(self.jvm, value, self.typ().returns.as_ref()))
-        .map_err(|value| Object::new(self.jvm, value))
+        .map(|returned| {
+            returned.map(|value| Value::new(self.jvm, value, self.typ().returns.as_ref().unwrap()))
+        })
+        .map_err(|e| Object::new(self.jvm, e))
     }
 
     /// Register code for a native method. If called multiple times for the same method, the previous registration will be replaced.
@@ -428,9 +426,6 @@ impl Method {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Value {
-    // TODO: Represent as Option<Value> instead?
-    /// Lack of a value, only used for return types.
-    Void,
     // Split arrays and normal objects?
     Ref(Option<Object>),
     Boolean(bool),
@@ -444,16 +439,15 @@ pub enum Value {
 }
 
 impl Value {
-    fn new(jvm: JvmId, value: value::Value, typ: Option<&Typ>) -> Self {
+    fn new(jvm: JvmId, value: value::Value, typ: &Typ) -> Self {
         match value {
-            value::Value::Void => Self::Void,
             value::Value::Ref(value) => Self::Ref(value.map(|value| Object::new(jvm, value))),
             value::Value::Int(value) => match typ {
-                Some(Typ::Boolean) => Self::Boolean(value != 0),
-                Some(Typ::Byte) => Self::Byte(value as i8),
-                Some(Typ::Short) => Self::Short(value as i16),
-                Some(Typ::Char) => Self::Char(value as u16),
-                Some(Typ::Int) => Self::Int(value),
+                Typ::Boolean => Self::Boolean(value != 0),
+                Typ::Byte => Self::Byte(value as i8),
+                Typ::Short => Self::Short(value as i16),
+                Typ::Char => Self::Char(value as u16),
+                Typ::Int => Self::Int(value),
                 _ => unreachable!(),
             },
             value::Value::Long(value) => Self::Long(value),
@@ -464,7 +458,6 @@ impl Value {
 
     fn into_inner(self, jvm: JvmId) -> value::Value {
         match self {
-            Self::Void => value::Value::Void,
             Self::Ref(value) => value::Value::Ref(value.map(|value| value.into_inner(jvm))),
             Self::Boolean(value) => value::Value::Int(value as i32),
             Self::Byte(value) => value::Value::Int(value as i32),
@@ -481,7 +474,6 @@ impl Value {
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Self::Void => write!(f, "void"),
             Self::Ref(None) => write!(f, "null"),
             Self::Ref(Some(obj)) => write!(f, "@{:x}", obj.value.ptr()),
             Self::Boolean(v) => write!(f, "{}", v),
@@ -542,36 +534,6 @@ partialeq_into_and_try_from_value!(Int, i32, "Not an int");
 partialeq_into_and_try_from_value!(Long, i64, "Not a long");
 partialeq_into_and_try_from_value!(Float, f32, "Not a float");
 partialeq_into_and_try_from_value!(Double, f64, "Not a double");
-
-impl From<()> for Value {
-    fn from(_: ()) -> Self {
-        Self::Void
-    }
-}
-
-impl TryFrom<Value> for () {
-    type Error = &'static str;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        if value == Value::Void {
-            Ok(())
-        } else {
-            Err("Hold a value")
-        }
-    }
-}
-
-impl PartialEq<()> for Value {
-    fn eq(&self, _: &()) -> bool {
-        self == &Self::Void
-    }
-}
-
-impl PartialEq<Value> for () {
-    fn eq(&self, other: &Value) -> bool {
-        other == self
-    }
-}
 
 /// Err is an object that extends Throwable.
 /// Currently no call stack is provided.

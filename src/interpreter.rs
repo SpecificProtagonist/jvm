@@ -20,9 +20,18 @@ pub(crate) fn invoke(
     jvm: &Jvm,
     method: &Method,
     args: impl IntoIterator<Item = Value>,
-) -> JvmResult<Value> {
+) -> JvmResult<Option<Value>> {
     method.class().ensure_init(jvm)?;
+    let mut args = args.into_iter();
     let mut arg_values = Vec::new();
+    if !method.access_flags.contains(AccessFlags::STATIC) {
+        match args.next() {
+            Some(Value::Ref(Some(this))) if this.class().assignable_to(&method.class().name) => {
+                arg_values.push(this.into())
+            }
+            _ => panic!("Invoked {method} with values of wrong type"),
+        }
+    }
     for (declared, value) in method.nat.typ.args.iter().zip(args) {
         match (declared, value) {
             (Typ::Ref(declared), Value::Ref(object))
@@ -76,7 +85,7 @@ type SlotSize = u32;
 struct IVal(SlotSize);
 
 /// Requires that the class is already initialized, or method is the initializer
-fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Value> {
+fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Option<Value>> {
     let code = method.code.read().unwrap();
     match &*code {
         Code::None => {
@@ -102,7 +111,12 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Va
 }
 
 /// Requires that the class is already initialized, or method is the initializer
-fn native(jvm: &Jvm, method: &Method, code: &NativeCode, args: &[IVal]) -> JvmResult<Value> {
+fn native(
+    jvm: &Jvm,
+    method: &Method,
+    code: &NativeCode,
+    args: &[IVal],
+) -> JvmResult<Option<Value>> {
     let mut values = Vec::new();
     let mut i = 0;
     if !method.access_flags.contains(AccessFlags::STATIC) {
@@ -160,8 +174,12 @@ fn native(jvm: &Jvm, method: &Method, code: &NativeCode, args: &[IVal]) -> JvmRe
     // TODO: StackOverflowError
     match code(jvm, &values) {
         Ok(ret) => {
-            let returned = ret.into_inner(jvm.id);
-            if !returned.assignable_to(&method.nat.typ.returns) {
+            let returned = ret.map(|v| v.into_inner(jvm.id));
+            if match (returned, &method.nat.typ.returns) {
+                (Some(returned), Some(typ)) => !returned.assignable_to(typ),
+                (None, None) => false,
+                _ => true,
+            } {
                 panic!("native method {method} returned value of wrong type");
             }
             Ok(returned)
@@ -171,7 +189,12 @@ fn native(jvm: &Jvm, method: &Method, code: &NativeCode, args: &[IVal]) -> JvmRe
 }
 
 /// Requires that the class is already initialized, or method is the initializer
-fn interpret(jvm: &Jvm, method: &Method, code: &Bytecode, args: &[IVal]) -> JvmResult<Value> {
+fn interpret(
+    jvm: &Jvm,
+    method: &Method,
+    code: &Bytecode,
+    args: &[IVal],
+) -> JvmResult<Option<Value>> {
     debug_assert!(
         (method.nat.name.deref() == "<clinit>")
             | matches!(
@@ -232,7 +255,7 @@ fn run_until_exception_or_return(
     method: &Method,
     const_pool: &ConstPool,
     frame: &mut Frame,
-) -> JvmResult<Value> {
+) -> JvmResult<Option<Value>> {
     loop {
         match frame.read_code_u8() {
             NOP => {}
@@ -750,12 +773,12 @@ fn run_until_exception_or_return(
                 }
                 frame.jump_relative(base, target);
             }
-            IRETURN => return Ok(frame.pop().as_int().into()),
-            LRETURN => return Ok(frame.pop_long().into()),
-            FRETURN => return Ok(frame.pop().as_float().into()),
-            DRETURN => return Ok(frame.pop_double().into()),
-            ARETURN => return Ok(unsafe { frame.pop().as_ref() }.into()),
-            RETURN => return Ok(Value::Void),
+            IRETURN => return Ok(Some(frame.pop().as_int().into())),
+            LRETURN => return Ok(Some(frame.pop_long().into())),
+            FRETURN => return Ok(Some(frame.pop().as_float().into())),
+            DRETURN => return Ok(Some(frame.pop_double().into())),
+            ARETURN => return Ok(Some(unsafe { frame.pop().as_ref() }.into())),
+            RETURN => return Ok(None),
             GETSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field_verified(index);
@@ -1086,14 +1109,15 @@ fn execute_invoke_instr(jvm: &Jvm, frame: &mut Frame, method: &Method) -> JvmRes
     let args = &frame.stack[frame.stack.len() - arg_slots..];
     let result = invoke_initialized(jvm, method, args)?;
     frame.stack.truncate(frame.stack.len() - arg_slots);
-    match result {
-        Value::Void => (),
-        Value::Ref(object) => frame.stack.push(object.into()),
-        Value::Int(value) => frame.stack.push(value.into()),
-        Value::Float(value) => frame.stack.push(value.into()),
-        Value::Long(value) => frame.push_long(value),
-        Value::Double(value) => frame.push_double(value),
-    };
+    if let Some(value) = result {
+        match value {
+            Value::Ref(object) => frame.stack.push(object.into()),
+            Value::Int(value) => frame.stack.push(value.into()),
+            Value::Float(value) => frame.stack.push(value.into()),
+            Value::Long(value) => frame.push_long(value),
+            Value::Double(value) => frame.push_double(value),
+        };
+    }
     Ok(())
 }
 
