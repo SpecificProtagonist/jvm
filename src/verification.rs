@@ -7,7 +7,7 @@ use crate::{
     method::{Bytecode, Code, Method},
     opcodes::*,
     parse,
-    typ::Typ,
+    typ::Type,
     value::Value,
     AccessFlags,
 };
@@ -65,17 +65,17 @@ impl VerificationType {
         matches!(self, VerificationType::Long | VerificationType::Double)
     }
 
-    fn matches(self, typ: &Typ) -> bool {
+    fn matches(self, typ: &Type) -> bool {
         matches!(
             (self, typ),
             (
                 Self::Integer,
-                Typ::Boolean | Typ::Byte | Typ::Char | Typ::Short | Typ::Int
-            ) | (Self::Long, Typ::Long)
-                | (Self::Float, Typ::Float)
-                | (Self::Double, Typ::Double)
-                | (Self::Null, Typ::Ref(_))
-        ) | matches!((self,typ), (Self::ObjectVariable(class), Typ::Ref(classname)) if &class.name == classname
+                Type::Boolean | Type::Byte | Type::Char | Type::Short | Type::Int
+            ) | (Self::Long, Type::Long)
+                | (Self::Float, Type::Float)
+                | (Self::Double, Type::Double)
+                | (Self::Null, Type::Ref(_))
+        ) | matches!((self,typ), (Self::ObjectVariable(class), Type::Ref(classname)) if &class.name == classname
         )
     }
 }
@@ -126,20 +126,20 @@ impl StackMapFrame {
         }
     }
 
-    fn pop_type(&mut self, jvm: &Jvm, typ: &Typ) -> JvmResult<()> {
+    fn pop_type(&mut self, jvm: &Jvm, typ: &Type) -> JvmResult<()> {
         if match (typ, self.stack.pop()) {
             (
-                Typ::Boolean | Typ::Byte | Typ::Short | Typ::Char | Typ::Int,
+                Type::Boolean | Type::Byte | Type::Short | Type::Char | Type::Int,
                 Some(VerificationType::Integer),
             ) => true,
-            (Typ::Long, Some(VerificationType::Top)) => {
+            (Type::Long, Some(VerificationType::Top)) => {
                 matches!(self.stack.pop(), Some(VerificationType::Long))
             }
-            (Typ::Float, Some(VerificationType::Float)) => true,
-            (Typ::Double, Some(VerificationType::Top)) => {
+            (Type::Float, Some(VerificationType::Float)) => true,
+            (Type::Double, Some(VerificationType::Top)) => {
                 matches!(self.stack.pop(), Some(VerificationType::Double))
             }
-            (Typ::Ref(ref_type), Some(VerificationType::ObjectVariable(obj))) => {
+            (Type::Ref(ref_type), Some(VerificationType::ObjectVariable(obj))) => {
                 obj.assignable_to(ref_type)
             }
             _ => false,
@@ -287,7 +287,7 @@ pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) 
                 if err.class().name.deref() == "java.lang.VerifyError" {
                     let field = err
                         .class()
-                        .field("message", Typ::Ref("java.lang.String".into()))
+                        .field("message", Type::Ref("java.lang.String".into()))
                         .unwrap();
                     let Value::Ref(Some(message)) = field.instance_get(*err) else {
                         panic!()
@@ -498,7 +498,7 @@ fn verify_bytecode(
                     | !matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Int),
+                            element_type: Some(Type::Int),
                             ..
                         })
                     )
@@ -512,7 +512,7 @@ fn verify_bytecode(
                     | !matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Long),
+                            element_type: Some(Type::Long),
                             ..
                         })
                     )
@@ -526,7 +526,7 @@ fn verify_bytecode(
                     | !matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Float),
+                            element_type: Some(Type::Float),
                             ..
                         })
                     )
@@ -540,7 +540,7 @@ fn verify_bytecode(
                     | !matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Double),
+                            element_type: Some(Type::Double),
                             ..
                         })
                     )
@@ -556,7 +556,7 @@ fn verify_bytecode(
                 let component = match type_state.pop(jvm)? {
                     VerificationType::Null => VerificationType::Null,
                     VerificationType::ObjectVariable(class) => {
-                        if let Some(Typ::Ref(component)) = &class.element_type {
+                        if let Some(Type::Ref(component)) = &class.element_type {
                             let class = jvm.resolve_class_internal(component)?;
                             VerificationType::ObjectVariable(class)
                         } else {
@@ -582,7 +582,7 @@ fn verify_bytecode(
                     | !matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Char),
+                            element_type: Some(Type::Char),
                             ..
                         })
                     )
@@ -596,7 +596,7 @@ fn verify_bytecode(
                     | !matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Short),
+                            element_type: Some(Type::Short),
                             ..
                         })
                     )
@@ -651,7 +651,7 @@ fn verify_bytecode(
                     & matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Int),
+                            element_type: Some(Type::Int),
                             ..
                         })
                     ))
@@ -665,7 +665,7 @@ fn verify_bytecode(
                     & matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Long),
+                            element_type: Some(Type::Long),
                             ..
                         })
                     ))
@@ -679,7 +679,7 @@ fn verify_bytecode(
                     & matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Float),
+                            element_type: Some(Type::Float),
                             ..
                         })
                     ))
@@ -693,7 +693,7 @@ fn verify_bytecode(
                     & matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Double),
+                            element_type: Some(Type::Double),
                             ..
                         })
                     ))
@@ -712,7 +712,7 @@ fn verify_bytecode(
                         VerificationType::ObjectVariable(_),
                         VerificationType::Integer,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Ref(_)),
+                            element_type: Some(Type::Ref(_)),
                             ..
                         })
                     )
@@ -734,7 +734,7 @@ fn verify_bytecode(
                     & matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Char),
+                            element_type: Some(Type::Char),
                             ..
                         })
                     ))
@@ -748,7 +748,7 @@ fn verify_bytecode(
                     & matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
-                            element_type: Some(Typ::Short),
+                            element_type: Some(Type::Short),
                             ..
                         })
                     ))
@@ -1029,7 +1029,7 @@ fn verify_bytecode(
                     return Err(error!(jvm, "invalid tableswitch"));
                 }
 
-                type_state.pop_type(jvm, &Typ::Int)?;
+                type_state.pop_type(jvm, &Type::Int)?;
 
                 type_state.jump(jvm, &stack_map_table, (base as i32 + default) as u16)?;
                 let mut prev = i32::MIN;
@@ -1056,7 +1056,7 @@ fn verify_bytecode(
                     return Err(error!(jvm, "invalid lookupswitch"));
                 }
 
-                type_state.pop_type(jvm, &Typ::Int)?;
+                type_state.pop_type(jvm, &Type::Int)?;
 
                 type_state.jump(jvm, &stack_map_table, (base as i32 + default) as u16)?;
                 let mut prev = i32::MIN;
@@ -1074,7 +1074,7 @@ fn verify_bytecode(
             IRETURN => {
                 if !matches!(
                     method.nat.typ.returns,
-                    Some(Typ::Boolean | Typ::Byte | Typ::Char | Typ::Short | Typ::Int)
+                    Some(Type::Boolean | Type::Byte | Type::Char | Type::Short | Type::Int)
                 ) | (type_state.pop(jvm)? != VerificationType::Integer)
                 {
                     return Err(error!(jvm, "invalid ireturn"));
@@ -1082,7 +1082,7 @@ fn verify_bytecode(
                 connected_to_previous_block = false
             }
             LRETURN => {
-                if (method.nat.typ.returns != Some(Typ::Long))
+                if (method.nat.typ.returns != Some(Type::Long))
                     | (type_state.pop(jvm)? != VerificationType::Long)
                 {
                     return Err(error!(jvm, "invalid lreturn"));
@@ -1090,7 +1090,7 @@ fn verify_bytecode(
                 connected_to_previous_block = false
             }
             FRETURN => {
-                if (method.nat.typ.returns != Some(Typ::Float))
+                if (method.nat.typ.returns != Some(Type::Float))
                     | (type_state.pop(jvm)? != VerificationType::Float)
                 {
                     return Err(error!(jvm, "invalid freturn"));
@@ -1098,7 +1098,7 @@ fn verify_bytecode(
                 connected_to_previous_block = false
             }
             DRETURN => {
-                if (method.nat.typ.returns != Some(Typ::Double))
+                if (method.nat.typ.returns != Some(Type::Double))
                     | (type_state.pop(jvm)? != VerificationType::Double)
                 {
                     return Err(error!(jvm, "invalid dreturn"));
@@ -1209,7 +1209,7 @@ fn verify_bytecode(
                     }
                     let object = type_state.pop(jvm)?;
                     valid &= invoke_class == method.class();
-                    valid &= object.matches(&Typ::Ref(invoke_class.name.clone()));
+                    valid &= object.matches(&Type::Ref(invoke_class.name.clone()));
                     if let Some(return_type) = &invoke_nat.typ.returns {
                         push_type(jvm, &mut type_state.stack, return_type)?
                     }
@@ -1266,16 +1266,16 @@ fn verify_bytecode(
                 type_state.push(uninit);
             }
             NEWARRAY => {
-                type_state.pop_type(jvm, &Typ::Int)?;
+                type_state.pop_type(jvm, &Type::Int)?;
                 let component = match read_code_u8(jvm, bytes, pc)? {
-                    4 => Typ::Boolean,
-                    5 => Typ::Byte,
-                    6 => Typ::Char,
-                    7 => Typ::Short,
-                    8 => Typ::Double,
-                    9 => Typ::Float,
-                    10 => Typ::Int,
-                    11 => Typ::Long,
+                    4 => Type::Boolean,
+                    5 => Type::Byte,
+                    6 => Type::Char,
+                    7 => Type::Short,
+                    8 => Type::Double,
+                    9 => Type::Float,
+                    10 => Type::Int,
+                    11 => Type::Long,
                     _ => return Err(error!(jvm, "invalid array type")),
                 };
                 type_state.push(VerificationType::ObjectVariable(
@@ -1346,7 +1346,7 @@ fn verify_bytecode(
                 let mut class_dimensions = 0;
                 while let Some(elem) = &iter_class.element_type {
                     class_dimensions += 1;
-                    if let Typ::Ref(elem) = elem {
+                    if let Type::Ref(elem) = elem {
                         iter_class = jvm.resolve_class_internal(elem)?;
                     } else {
                         break;
@@ -1356,7 +1356,7 @@ fn verify_bytecode(
                     return Err(error!(jvm, "invalid multianewarray"));
                 }
                 for _ in 0..dimensions {
-                    type_state.pop_type(jvm, &Typ::Int)?;
+                    type_state.pop_type(jvm, &Type::Int)?;
                 }
                 type_state.push(VerificationType::ObjectVariable(class));
             }
@@ -1409,21 +1409,21 @@ fn verify_bytecode(
     Ok(())
 }
 
-pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Typ) -> JvmResult<()> {
+pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Type) -> JvmResult<()> {
     match typ {
-        Typ::Boolean | Typ::Char | Typ::Byte | Typ::Short | Typ::Int => {
+        Type::Boolean | Type::Char | Type::Byte | Type::Short | Type::Int => {
             types.push(VerificationType::Integer)
         }
-        Typ::Float => types.push(VerificationType::Float),
-        Typ::Double => {
+        Type::Float => types.push(VerificationType::Float),
+        Type::Double => {
             types.push(VerificationType::Double);
             types.push(VerificationType::Top);
         }
-        Typ::Long => {
+        Type::Long => {
             types.push(VerificationType::Long);
             types.push(VerificationType::Top);
         }
-        Typ::Ref(class) => types.push(VerificationType::ObjectVariable(
+        Type::Ref(class) => types.push(VerificationType::ObjectVariable(
             jvm.resolve_class_internal(class)?,
         )),
     }
@@ -1433,7 +1433,7 @@ pub(crate) fn push_type(jvm: &Jvm, types: &mut Vec<VerificationType>, typ: &Typ)
 fn small_array_type(typ: VerificationType) -> bool {
     match typ {
         VerificationType::ObjectVariable(class) => {
-            matches!(class.element_type, Some(Typ::Byte | Typ::Boolean))
+            matches!(class.element_type, Some(Type::Byte | Type::Boolean))
         }
         VerificationType::Null => true,
         _ => false,

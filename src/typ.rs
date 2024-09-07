@@ -4,7 +4,7 @@ use crate::heap::JVMPtr;
 
 /// A Java type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Typ {
+pub enum Type {
     Boolean,
     Byte,
     Short,
@@ -19,9 +19,9 @@ pub enum Typ {
     Ref(Arc<str>),
 }
 
-impl Typ {
+impl Type {
     pub fn layout(&self) -> Layout {
-        use Typ::*;
+        use Type::*;
         match self {
             Boolean | Byte => Layout::new::<u8>(),
             Short | Char => Layout::new::<u16>(),
@@ -39,34 +39,34 @@ impl Typ {
     }
 }
 
-impl std::fmt::Display for Typ {
+impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Typ::Boolean => write!(f, "boolean"),
-            Typ::Byte => write!(f, "byte"),
-            Typ::Short => write!(f, "short"),
-            Typ::Char => write!(f, "char"),
-            Typ::Int => write!(f, "int"),
-            Typ::Long => write!(f, "long"),
-            Typ::Float => write!(f, "float"),
-            Typ::Double => write!(f, "double"),
-            Typ::Ref(name) => write!(f, "{}", name),
+            Type::Boolean => write!(f, "boolean"),
+            Type::Byte => write!(f, "byte"),
+            Type::Short => write!(f, "short"),
+            Type::Char => write!(f, "char"),
+            Type::Int => write!(f, "int"),
+            Type::Long => write!(f, "long"),
+            Type::Float => write!(f, "float"),
+            Type::Double => write!(f, "double"),
+            Type::Ref(name) => write!(f, "{}", name),
         }
     }
 }
 
-impl<'a> From<&'a str> for Typ {
+impl<'a> From<&'a str> for Type {
     fn from(value: &'a str) -> Self {
         match value {
-            "boolean" => Typ::Boolean,
-            "byte" => Typ::Byte,
-            "short" => Typ::Short,
-            "char" => Typ::Char,
-            "int" => Typ::Int,
-            "long" => Typ::Long,
-            "float" => Typ::Float,
-            "double" => Typ::Double,
-            class => Typ::Ref(class.into()),
+            "boolean" => Type::Boolean,
+            "byte" => Type::Byte,
+            "short" => Type::Short,
+            "char" => Type::Char,
+            "int" => Type::Int,
+            "long" => Type::Long,
+            "float" => Type::Float,
+            "double" => Type::Double,
+            class => Type::Ref(class.into()),
         }
     }
 }

@@ -7,7 +7,7 @@ use crate::{
     class::{Class, ClassPtr},
     field_storage::FieldStorage,
     heap::{self, JVMPtr, JVMPtrNonNull},
-    typ::Typ,
+    typ::Type,
     value::Value,
     AccessFlags,
 };
@@ -57,17 +57,17 @@ impl Object {
     pub fn array_read(self, index: i32) -> Value {
         match self.class().element_type {
             None => panic!("Tried to read array item of non-array object"),
-            Some(Typ::Boolean) | Some(Typ::Byte) => {
+            Some(Type::Boolean) | Some(Type::Byte) => {
                 (self.ptr.array_read_i8_freestanding(index) as u8 as i32).into()
             }
-            Some(Typ::Short) | Some(Typ::Char) => {
+            Some(Type::Short) | Some(Type::Char) => {
                 (self.ptr.array_read_i16_freestanding(index) as u16 as i32).into()
             }
-            Some(Typ::Int) => self.ptr.array_read_i32_freestanding(index).into(),
-            Some(Typ::Long) => self.ptr.array_read_i64_freestanding(index).into(),
-            Some(Typ::Float) => self.ptr.array_read_f32_freestanding(index).into(),
-            Some(Typ::Double) => self.ptr.array_read_f64_freestanding(index).into(),
-            Some(Typ::Ref(_)) => unsafe {
+            Some(Type::Int) => self.ptr.array_read_i32_freestanding(index).into(),
+            Some(Type::Long) => self.ptr.array_read_i64_freestanding(index).into(),
+            Some(Type::Float) => self.ptr.array_read_f32_freestanding(index).into(),
+            Some(Type::Double) => self.ptr.array_read_f64_freestanding(index).into(),
+            Some(Type::Ref(_)) => unsafe {
                 Object::from_ptr(self.ptr.array_read_ptr_freestanding(index)).into()
             },
         }
@@ -78,25 +78,25 @@ impl Object {
     pub fn array_write(self, index: i32, value: Value) {
         if let Some(element_type) = &self.class().element_type {
             match (element_type, value) {
-                (Typ::Boolean | Typ::Byte, Value::Int(value)) => self
+                (Type::Boolean | Type::Byte, Value::Int(value)) => self
                     .ptr
                     .array_write_i8_freestanding(index, value as u8 as i8),
-                (Typ::Short | Typ::Char, Value::Int(value)) => self
+                (Type::Short | Type::Char, Value::Int(value)) => self
                     .ptr
                     .array_write_i16_freestanding(index, value as u16 as i16),
-                (Typ::Int, Value::Int(value)) => {
+                (Type::Int, Value::Int(value)) => {
                     self.ptr.array_write_i32_freestanding(index, value)
                 }
-                (Typ::Long, Value::Long(value)) => {
+                (Type::Long, Value::Long(value)) => {
                     self.ptr.array_write_i64_freestanding(index, value)
                 }
-                (Typ::Float, Value::Float(value)) => {
+                (Type::Float, Value::Float(value)) => {
                     self.ptr.array_write_f32_freestanding(index, value)
                 }
-                (Typ::Float, Value::Double(value)) => {
+                (Type::Float, Value::Double(value)) => {
                     self.ptr.array_write_f64_freestanding(index, value)
                 }
-                (Typ::Ref(typ), Value::Ref(value)) => {
+                (Type::Ref(typ), Value::Ref(value)) => {
                     if let Some(obj) = value {
                         if !obj.class().assignable_to(typ) {
                             panic!("element type mismatch")
@@ -146,7 +146,7 @@ fn fmt_object(object: Object, f: &mut std::fmt::Formatter<'_>, full: bool) -> st
     // Prettier printing for strings
     if class.name.deref() == "java.lang.String" {
         let Value::Ref(chars) = class
-            .field("chars", Typ::Ref("char[]".into()))
+            .field("chars", Type::Ref("char[]".into()))
             .expect("java.lang.String missing field char[] chars")
             .instance_get(object)
         else {
@@ -188,18 +188,18 @@ fn fmt_object(object: Object, f: &mut std::fmt::Formatter<'_>, full: bool) -> st
             write!(f, "{}: ", field.nat.name)?;
             unsafe {
                 match field.nat.typ {
-                    Typ::Boolean | Typ::Byte => {
+                    Type::Boolean | Type::Byte => {
                         write!(f, "{}", object.ptr.read_i8(field.byte_offset, false))?
                     }
-                    Typ::Short => write!(f, "{}", object.ptr.read_i16(field.byte_offset, false))?,
-                    Typ::Char => {
+                    Type::Short => write!(f, "{}", object.ptr.read_i16(field.byte_offset, false))?,
+                    Type::Char => {
                         write!(f, "u+{:x}", object.ptr.read_i16(field.byte_offset, false))?
                     }
-                    Typ::Int => write!(f, "{}", object.ptr.read_i32(field.byte_offset, false))?,
-                    Typ::Long => write!(f, "{}", object.ptr.read_i64(field.byte_offset, false))?,
-                    Typ::Float => write!(f, "{}", object.ptr.read_f32(field.byte_offset, false))?,
-                    Typ::Double => write!(f, "{}", object.ptr.read_f64(field.byte_offset, false))?,
-                    Typ::Ref(_) => {
+                    Type::Int => write!(f, "{}", object.ptr.read_i32(field.byte_offset, false))?,
+                    Type::Long => write!(f, "{}", object.ptr.read_i64(field.byte_offset, false))?,
+                    Type::Float => write!(f, "{}", object.ptr.read_f32(field.byte_offset, false))?,
+                    Type::Double => write!(f, "{}", object.ptr.read_f64(field.byte_offset, false))?,
+                    Type::Ref(_) => {
                         let ptr = object.ptr.read_ptr(field.byte_offset, false);
                         if let Some(obj) = Object::from_ptr(ptr) {
                             if full {

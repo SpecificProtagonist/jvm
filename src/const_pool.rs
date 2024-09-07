@@ -7,7 +7,7 @@ use crate::{
     method::{MethodNaT, MethodNaTBorrow, MethodPtr},
     object::Object,
     parse,
-    typ::Typ,
+    typ::Type,
     unreachable_verified, AccessFlags, Jvm,
 };
 
@@ -113,7 +113,7 @@ impl ConstPool {
                     let string = self.get_utf8(jvm, index)?;
                     // TODO: move string object creation routine to jvm (for interning)
                     let length = string.encode_utf16().count();
-                    let backing_array = jvm.create_array_of(&Typ::Char, length as i32);
+                    let backing_array = jvm.create_array_of(&Type::Char, length as i32);
                     for (index, char) in string.encode_utf16().enumerate() {
                         backing_array
                             .ptr
@@ -122,7 +122,7 @@ impl ConstPool {
                     let string_class = jvm.resolve_class_internal("java.lang.String")?;
                     let obj = jvm.create_object_uninitialized(string_class);
                     let field =
-                        string_class.field("chars", Typ::Ref("char[]".into())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
+                        string_class.field("chars", Type::Ref("char[]".into())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
                     field.instance_set(obj, Some(backing_array).into());
                     self.items[i] = ConstPoolItem::String(obj)
                 }

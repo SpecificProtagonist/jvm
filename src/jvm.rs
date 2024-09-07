@@ -16,7 +16,7 @@ use crate::method::*;
 use crate::object;
 use crate::object::Object;
 use crate::parse;
-use crate::typ::Typ;
+use crate::typ::Type;
 use crate::value::Value;
 use crate::{class::*, default};
 
@@ -85,8 +85,8 @@ impl Jvm {
         &self,
         class: &str,
         method: &str,
-        args: impl IntoIterator<Item = Typ>,
-        returns: Option<Typ>,
+        args: impl IntoIterator<Item = Type>,
+        returns: Option<Type>,
     ) -> crate::JvmResult<crate::Method> {
         let nat = MethodNaT {
             name: method.into(),
@@ -117,7 +117,7 @@ impl Jvm {
     pub fn create_object(
         &self,
         class: &str,
-        arg_types: impl IntoIterator<Item = Typ>,
+        arg_types: impl IntoIterator<Item = Type>,
         mut args: Vec<crate::Value>,
     ) -> crate::JvmResult<crate::Object> {
         let class_ptr = self.resolve_class(class)?;
@@ -137,7 +137,7 @@ impl Jvm {
     ///
     /// # Panics
     /// Panics if length < 0
-    pub fn create_array(&self, component: &Typ, length: i32) -> crate::Object {
+    pub fn create_array(&self, component: &Type, length: i32) -> crate::Object {
         crate::Object::new(self.id, self.create_array_of(component, length))
     }
 
@@ -152,7 +152,7 @@ impl Jvm {
     /// Returns the class representing arrays of the given component.
     /// If the component is a class, this also loads it, its superclass (recursively) and any interfaces it implements.
     /// Does not initialize this class nor load any other class referenced.
-    pub(crate) fn resolve_array_of(&self, component: &Typ) -> JvmResult<ClassPtr> {
+    pub(crate) fn resolve_array_of(&self, component: &Type) -> JvmResult<ClassPtr> {
         let name: Arc<str> = format!("{component}[]").into();
         if let Some(class) = self.classes.read().unwrap().get(&name) {
             return Ok(*class);
@@ -160,7 +160,7 @@ impl Jvm {
 
         // Arrays of primitives inherit from objects,
         // other arrays inherit from arrays of the superclass of their component type
-        let super_class = if let Typ::Ref(component) = &component {
+        let super_class = if let Type::Ref(component) = &component {
             let component = self.resolve_class_internal(component)?;
             if let Some(comp_super) = component.super_class {
                 self.resolve_array_of(&comp_super.typ())?
@@ -360,7 +360,7 @@ impl Jvm {
     /// # Panics
     /// Panics if length < 0 or the component is a class that fails to load.
     #[track_caller]
-    pub(crate) fn create_array_of(&self, component: &Typ, length: i32) -> Object {
+    pub(crate) fn create_array_of(&self, component: &Type, length: i32) -> Object {
         if length < 0 {
             panic!("array length < 0")
         }
@@ -409,7 +409,7 @@ pub(crate) fn error(jvm: &Jvm, name: &str, message: &str) -> Object {
     let object = throwable(jvm, name);
     let field = object
         .class()
-        .field("message", Typ::Ref("java.lang.String".into()))
+        .field("message", Type::Ref("java.lang.String".into()))
         .expect("java.lang.Throwable missing field java.lang.String message");
     field.instance_set(object, Value::Ref(Some(str_to_java(jvm, &message))));
     object
@@ -432,7 +432,7 @@ pub(crate) fn throwable(jvm: &Jvm, name: &str) -> Object {
 
 pub(crate) fn str_to_java(jvm: &Jvm, utf8: &str) -> Object {
     let chars: Vec<u16> = utf8.encode_utf16().collect();
-    let chars_object = jvm.create_array_of(&Typ::Char, chars.len() as i32);
+    let chars_object = jvm.create_array_of(&Type::Char, chars.len() as i32);
     for (i, char) in chars.iter().enumerate() {
         chars_object.array_write(i as i32, Value::Int(*char as i32));
     }
@@ -441,7 +441,7 @@ pub(crate) fn str_to_java(jvm: &Jvm, utf8: &str) -> Object {
         .expect("java.lang.String missing");
     let object = jvm.create_object_uninitialized(string_class);
     let field = string_class
-        .field("chars", Typ::Ref("char[]".into()))
+        .field("chars", Type::Ref("char[]".into()))
         .expect("java.lang.String missing field char[] chars");
     field.instance_set(object, Value::Ref(Some(chars_object)));
     object

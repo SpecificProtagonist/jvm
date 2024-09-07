@@ -12,7 +12,7 @@ use crate::{
     jvm::{error, JvmResult},
     method::{MethodDescriptor, MethodNaT, MethodNaTBorrow, MethodPtr},
     object::{self, Object},
-    typ::Typ,
+    typ::Type,
     verification::verify,
     AccessFlags, Jvm,
 };
@@ -24,7 +24,7 @@ pub(crate) struct Class {
     pub(crate) name: Arc<str>,
     pub(crate) super_class: Option<ClassPtr>,
     /// For array classes, this is the type of the array elements; None for normal classes
-    pub(crate) element_type: Option<Typ>,
+    pub(crate) element_type: Option<Type>,
     /// Write access is required for resolution and hot reloading.
     /// Otherwise only read access is required.
     pub(crate) const_pool: RwLock<ConstPool>,
@@ -113,8 +113,8 @@ impl Class {
     }
 
     /// Convenience method for getting this class' type
-    pub(crate) fn typ(&self) -> Typ {
-        Typ::Ref(self.name.clone())
+    pub(crate) fn typ(&self) -> Type {
+        Type::Ref(self.name.clone())
     }
 
     pub(crate) fn iter_fields(&'static self) -> impl Iterator<Item = &'static Field> {
@@ -143,7 +143,7 @@ impl Class {
         }
     }
 
-    pub(crate) fn field(&self, name: &str, typ: Typ) -> Option<&Field> {
+    pub(crate) fn field(&self, name: &str, typ: Type) -> Option<&Field> {
         self.field_by_nat(FieldNaTBorrow { name, typ })
     }
 
@@ -244,49 +244,49 @@ impl Class {
         for field in self.fields.values() {
             if let Some(index) = field.const_value_index {
                 match &field.nat.typ {
-                    Typ::Boolean | Typ::Byte => unsafe {
+                    Type::Boolean | Type::Byte => unsafe {
                         self.static_storage.write_i8(
                             field.byte_offset,
                             const_pool.get_int(jvm, index)? as i8,
                             true,
                         )
                     },
-                    Typ::Short | Typ::Char => unsafe {
+                    Type::Short | Type::Char => unsafe {
                         self.static_storage.write_i16(
                             field.byte_offset,
                             const_pool.get_int(jvm, index)? as i16,
                             true,
                         )
                     },
-                    Typ::Int => unsafe {
+                    Type::Int => unsafe {
                         self.static_storage.write_i32(
                             field.byte_offset,
                             const_pool.get_int(jvm, index)?,
                             true,
                         )
                     },
-                    Typ::Float => unsafe {
+                    Type::Float => unsafe {
                         self.static_storage.write_f32(
                             field.byte_offset,
                             const_pool.get_float(jvm, index)?,
                             true,
                         )
                     },
-                    Typ::Double => unsafe {
+                    Type::Double => unsafe {
                         self.static_storage.write_f64(
                             field.byte_offset,
                             const_pool.get_double(jvm, index)?,
                             true,
                         )
                     },
-                    Typ::Long => unsafe {
+                    Type::Long => unsafe {
                         self.static_storage.write_i64(
                             field.byte_offset,
                             const_pool.get_long(jvm, index)?,
                             true,
                         )
                     },
-                    Typ::Ref(name) => {
+                    Type::Ref(name) => {
                         if name.as_ref() == "java.lang.String" {
                             unsafe {
                                 self.static_storage.write_ptr(

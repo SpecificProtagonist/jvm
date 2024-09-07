@@ -29,7 +29,7 @@ pub use jvm::{Jvm, JvmId};
 pub use method::MethodDescriptor;
 use method::MethodNaTBorrow;
 pub use method::NativeCode;
-pub use typ::Typ;
+pub use typ::Type;
 
 fn default<T: Default>() -> T {
     Default::default()
@@ -116,7 +116,7 @@ impl Object {
     ///
     /// # Panics
     /// Panics if the field does not exist or is static.
-    pub fn get(self, field_name: &str, field_type: Typ) -> Value {
+    pub fn get(self, field_name: &str, field_type: Type) -> Value {
         let Some(field) = self.class().field(field_name, field_type.clone()) else {
             panic!(
                 "Field {field_name} of type {field_type} not found in object of type {}",
@@ -132,7 +132,7 @@ impl Object {
     /// Panics if the field does not exist or is static or
     /// the value is not assignable to the field's type
     /// or is an object created by a different JVM
-    pub fn set(self, field_name: &str, field_type: Typ, value: impl Into<Value>) {
+    pub fn set(self, field_name: &str, field_type: Type, value: impl Into<Value>) {
         let Some(field) = self.class().field(field_name, field_type.clone()) else {
             panic!(
                 "Field {field_name} of type {field_type} not found in object of type {}",
@@ -214,7 +214,7 @@ impl Class {
     }
 
     /// Convenience method for getting this class' type
-    pub fn typ(&self) -> Typ {
+    pub fn typ(&self) -> Type {
         self.value.typ()
     }
 
@@ -223,7 +223,7 @@ impl Class {
     }
 
     /// Is `Some()` for classes representing an array and `None` otherwise.
-    pub fn element_type(self) -> Option<Typ> {
+    pub fn element_type(self) -> Option<Type> {
         self.value.element_type.clone()
     }
 
@@ -234,7 +234,7 @@ impl Class {
     /// Look up a field in this class by its name and type.
     /// Does not search the inheritance hierarchy.
     /// There may be multiple fields of the same name.
-    pub fn field(self, name: &str, typ: Typ) -> Option<Field> {
+    pub fn field(self, name: &str, typ: Type) -> Option<Field> {
         self.value
             .field(name, typ)
             .map(|value| Field::new(self.jvm, value))
@@ -245,8 +245,8 @@ impl Class {
     pub fn method(
         self,
         name: &str,
-        args: impl IntoIterator<Item = Typ>,
-        ret: Option<Typ>,
+        args: impl IntoIterator<Item = Type>,
+        ret: Option<Type>,
     ) -> Option<Method> {
         self.method_by_descriptor(
             name,
@@ -310,7 +310,7 @@ impl Field {
     }
 
     /// Type of this field.
-    pub fn typ(&self) -> &Typ {
+    pub fn typ(&self) -> &Type {
         &self.value.nat.typ
     }
 
@@ -439,15 +439,15 @@ pub enum Value {
 }
 
 impl Value {
-    fn new(jvm: JvmId, value: value::Value, typ: &Typ) -> Self {
+    fn new(jvm: JvmId, value: value::Value, typ: &Type) -> Self {
         match value {
             value::Value::Ref(value) => Self::Ref(value.map(|value| Object::new(jvm, value))),
             value::Value::Int(value) => match typ {
-                Typ::Boolean => Self::Boolean(value != 0),
-                Typ::Byte => Self::Byte(value as i8),
-                Typ::Short => Self::Short(value as i16),
-                Typ::Char => Self::Char(value as u16),
-                Typ::Int => Self::Int(value),
+                Type::Boolean => Self::Boolean(value != 0),
+                Type::Byte => Self::Byte(value as i8),
+                Type::Short => Self::Short(value as i16),
+                Type::Char => Self::Char(value as u16),
+                Type::Int => Self::Int(value),
                 _ => unreachable!(),
             },
             value::Value::Long(value) => Self::Long(value),

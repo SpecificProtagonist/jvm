@@ -10,7 +10,7 @@ use crate::{
     jvm::{error, Jvm, JvmResult},
     method::{Bytecode, Code, ExceptionHandler, Method, MethodDescriptor, MethodNaT},
     object::Object,
-    typ::Typ,
+    typ::Type,
     verification::{StackMapFrame, VerificationType},
     AccessFlags,
 };
@@ -163,17 +163,17 @@ pub(crate) fn parse_typ_descriptor(
     jvm: &Jvm,
     descriptor: &str,
     start: usize,
-) -> JvmResult<(Typ, usize)> {
+) -> JvmResult<(Type, usize)> {
     let str = &descriptor[start..];
     if let Some(typ) = match str.chars().next() {
-        Some('Z') => Some(Typ::Boolean),
-        Some('B') => Some(Typ::Byte),
-        Some('C') => Some(Typ::Char),
-        Some('S') => Some(Typ::Short),
-        Some('D') => Some(Typ::Double),
-        Some('F') => Some(Typ::Float),
-        Some('I') => Some(Typ::Int),
-        Some('J') => Some(Typ::Long),
+        Some('Z') => Some(Type::Boolean),
+        Some('B') => Some(Type::Byte),
+        Some('C') => Some(Type::Char),
+        Some('S') => Some(Type::Short),
+        Some('D') => Some(Type::Double),
+        Some('F') => Some(Type::Float),
+        Some('I') => Some(Type::Int),
+        Some('J') => Some(Type::Long),
         _ => None,
     } {
         // Primitive
@@ -185,7 +185,7 @@ pub(crate) fn parse_typ_descriptor(
         };
         let class_name = class_name.replace('/', ".");
         let start = start + 1 + class_name.len() + 1;
-        let typ = Typ::Ref(class_name.into());
+        let typ = Type::Ref(class_name.into());
         Ok((typ, start))
     } else if str.starts_with('[') {
         // Array
@@ -198,7 +198,7 @@ pub(crate) fn parse_typ_descriptor(
         }
         let (component, end) = parse_typ_descriptor(jvm, descriptor, start + dimensions)?;
         let name = format!("{component}{}", "[]".repeat(dimensions));
-        let typ = Typ::Ref(name.into());
+        let typ = Type::Ref(name.into());
         Ok((typ, end))
     } else {
         Err(cfe(jvm, "invalid field descriptor"))

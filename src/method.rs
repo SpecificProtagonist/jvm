@@ -7,7 +7,7 @@ use hashbrown::Equivalent;
 
 use crate::{
     class::{Class, ClassPtr},
-    typ::Typ,
+    typ::Type,
     AccessFlags, Jvm,
 };
 
@@ -50,8 +50,8 @@ impl<'a> Equivalent<MethodNaT> for MethodNaTBorrow<'a> {
 /// A method type signature. Does not include declared exceptions.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct MethodDescriptor {
-    pub args: Vec<Typ>,
-    pub returns: Option<Typ>,
+    pub args: Vec<Type>,
+    pub returns: Option<Type>,
 }
 
 impl MethodDescriptor {
@@ -59,7 +59,7 @@ impl MethodDescriptor {
         self.args
             .iter()
             .map(|typ| match typ {
-                Typ::Long | Typ::Double => 2,
+                Type::Long | Type::Double => 2,
                 _ => 1,
             })
             .sum()

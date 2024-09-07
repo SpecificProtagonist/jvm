@@ -10,7 +10,7 @@ use crate::{
     field_storage::FieldStorage,
     heap::NULL_PTR,
     object::Object,
-    typ::Typ,
+    typ::Type,
     value::Value,
     AccessFlags,
 };
@@ -33,13 +33,13 @@ pub(crate) struct Field {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct FieldNaT {
     pub name: Arc<str>,
-    pub typ: Typ,
+    pub typ: Type,
 }
 
 #[derive(Hash)]
 pub(crate) struct FieldNaTBorrow<'a> {
     pub name: &'a str,
-    pub typ: Typ,
+    pub typ: Type,
 }
 
 impl<'a> Equivalent<FieldNaT> for FieldNaTBorrow<'a> {
@@ -88,17 +88,17 @@ impl Field {
         // SAFETY: bounds, alignment & datatype unchanged after construction
         unsafe {
             match self.nat.typ {
-                Typ::Boolean | Typ::Byte => {
+                Type::Boolean | Type::Byte => {
                     Value::Int(storage.read_i8(self.byte_offset, volatile) as i32)
                 }
-                Typ::Short | Typ::Char => {
+                Type::Short | Type::Char => {
                     Value::Int(storage.read_i16(self.byte_offset, volatile) as i32)
                 }
-                Typ::Int => storage.read_i32(self.byte_offset, volatile).into(),
-                Typ::Float => storage.read_f32(self.byte_offset, volatile).into(),
-                Typ::Long => storage.read_i64(self.byte_offset, volatile).into(),
-                Typ::Double => storage.read_f64(self.byte_offset, volatile).into(),
-                Typ::Ref(..) => {
+                Type::Int => storage.read_i32(self.byte_offset, volatile).into(),
+                Type::Float => storage.read_f32(self.byte_offset, volatile).into(),
+                Type::Long => storage.read_i64(self.byte_offset, volatile).into(),
+                Type::Double => storage.read_f64(self.byte_offset, volatile).into(),
+                Type::Ref(..) => {
                     Object::from_ptr(storage.read_ptr(self.byte_offset, volatile)).into()
                 }
             }
@@ -145,25 +145,25 @@ impl Field {
         // SAFETY: bounds, alignment & datatype unchanged after construction
         unsafe {
             match (&self.nat.typ, value) {
-                (Typ::Boolean | Typ::Byte, Value::Int(value)) => {
+                (Type::Boolean | Type::Byte, Value::Int(value)) => {
                     storage.write_i8(self.byte_offset, value as i8, volatile)
                 }
-                (Typ::Short | Typ::Char, Value::Int(value)) => {
+                (Type::Short | Type::Char, Value::Int(value)) => {
                     storage.write_i16(self.byte_offset, value as i16, volatile)
                 }
-                (Typ::Int, Value::Int(value)) => {
+                (Type::Int, Value::Int(value)) => {
                     storage.write_i32(self.byte_offset, value, volatile)
                 }
-                (Typ::Float, Value::Float(value)) => {
+                (Type::Float, Value::Float(value)) => {
                     storage.write_f32(self.byte_offset, value, volatile)
                 }
-                (Typ::Long, Value::Long(value)) => {
+                (Type::Long, Value::Long(value)) => {
                     storage.write_i64(self.byte_offset, value, volatile)
                 }
-                (Typ::Double, Value::Double(value)) => {
+                (Type::Double, Value::Double(value)) => {
                     storage.write_f64(self.byte_offset, value, volatile)
                 }
-                (Typ::Ref(name), Value::Ref(obj))
+                (Type::Ref(name), Value::Ref(obj))
                     if obj.map(|o| assignable(o.class(), name)).unwrap_or(true) =>
                 {
                     storage.write_ptr(

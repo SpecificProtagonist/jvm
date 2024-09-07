@@ -2,7 +2,7 @@
 
 // TODO: Directly use &[IVal]
 
-use crate::{method::Code, AccessFlags, Jvm, JvmResult, Method, Object, Typ, Value};
+use crate::{method::Code, AccessFlags, Jvm, JvmResult, Method, Object, Type, Value};
 
 #[derive(Debug)]
 pub enum NativeBindError {
@@ -36,18 +36,18 @@ pub(crate) fn valid_signature<F, T>(method: &Method) -> bool
 where
     F: NativeFn<T>,
 {
-    fn ok(types: (&Typ, ArgTyp)) -> bool {
+    fn ok(types: (&Type, ArgTyp)) -> bool {
         matches!(
             types,
-            (Typ::Boolean, ArgTyp::Boolean)
-                | (Typ::Byte, ArgTyp::Byte)
-                | (Typ::Short, ArgTyp::Short)
-                | (Typ::Char, ArgTyp::Char)
-                | (Typ::Int, ArgTyp::Int)
-                | (Typ::Long, ArgTyp::Long)
-                | (Typ::Float, ArgTyp::Float)
-                | (Typ::Double, ArgTyp::Double)
-                | (Typ::Ref(_), ArgTyp::Object)
+            (Type::Boolean, ArgTyp::Boolean)
+                | (Type::Byte, ArgTyp::Byte)
+                | (Type::Short, ArgTyp::Short)
+                | (Type::Char, ArgTyp::Char)
+                | (Type::Int, ArgTyp::Int)
+                | (Type::Long, ArgTyp::Long)
+                | (Type::Float, ArgTyp::Float)
+                | (Type::Double, ArgTyp::Double)
+                | (Type::Ref(_), ArgTyp::Object)
         )
     }
     let Some((args, ret)) = F::descriptor() else {

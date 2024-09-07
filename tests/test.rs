@@ -20,7 +20,7 @@ fn circular_loading() {
 fn initialization() {
     let jvm = make_jvm();
     let method = jvm
-        .resolve_method("Initialization", "check_init", [], Some(Typ::Boolean))
+        .resolve_method("Initialization", "check_init", [], Some(Type::Boolean))
         .unwrap();
     assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), true);
 }
@@ -32,7 +32,7 @@ fn init_lock() {
     std::thread::scope(|s| {
         for _ in 0..100 {
             s.spawn(|| {
-                let method = class.method("check", [], Some(Typ::Boolean)).unwrap();
+                let method = class.method("check", [], Some(Type::Boolean)).unwrap();
                 assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), true);
             });
         }
@@ -43,7 +43,7 @@ fn init_lock() {
 fn control_flow() {
     let jvm = make_jvm();
     let is_even = jvm
-        .resolve_method("ControlFlow", "is_even", [Typ::Int], Some(Typ::Boolean))
+        .resolve_method("ControlFlow", "is_even", [Type::Int], Some(Type::Boolean))
         .unwrap();
     let even_10 = is_even.invoke(&jvm, &[10.into()]).unwrap();
     assert_eq!(even_10.unwrap(), true);
@@ -55,8 +55,8 @@ fn control_flow() {
 fn field_access_simple() {
     let jvm = make_jvm();
     let class = jvm.resolve_class("FieldAccess").unwrap();
-    let set_method = class.method("set", [Typ::Int], None).unwrap();
-    let get_method = class.method("get", [], Some(Typ::Int)).unwrap();
+    let set_method = class.method("set", [Type::Int], None).unwrap();
+    let get_method = class.method("get", [], Some(Type::Int)).unwrap();
     assert_eq!(set_method.invoke(&jvm, &[42.into()]).unwrap(), None);
     assert_eq!(get_method.invoke(&jvm, &[]).unwrap().unwrap(), 42);
 }
@@ -66,8 +66,8 @@ fn field_access_inheritance() {
     let jvm = make_jvm();
     let class = jvm.resolve_class("FieldAccessInheritance").unwrap();
     let super_class = class.super_class().unwrap();
-    let a = super_class.field("a", Typ::Int).unwrap();
-    let b = class.field("b", Typ::Int).unwrap();
+    let a = super_class.field("a", Type::Int).unwrap();
+    let b = class.field("b", Type::Int).unwrap();
     let instance = class.create_object_uninit(&jvm);
     a.instance_set(instance, 1);
     b.instance_set(instance, 2);
@@ -82,8 +82,8 @@ fn invoke_static() {
         .resolve_method(
             "InvokeStatic",
             "test",
-            [Typ::Boolean, Typ::Boolean],
-            Some(Typ::Boolean),
+            [Type::Boolean, Type::Boolean],
+            Some(Type::Boolean),
         )
         .unwrap();
     assert_eq!(
@@ -99,7 +99,7 @@ fn invoke_static() {
 fn invoke_virtual() {
     let jvm = make_jvm();
     let method = jvm
-        .resolve_method("InvokeVirtual", "test", [], Some(Typ::Boolean))
+        .resolve_method("InvokeVirtual", "test", [], Some(Type::Boolean))
         .unwrap();
     assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), true);
 }
@@ -110,8 +110,8 @@ fn invoke_native() {
     jvm.resolve_method(
         "Native",
         "call_static",
-        [Typ::Int, Typ::Int],
-        Some(Typ::Long),
+        [Type::Int, Type::Int],
+        Some(Type::Long),
     )
     .unwrap()
     .bind_native_code(|a: i32, b: i32| Ok(a as i64 + b as i64))
@@ -120,7 +120,7 @@ fn invoke_native() {
     jvm.resolve_method("Native", "call_instance", [], None)
         .unwrap()
         .bind_native_code(|this: Object| {
-            let field = this.class().field("value", Typ::Long).unwrap();
+            let field = this.class().field("value", Type::Long).unwrap();
             assert_eq!(field.instance_get(this), 1i64);
             Ok(())
         })
@@ -130,8 +130,8 @@ fn invoke_native() {
         .resolve_method(
             "Native",
             "call_static",
-            [Typ::Int, Typ::Int],
-            Some(Typ::Long),
+            [Type::Int, Type::Int],
+            Some(Type::Long),
         )
         .unwrap();
     assert_eq!(
@@ -156,12 +156,12 @@ fn arrays() {
     let jvm = make_jvm();
 
     let method = jvm
-        .resolve_method("Arrays", "test", [], Some(Typ::Boolean))
+        .resolve_method("Arrays", "test", [], Some(Type::Boolean))
         .unwrap();
     assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), true);
 
     let method = jvm
-        .resolve_method("Arrays", "multianewarray", [], Some(Typ::Boolean))
+        .resolve_method("Arrays", "multianewarray", [], Some(Type::Boolean))
         .unwrap();
     assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), true);
 }
@@ -179,13 +179,13 @@ fn lazy_resolve() {
 fn lazy_init() {
     let jvm = make_jvm();
     let method = jvm
-        .resolve_method("LazyInit", "test", [Typ::Boolean], Some(Typ::Int))
+        .resolve_method("LazyInit", "test", [Type::Boolean], Some(Type::Int))
         .unwrap();
     assert_eq!(method.invoke(&jvm, &[false.into()]).unwrap().unwrap(), 1);
 
     let jvm = make_jvm();
     let method = jvm
-        .resolve_method("LazyInit", "test", [Typ::Boolean], Some(Typ::Int))
+        .resolve_method("LazyInit", "test", [Type::Boolean], Some(Type::Int))
         .unwrap();
     assert_eq!(method.invoke(&jvm, &[true.into()]).unwrap().unwrap(), 2);
 }
@@ -201,7 +201,7 @@ fn many_allocs() {
 fn exceptions() {
     let jvm = make_jvm();
     let method = jvm
-        .resolve_method("Exceptions", "test", [Typ::Boolean], Some(Typ::Boolean))
+        .resolve_method("Exceptions", "test", [Type::Boolean], Some(Type::Boolean))
         .unwrap();
     assert_eq!(
         method.invoke(&jvm, &[false.into()]).unwrap().unwrap(),
@@ -216,7 +216,7 @@ fn strings() {
     let class = jvm.resolve_class("Strings").unwrap();
     class.ensure_init(&jvm).unwrap();
     let Value::Ref(Some(string)) = class
-        .field("foo", Typ::Ref("java.lang.String".into()))
+        .field("foo", Type::Ref("java.lang.String".into()))
         .unwrap()
         .static_get(&jvm)
     else {
@@ -238,7 +238,7 @@ fn cross_jvms_field() {
 
     let class_from_2 = jvm_2.resolve_class("CrossJvm").unwrap();
     let field = class_from_2
-        .field("field", Typ::Ref("java.lang.Object".into()))
+        .field("field", Type::Ref("java.lang.Object".into()))
         .unwrap();
     field.static_set(Some(object_from_1));
 }
@@ -256,7 +256,7 @@ fn cross_jvms_method() {
 
     let class_from_2 = jvm_2.resolve_class("CrossJvm").unwrap();
     let method = class_from_2
-        .method("method", [Typ::Ref("java.lang.Object".into())], None)
+        .method("method", [Type::Ref("java.lang.Object".into())], None)
         .unwrap();
     _ = method.invoke(&jvm_2, &[Some(object_from_1).into()]);
 }
@@ -281,9 +281,9 @@ fn hot_reloading() {
     let jvm = Jvm::new(Box::new(TestClassloader));
 
     let class = jvm.resolve_class("HotReloading").unwrap();
-    let field = class.field("static_field", Typ::Int).unwrap();
+    let field = class.field("static_field", Type::Int).unwrap();
     field.static_set(1);
-    let method = class.method("hot_reloadable", [], Some(Typ::Int)).unwrap();
+    let method = class.method("hot_reloadable", [], Some(Type::Int)).unwrap();
     assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), 1);
 
     RELOADED.store(true, Ordering::SeqCst);

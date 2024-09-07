@@ -10,7 +10,7 @@ use crate::{
     method::{Bytecode, Code, Method, MethodNaT, NativeCode},
     object::Object,
     opcodes::*,
-    typ::Typ,
+    typ::Type,
     unreachable_verified,
     value::Value,
     AccessFlags,
@@ -34,23 +34,24 @@ pub(crate) fn invoke(
     }
     for (declared, value) in method.nat.typ.args.iter().zip(args) {
         match (declared, value) {
-            (Typ::Ref(declared), Value::Ref(object))
+            (Type::Ref(declared), Value::Ref(object))
                 if object
                     .map(|o| o.class().assignable_to(declared))
                     .unwrap_or(true) =>
             {
                 arg_values.push(object.into())
             }
-            (Typ::Boolean | Typ::Byte | Typ::Short | Typ::Char | Typ::Int, Value::Int(value)) => {
-                arg_values.push(value.into())
-            }
-            (Typ::Long, Value::Long(value)) => {
+            (
+                Type::Boolean | Type::Byte | Type::Short | Type::Char | Type::Int,
+                Value::Int(value),
+            ) => arg_values.push(value.into()),
+            (Type::Long, Value::Long(value)) => {
                 let (low, high) = IVal::from_long(value);
                 arg_values.push(low);
                 arg_values.push(high);
             }
-            (Typ::Float, Value::Float(value)) => arg_values.push(value.into()),
-            (Typ::Double, Value::Double(value)) => {
+            (Type::Float, Value::Float(value)) => arg_values.push(value.into()),
+            (Type::Double, Value::Double(value)) => {
                 let (low, high) = IVal::from_double(value);
                 arg_values.push(low);
                 arg_values.push(high);
@@ -129,39 +130,39 @@ fn native(
     }
     for arg in &method.nat.typ.args {
         match arg {
-            Typ::Boolean => {
+            Type::Boolean => {
                 values.push(crate::Value::Boolean(args[i].as_int() != 0));
                 i += 1;
             }
-            Typ::Byte => {
+            Type::Byte => {
                 values.push(crate::Value::Byte(args[i].as_int() as i8));
                 i += 1;
             }
-            Typ::Short => {
+            Type::Short => {
                 values.push(crate::Value::Short(args[i].as_int() as i16));
                 i += 1;
             }
-            Typ::Char => {
+            Type::Char => {
                 values.push(crate::Value::Char(args[i].as_int() as u16));
                 i += 1;
             }
-            Typ::Int => {
+            Type::Int => {
                 values.push(crate::Value::Int(args[i].as_int()));
                 i += 1;
             }
-            Typ::Long => {
+            Type::Long => {
                 values.push(crate::Value::Long(IVal::as_long(args[i], args[i + 1])));
                 i += 2;
             }
-            Typ::Float => {
+            Type::Float => {
                 values.push(crate::Value::Float(args[i].as_float()));
                 i += 1;
             }
-            Typ::Double => {
+            Type::Double => {
                 values.push(crate::Value::Double(IVal::as_double(args[i], args[i + 1])));
                 i += 2;
             }
-            Typ::Ref(_) => {
+            Type::Ref(_) => {
                 values.push(crate::Value::Ref(unsafe {
                     args[i]
                         .as_ref()
@@ -399,7 +400,7 @@ fn run_until_exception_or_return(
                 let index = frame.pop().as_int();
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                let Some(Typ::Ref(component)) = &obj.class().element_type else {
+                let Some(Type::Ref(component)) = &obj.class().element_type else {
                     unreachable!("checked during verification")
                 };
                 // Yay for covariant arrays, another consequence of Java launching without generics…
@@ -803,7 +804,7 @@ fn run_until_exception_or_return(
                 let field = const_pool.get_field_verified(index);
                 // Stack has object ref first, then value on top
                 // This is ugly
-                let object = if matches!(field.nat.typ, Typ::Long | Typ::Double) {
+                let object = if matches!(field.nat.typ, Type::Long | Type::Double) {
                     let high = frame.pop();
                     let low = frame.pop();
                     let obj = unsafe { frame.pop().as_ref() };
@@ -931,14 +932,14 @@ fn run_until_exception_or_return(
                     return Err(throwable(jvm, "NegativeArraySizeException"));
                 }
                 let component = match frame.read_code_u8() {
-                    4 => Typ::Boolean,
-                    5 => Typ::Byte,
-                    6 => Typ::Char,
-                    7 => Typ::Short,
-                    8 => Typ::Double,
-                    9 => Typ::Float,
-                    10 => Typ::Int,
-                    11 => Typ::Long,
+                    4 => Type::Boolean,
+                    5 => Type::Byte,
+                    6 => Type::Char,
+                    7 => Type::Short,
+                    8 => Type::Double,
+                    9 => Type::Float,
+                    10 => Type::Int,
+                    11 => Type::Long,
                     _ => unreachable!(),
                 };
                 frame
@@ -949,7 +950,7 @@ fn run_until_exception_or_return(
                 let length = frame.pop().as_int();
                 let index = frame.read_code_u16();
                 let component = const_pool.get_class_verified(index);
-                let class = jvm.resolve_array_of(&Typ::Ref(component.name.clone()))?;
+                let class = jvm.resolve_array_of(&Type::Ref(component.name.clone()))?;
                 if length < 0 {
                     return Err(throwable(jvm, "NegativeArraySizeException"));
                 }
@@ -1004,7 +1005,7 @@ fn run_until_exception_or_return(
                 fn create_array(jvm: &Jvm, dimensions: &[IVal], class: ClassPtr) -> Object {
                     let len = dimensions[0].as_int();
                     let array = jvm.create_array_internal(class, len);
-                    if let Some(Typ::Ref(element_type)) = &class.element_type {
+                    if let Some(Type::Ref(element_type)) = &class.element_type {
                         let class = jvm.resolve_class_internal(element_type).unwrap();
                         for i in 0..len {
                             array.array_write(i, create_array(jvm, &dimensions[1..], class).into());
@@ -1059,21 +1060,21 @@ fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
     unsafe {
         match field.nat.typ {
-            Typ::Boolean | Typ::Byte => frame
+            Type::Boolean | Type::Byte => frame
                 .stack
                 .push((storage.read_i8(field.byte_offset, volatile) as i32).into()),
-            Typ::Short | Typ::Char => frame
+            Type::Short | Type::Char => frame
                 .stack
                 .push((storage.read_i16(field.byte_offset, volatile) as i32).into()),
-            Typ::Int => frame
+            Type::Int => frame
                 .stack
                 .push(storage.read_i32(field.byte_offset, volatile).into()),
-            Typ::Float => frame
+            Type::Float => frame
                 .stack
                 .push(storage.read_f32(field.byte_offset, volatile).into()),
-            Typ::Long => frame.push_long(storage.read_i64(field.byte_offset, volatile)),
-            Typ::Double => frame.push_double(storage.read_f64(field.byte_offset, volatile)),
-            Typ::Ref(..) => frame
+            Type::Long => frame.push_long(storage.read_i64(field.byte_offset, volatile)),
+            Type::Double => frame.push_double(storage.read_f64(field.byte_offset, volatile)),
+            Type::Ref(..) => frame
                 .stack
                 .push(IVal(storage.read_ptr(field.byte_offset, volatile))),
         }
@@ -1084,17 +1085,17 @@ fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
     unsafe {
         match field.nat.typ {
-            Typ::Boolean | Typ::Byte => {
+            Type::Boolean | Type::Byte => {
                 storage.write_i8(field.byte_offset, frame.pop().as_int() as i8, volatile)
             }
-            Typ::Short | Typ::Char => {
+            Type::Short | Type::Char => {
                 storage.write_i16(field.byte_offset, frame.pop().as_int() as i16, volatile)
             }
-            Typ::Int => storage.write_i32(field.byte_offset, frame.pop().as_int(), volatile),
-            Typ::Float => storage.write_f32(field.byte_offset, frame.pop().as_float(), volatile),
-            Typ::Long => storage.write_i64(field.byte_offset, frame.pop_long(), volatile),
-            Typ::Double => storage.write_f64(field.byte_offset, frame.pop_double(), volatile),
-            Typ::Ref(..) => storage.write_ptr(field.byte_offset, frame.pop().0, volatile),
+            Type::Int => storage.write_i32(field.byte_offset, frame.pop().as_int(), volatile),
+            Type::Float => storage.write_f32(field.byte_offset, frame.pop().as_float(), volatile),
+            Type::Long => storage.write_i64(field.byte_offset, frame.pop_long(), volatile),
+            Type::Double => storage.write_f64(field.byte_offset, frame.pop_double(), volatile),
+            Type::Ref(..) => storage.write_ptr(field.byte_offset, frame.pop().0, volatile),
         }
     }
 }
