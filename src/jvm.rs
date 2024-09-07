@@ -2,10 +2,8 @@ use crate::heap::Heap;
 use crate::hot_reloading::{reload_method_bytecodes_for_class, ReloadErr};
 use crate::{class_loader::ClassLoader, AccessFlags};
 use fixed_typed_arena::ManuallyDropArena;
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
+use std::sync::atomic::AtomicU32;
+use std::sync::{atomic::Ordering, Arc};
 use std::sync::{Mutex, RwLock};
 // TODO: posibly exchange for different hasher (benchmark)
 use hashbrown::HashMap;
@@ -23,10 +21,8 @@ use crate::{class::*, default};
 /// Err is an object that extends Throwable
 pub(crate) type JvmResult<T> = std::result::Result<T, Object>;
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct JvmId(u64);
+pub(crate) struct JvmId(u32);
 
 /// Creates & manages classes and objects, which borrow from the Jvm.
 /// Multiple independent `Jvm`s may exist.
@@ -52,15 +48,15 @@ pub struct Jvm {
 impl Jvm {
     /// Construct a new JVM.
     pub fn new(base_class_loader: Box<dyn ClassLoader>) -> Self {
-        let heap = Heap::default();
+        static NEXT_ID: AtomicU32 = AtomicU32::new(0);
         let id = JvmId(NEXT_ID.fetch_add(1, Ordering::SeqCst));
-        if id.0 == u64::MAX {
-            panic!("You've created 18446744073709551616 instances. Impressive, but also, NO.")
+        if id.0 == u32::MAX {
+            panic!("You've created 4294967296 jvm instances. You've had your fun but that's enough for today.")
         }
         let jvm = Self {
             id,
             bootstrap_class_loader: base_class_loader,
-            heap,
+            heap: default(),
             method_storage: default(),
             classes: default(),
         };
@@ -418,7 +414,11 @@ impl Drop for Jvm {
 /// For errors thrown by the JVM (instead of by athrow).
 /// `name` is unqualified.
 pub(crate) fn error(jvm: &Jvm, name: &str, message: &str) -> Object {
-    let message = format!("{name}: {message}");
+    let message = if message.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name}: {message}")
+    };
     let object = throwable(jvm, name);
     let field = object
         .class()

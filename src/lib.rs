@@ -25,6 +25,7 @@ use std::{
 
 pub use class_loader::{ClassLoader, FolderClassLoader};
 use fake_variadics::{NativeBindError, NativeFn};
+use heap::JvmPtr;
 pub use jvm::Jvm;
 use jvm::{error, JvmId};
 pub use method::MethodDescriptor;
@@ -179,8 +180,8 @@ impl Object {
     }
 
     /// Creates a debug representation of the object. For a full object tree, use `Debug`.
-    pub fn format_short(self) -> String {
-        self.value.format_short()
+    pub fn format_short(self, jvm: &Jvm) -> String {
+        self.into_inner(jvm.id).format_short()
     }
 }
 
@@ -574,6 +575,43 @@ partialeq_into_and_try_from_value!(Int, i32, "Not an int");
 partialeq_into_and_try_from_value!(Long, i64, "Not a long");
 partialeq_into_and_try_from_value!(Float, f32, "Not a float");
 partialeq_into_and_try_from_value!(Double, f64, "Not a double");
+
+impl From<Object> for Value {
+    fn from(value: Object) -> Self {
+        Self::Ref(Some(value))
+    }
+}
+
+impl TryFrom<Value> for Object {
+    type Error = &'static str;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        if let Value::Ref(Some(value)) = value {
+            Ok(value)
+        } else {
+            Err("Not an object")
+        }
+    }
+}
+
+impl PartialEq<Object> for Value {
+    fn eq(&self, other: &Object) -> bool {
+        self == &Into::<Value>::into(*other)
+    }
+}
+
+impl PartialEq<Value> for Object {
+    fn eq(&self, other: &Value) -> bool {
+        *other == Value::Ref(Some(*self))
+    }
+}
+
+// Value should be 16 byte when using 4 byte pointers;
+// for 8 byte pointers this isn't possible because the alignment creates padding that can't be reused
+fn _assert_value_size() {
+    const _: () =
+        assert!((std::mem::size_of::<JvmPtr>() != 4) | (std::mem::size_of::<Value>() == 16));
+}
 
 /// Err is an object that extends Throwable.
 /// Currently no call stack is provided.
