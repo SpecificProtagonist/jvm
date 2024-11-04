@@ -22,7 +22,7 @@ let value = field.static_get(&jvm);
 class.method(&jvm, "add", [Typ::Float, Typ::Float], Some(Typ::Float))?
   .bind_native_code(|a: f32, b: f32| Ok(a + b)).unwrap();
 ```
-(TODO: Make interface pleasant again by splitting guard object into id and lifetimed object)
+(TODO: Make interface pleasant again)
 
 Currently implemented:
 - classes, arrays, interfaces

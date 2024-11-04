@@ -1239,7 +1239,7 @@ struct Frame<'a> {
     pc: u16,
 }
 
-impl<'jvm> Frame<'jvm> {
+impl Frame<'_> {
     fn jump_relative(&mut self, base: u16, target_offset: i32) {
         self.pc = (base as i32 + target_offset) as u16;
     }

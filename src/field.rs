@@ -42,7 +42,7 @@ pub(crate) struct FieldNaTBorrow<'a> {
     pub typ: Type,
 }
 
-impl<'a> Equivalent<FieldNaT> for FieldNaTBorrow<'a> {
+impl Equivalent<FieldNaT> for FieldNaTBorrow<'_> {
     fn equivalent(&self, key: &FieldNaT) -> bool {
         (self.name == key.name.as_ref()) & (self.typ == key.typ)
     }
@@ -189,14 +189,14 @@ impl Field {
     }
 }
 
-impl<'a> Eq for &'a Field {}
-impl<'a> PartialEq for &'a Field {
+impl Eq for &'_ Field {}
+impl PartialEq for &'_ Field {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(*self, *other)
     }
 }
 
-impl<'a> std::hash::Hash for &'a Field {
+impl std::hash::Hash for &'_ Field {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::hash::Hash::hash(&(*self as *const _ as usize), state)
     }

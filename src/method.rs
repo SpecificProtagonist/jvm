@@ -41,7 +41,7 @@ pub(crate) struct MethodNaTBorrow<'a> {
     pub typ: &'a MethodDescriptor,
 }
 
-impl<'a> Equivalent<MethodNaT> for MethodNaTBorrow<'a> {
+impl Equivalent<MethodNaT> for MethodNaTBorrow<'_> {
     fn equivalent(&self, key: &MethodNaT) -> bool {
         (self.name == key.name.as_ref()) & (self.typ == &key.typ)
     }

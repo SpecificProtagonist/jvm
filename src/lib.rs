@@ -59,6 +59,8 @@ fn default<T: Default>() -> T {
 // Unfortunately, for most of this the safety boundary is at the crate level.
 
 /// Guard types ensure values can't be used without the vm they belong to / be used with the wrong vm.
+// TODO: Either split guard object into id and lifetimed object, or use Arc/Weak everywhere.
+// If using lifetimes, also add a module that reexports everything with a static lifetime.
 macro_rules! define_guard {
     ($(#[$doc:meta])* $guard_typ:ident, $impl_typ:ty) => {
         $(#[$doc])*
