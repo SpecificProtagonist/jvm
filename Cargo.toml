@@ -15,3 +15,4 @@ libc = "0.2"
 hashbrown = "0.14"
 # Stack exhaustion check
 stacker = "0.1"
+cesu8 = "1.1"

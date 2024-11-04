@@ -60,9 +60,7 @@ fn read_const_pool_item(input: &mut &[u8], jvm: &Jvm) -> JvmResult<ConstPoolItem
             for _ in 0..length {
                 bytes.push(read_u8(jvm, input)?);
             }
-            // TODO: actually read Modified-UTF8 (null codepoint is remapped)
-            let string =
-                std::string::String::from_utf8(bytes).map_err(|_| cfe(jvm, "invalid utf8"))?;
+            let string = cesu8::from_java_cesu8(&bytes).map_err(|_| cfe(jvm, "invalid utf8"))?;
             Ok(Utf8(string.into()))
         }
         3 => Ok(Integer(read_u32(jvm, input)? as i32)),
