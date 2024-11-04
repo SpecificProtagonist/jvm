@@ -32,7 +32,9 @@ fn init_lock() {
     std::thread::scope(|s| {
         for _ in 0..100 {
             s.spawn(|| {
-                let method = class.method("check", [], Some(Type::Boolean)).unwrap();
+                let method = class
+                    .method(&jvm, "check", [], Some(Type::Boolean))
+                    .unwrap();
                 assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), true);
             });
         }
@@ -55,8 +57,8 @@ fn control_flow() {
 fn field_access_simple() {
     let jvm = make_jvm();
     let class = jvm.resolve_class("FieldAccess").unwrap();
-    let set_method = class.method("set", [Type::Int], None).unwrap();
-    let get_method = class.method("get", [], Some(Type::Int)).unwrap();
+    let set_method = class.method(&jvm, "set", [Type::Int], None).unwrap();
+    let get_method = class.method(&jvm, "get", [], Some(Type::Int)).unwrap();
     assert_eq!(set_method.invoke(&jvm, &[42.into()]).unwrap(), None);
     assert_eq!(get_method.invoke(&jvm, &[]).unwrap().unwrap(), 42);
 }
@@ -65,14 +67,14 @@ fn field_access_simple() {
 fn field_access_inheritance() {
     let jvm = make_jvm();
     let class = jvm.resolve_class("FieldAccessInheritance").unwrap();
-    let super_class = class.super_class().unwrap();
-    let a = super_class.field("a", Type::Int).unwrap();
-    let b = class.field("b", Type::Int).unwrap();
+    let super_class = class.super_class(&jvm).unwrap();
+    let a = super_class.field(&jvm, "a", Type::Int).unwrap();
+    let b = class.field(&jvm, "b", Type::Int).unwrap();
     let instance = class.create_object_uninitialized(&jvm);
-    a.instance_set(instance, 1);
-    b.instance_set(instance, 2);
-    assert_eq!(a.instance_get(instance), 1);
-    assert_eq!(b.instance_get(instance), 2);
+    a.instance_set(&jvm, instance, 1);
+    b.instance_set(&jvm, instance, 2);
+    assert_eq!(a.instance_get(&jvm, instance), 1);
+    assert_eq!(b.instance_get(&jvm, instance), 2);
 }
 
 #[test]
@@ -119,9 +121,9 @@ fn invoke_native() {
 
     jvm.resolve_method("Native", "call_instance", [], None)
         .unwrap()
-        .bind_native_code(|this: Object| {
-            let field = this.class().field("value", Type::Long).unwrap();
-            assert_eq!(field.instance_get(this), 1i64);
+        .bind_native_code(|jvm: &Jvm, this: Object| {
+            let field = this.class(&jvm).field(&jvm, "value", Type::Long).unwrap();
+            assert_eq!(field.instance_get(&jvm, this), 1i64);
             Ok(())
         })
         .unwrap();
@@ -217,7 +219,7 @@ fn strings() {
     let class = jvm.resolve_class("Strings").unwrap();
     class.ensure_init(&jvm).unwrap();
     let Value::Ref(Some(string)) = class
-        .field("foo", Type::Ref("java.lang.String".into()))
+        .field(&jvm, "foo", Type::Ref("java.lang.String".into()))
         .unwrap()
         .static_get(&jvm)
     else {
@@ -239,9 +241,9 @@ fn cross_jvms_field() {
 
     let class_from_2 = jvm_2.resolve_class("CrossJvm").unwrap();
     let field = class_from_2
-        .field("field", Type::Ref("java.lang.Object".into()))
+        .field(&jvm_2, "field", Type::Ref("java.lang.Object".into()))
         .unwrap();
-    field.static_set(Some(object_from_1));
+    field.static_set(&jvm_2, Some(object_from_1));
 }
 
 #[test]
@@ -257,7 +259,12 @@ fn cross_jvms_method() {
 
     let class_from_2 = jvm_2.resolve_class("CrossJvm").unwrap();
     let method = class_from_2
-        .method("method", [Type::Ref("java.lang.Object".into())], None)
+        .method(
+            &jvm_2,
+            "method",
+            [Type::Ref("java.lang.Object".into())],
+            None,
+        )
         .unwrap();
     _ = method.invoke(&jvm_2, &[Some(object_from_1).into()]);
 }
@@ -282,9 +289,11 @@ fn hot_reloading() {
     let jvm = Jvm::new(Box::new(TestClassloader));
 
     let class = jvm.resolve_class("HotReloading").unwrap();
-    let field = class.field("static_field", Type::Int).unwrap();
-    field.static_set(1);
-    let method = class.method("hot_reloadable", [], Some(Type::Int)).unwrap();
+    let field = class.field(&jvm, "static_field", Type::Int).unwrap();
+    field.static_set(&jvm, 1);
+    let method = class
+        .method(&jvm, "hot_reloadable", [], Some(Type::Int))
+        .unwrap();
     assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), 1);
 
     RELOADED.store(true, Ordering::SeqCst);
@@ -303,5 +312,23 @@ fn stackoverflow() {
         .unwrap()
         .invoke(&jvm, &[])
         .unwrap_err();
-    assert_eq!(err.class().name(), "java.lang.StackOverflowError");
+    assert_eq!(err.class(&jvm,).name(&jvm), "java.lang.StackOverflowError");
+}
+
+#[cfg(miri)]
+#[test]
+fn guard_obj_lifetime() {
+    use std::hash::{DefaultHasher, Hash};
+
+    let jvm = make_jvm();
+    let class = jvm.resolve_class("CrossJvm").unwrap();
+    let field = class
+        .field(&jvm, "field", Type::Ref("java.lang.Object".into()))
+        .unwrap();
+
+    drop(jvm);
+    assert_eq!(class, class);
+    assert_eq!(field, field);
+    class.hash(&mut DefaultHasher::new());
+    field.hash(&mut DefaultHasher::new());
 }

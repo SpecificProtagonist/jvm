@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    class::{Class, ClassPtr},
+    class::{Class, ClassRef},
     field_storage::FieldStorage,
     heap::{self, JvmPtr, JvmPtrNonNull},
     typ::Type,
@@ -26,7 +26,7 @@ pub(crate) struct Object {
 
 impl Object {
     #[inline]
-    pub fn class(self) -> ClassPtr {
+    pub fn class(self) -> ClassRef {
         unsafe { &*(heap::ptr_decode(self.ptr.read_ptr(0, false)) as *const Class) }
     }
 

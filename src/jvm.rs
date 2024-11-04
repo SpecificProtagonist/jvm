@@ -42,7 +42,7 @@ pub struct Jvm {
     // Classes (including arrays), methods, method descriptors and interned strings live as long as the JVM
     // TODO: alloc on heap
     pub(crate) method_storage: Mutex<ManuallyDropArena<Method, 128>>,
-    pub(crate) classes: RwLock<HashMap<Arc<str>, ClassPtr>>,
+    pub(crate) classes: RwLock<HashMap<Arc<str>, ClassRef>>,
 }
 
 impl Jvm {
@@ -75,10 +75,7 @@ impl Jvm {
     /// `name` must be fully qualified and may describe an array.
     pub fn resolve_class(&self, name: &str) -> crate::JvmResult<crate::Class> {
         self.resolve_class_internal(name)
-            .map(|value| crate::Class {
-                jvm: self.id,
-                value,
-            })
+            .map(|value| crate::Class::new(self.id, value))
             .map_err(|value| crate::Object::new(self.id, value))
     }
 
@@ -109,10 +106,7 @@ impl Jvm {
                     &format!("{class}.{method}:{nat:?}"),
                 )
             })
-            .map(|value| crate::Method {
-                jvm: self.id,
-                value,
-            })
+            .map(|value| crate::Method::new(self.id, value))
             .map_err(|value| crate::Object::new(self.id, value))
     }
 
@@ -127,7 +121,7 @@ impl Jvm {
     /// Returns the class representing arrays of the given component.
     /// If the component is a class, this also loads it, its superclass (recursively) and any interfaces it implements.
     /// Does not initialize this class nor load any other class referenced.
-    pub(crate) fn resolve_array_of(&self, component: &Type) -> JvmResult<ClassPtr> {
+    pub(crate) fn resolve_array_of(&self, component: &Type) -> JvmResult<ClassRef> {
         let name: Arc<str> = format!("{component}[]").into();
         if let Some(class) = self.classes.read().unwrap().get(&name) {
             return Ok(*class);
@@ -177,7 +171,7 @@ impl Jvm {
     /// This also loads its superclass and any interfaces it implements.
     /// Does not initialize this class nor load any other class referenced.
     /// `name` must be fully qualified and may describe an array.
-    pub(crate) fn resolve_class_internal(&self, name: &str) -> JvmResult<ClassPtr> {
+    pub(crate) fn resolve_class_internal(&self, name: &str) -> JvmResult<ClassRef> {
         self.resolve_class_impl(name, Vec::new())
     }
 
@@ -186,7 +180,7 @@ impl Jvm {
         &self,
         name: &str,
         mut check_circular: Vec<String>,
-    ) -> JvmResult<ClassPtr> {
+    ) -> JvmResult<ClassRef> {
         if let Some(class) = self.classes.read().unwrap().get(name) {
             return Ok(*class);
         }
@@ -321,7 +315,7 @@ impl Jvm {
     /// # Panics
     /// Panics if class is an array class or interface.
     #[track_caller]
-    pub(crate) fn create_object_uninitialized(&self, class: ClassPtr) -> Object {
+    pub(crate) fn create_object_uninitialized(&self, class: ClassRef) -> Object {
         if class.element_type.is_some() | class.is_interface() {
             panic!("{} is an array or interface type", class.name)
         }
@@ -343,14 +337,19 @@ impl Jvm {
         mut args: Vec<crate::Value>,
     ) -> crate::JvmResult<crate::Object> {
         let class_ptr = self.resolve_class(class)?;
-        let object = crate::Object::new(self.id, self.create_object_uninitialized(class_ptr.value));
+        let object = crate::Object::new(
+            self.id,
+            self.create_object_uninitialized(class_ptr.as_ref()),
+        );
         args.insert(0, crate::Value::Ref(Some(object)));
-        let constructor = class_ptr.method("<init>", arg_types, None).ok_or_else(|| {
-            crate::Object::new(
-                self.id,
-                error(self, "NoSuchMethodError", &format!("{class} <init> …")),
-            )
-        })?;
+        let constructor = class_ptr
+            .method(self, "<init>", arg_types, None)
+            .ok_or_else(|| {
+                crate::Object::new(
+                    self.id,
+                    error(self, "NoSuchMethodError", &format!("{class} <init> …")),
+                )
+            })?;
         constructor.invoke(self, &args)?;
         Ok(object)
     }
@@ -380,7 +379,7 @@ impl Jvm {
     }
 
     #[track_caller]
-    pub(crate) fn create_array_internal(&self, class: ClassPtr, length: i32) -> Object {
+    pub(crate) fn create_array_internal(&self, class: ClassRef, length: i32) -> Object {
         let data = FieldStorage::new(
             &self.heap,
             object::header_size()

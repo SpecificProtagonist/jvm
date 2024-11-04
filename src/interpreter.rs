@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use crate::{
-    class::{ClassPtr, ClassState},
+    class::{ClassRef, ClassState},
     const_pool::{ConstPool, ConstPoolItem},
     field::Field,
     field_storage::FieldStorage,
@@ -903,7 +903,7 @@ fn run_until_exception_or_return(
                 let mut default = None;
                 let mut multiple_found = false;
                 fn iter_interfaces(
-                    in_class: ClassPtr,
+                    in_class: ClassRef,
                     nat: &MethodNaT,
                     default: &mut Option<&Method>,
                     multiple_found: &mut bool,
@@ -1020,7 +1020,7 @@ fn run_until_exception_or_return(
                     return Err(error(jvm, "ClassFormatError", "multianewarray 0"));
                 }
                 let class = const_pool.get_class(jvm, index)?;
-                fn create_array(jvm: &Jvm, dimensions: &[IVal], class: ClassPtr) -> Object {
+                fn create_array(jvm: &Jvm, dimensions: &[IVal], class: ClassRef) -> Object {
                     let len = dimensions[0].as_int();
                     let array = jvm.create_array_internal(class, len);
                     if let Some(Type::Ref(element_type)) = &class.element_type {

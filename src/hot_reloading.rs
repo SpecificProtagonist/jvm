@@ -16,7 +16,10 @@ pub enum ReloadErr {
 }
 
 pub(crate) fn reload_method_bytecodes_for_class(jvm: &Jvm, name: &str) -> Result<(), ReloadErr> {
-    let class = jvm.resolve_class(name).map_err(ReloadErr::Exception)?.value;
+    let class = jvm
+        .resolve_class(name)
+        .map_err(ReloadErr::Exception)?
+        .as_ref();
 
     // Load new class
     let map_exception = |e| ReloadErr::Exception(crate::Object::new(jvm.id, e));

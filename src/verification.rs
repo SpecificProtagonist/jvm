@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, ops::Deref};
 
 use crate::{
-    class::{Class, ClassPtr},
+    class::{Class, ClassRef},
     const_pool::{ConstPool, ConstPoolItem},
     jvm::{error, str_to_java, Jvm, JvmResult},
     method::{Bytecode, Code, Method},
@@ -25,7 +25,7 @@ pub(crate) enum VerificationType {
     Float,
     Null,
     Reference,
-    ObjectVariable(ClassPtr),
+    ObjectVariable(ClassRef),
     UninitializedThis,
     UninitializedVariable { offset: u16 },
     Long,
@@ -40,7 +40,7 @@ impl Default for VerificationType {
 
 impl VerificationType {
     fn is_assignable_to(self, to: Self) -> bool {
-        pub fn is_java_assignable(from: ClassPtr, to: ClassPtr) -> bool {
+        pub fn is_java_assignable(from: ClassRef, to: ClassRef) -> bool {
             // Interfaces are to be treated as java.lang.Object
             to.is_interface()
                 || std::ptr::eq(from, to)
@@ -245,7 +245,7 @@ impl StackMapFrame {
 }
 
 /// Requires class to be resolved (→ only called from Class::verify)
-pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassPtr) -> JvmResult<()> {
+pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassRef) -> JvmResult<()> {
     if let Some(super_class) = class.super_class {
         super_class.verify(jvm)?;
         // Check whether the super class is final (as described in spec) is redundant (has to already be checked during loading)

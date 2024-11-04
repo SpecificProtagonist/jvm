@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::{
-    class::ClassPtr,
+    class::ClassRef,
     field::{Field, FieldNaT},
     jvm::{error, JvmResult},
-    method::{MethodNaT, MethodNaTBorrow, MethodPtr},
+    method::{MethodNaT, MethodNaTBorrow, MethodRef},
     object::Object,
     parse,
     typ::Type,
@@ -26,12 +26,12 @@ pub(crate) enum ConstPoolItem {
     Long(i64),
     Double(f64),
     String(Object),
-    Class(ClassPtr),
+    Class(ClassRef),
     Field(&'static Field),
-    StaticMethod(MethodPtr),
+    StaticMethod(MethodRef),
     // Class is neccessary for invoke_special
-    VirtualMethod(ClassPtr, MethodNaT),
-    InterfaceMethod(ClassPtr, MethodNaT),
+    VirtualMethod(ClassRef, MethodNaT),
+    InterfaceMethod(ClassRef, MethodNaT),
     NameAndType { name: u16, descriptor: u16 },
     // Only present before resolve
     FieldRef { class: u16, nat: u16 },
@@ -196,7 +196,7 @@ impl ConstPool {
     }
 
     /// Requires resolution first
-    pub fn get_class(&self, jvm: &Jvm, index: u16) -> JvmResult<ClassPtr> {
+    pub fn get_class(&self, jvm: &Jvm, index: u16) -> JvmResult<ClassRef> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Class(class)) => Ok(class),
             _ => Err(cfe(jvm)),
@@ -204,7 +204,7 @@ impl ConstPool {
     }
 
     /// Requires resolution first
-    pub fn get_static_method(&self, jvm: &Jvm, index: u16) -> JvmResult<MethodPtr> {
+    pub fn get_static_method(&self, jvm: &Jvm, index: u16) -> JvmResult<MethodRef> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::StaticMethod(method)) => Ok(method),
             _ => Err(cfe(jvm)),
@@ -212,7 +212,7 @@ impl ConstPool {
     }
 
     /// Requires resolution first
-    pub fn get_virtual_method(&self, jvm: &Jvm, index: u16) -> JvmResult<(ClassPtr, &MethodNaT)> {
+    pub fn get_virtual_method(&self, jvm: &Jvm, index: u16) -> JvmResult<(ClassRef, &MethodNaT)> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::VirtualMethod(class, nat)) => Ok((class, nat)),
             _ => Err(cfe(jvm)),
@@ -220,7 +220,7 @@ impl ConstPool {
     }
 
     /// Requires resolution first
-    pub fn get_interface_method(&self, jvm: &Jvm, index: u16) -> JvmResult<(ClassPtr, &MethodNaT)> {
+    pub fn get_interface_method(&self, jvm: &Jvm, index: u16) -> JvmResult<(ClassRef, &MethodNaT)> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::InterfaceMethod(class, nat)) => Ok((class, nat)),
             _ => Err(cfe(jvm)),
@@ -245,7 +245,7 @@ impl ConstPool {
     }
 
     /// Requires verification first
-    pub fn get_class_verified(&self, index: u16) -> ClassPtr {
+    pub fn get_class_verified(&self, index: u16) -> ClassRef {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::Class(class)) => class,
             _ => unreachable_verified(),
@@ -261,7 +261,7 @@ impl ConstPool {
     }
 
     /// Requires verification first
-    pub fn get_virtual_method_verified(&self, index: u16) -> (ClassPtr, &MethodNaT) {
+    pub fn get_virtual_method_verified(&self, index: u16) -> (ClassRef, &MethodNaT) {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::VirtualMethod(class, nat)) => (class, nat),
             _ => unreachable_verified(),
@@ -269,7 +269,7 @@ impl ConstPool {
     }
 
     /// Requires verification first
-    pub fn get_static_method_verified(&self, index: u16) -> MethodPtr {
+    pub fn get_static_method_verified(&self, index: u16) -> MethodRef {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::StaticMethod(method)) => method,
             _ => unreachable_verified(),

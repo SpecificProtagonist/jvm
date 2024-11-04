@@ -10,7 +10,7 @@ use crate::{
     field::{Field, FieldNaT, FieldNaTBorrow},
     field_storage::FieldStorage,
     jvm::{error, JvmResult},
-    method::{MethodDescriptor, MethodNaT, MethodNaTBorrow, MethodPtr},
+    method::{MethodDescriptor, MethodNaT, MethodNaTBorrow, MethodRef},
     object::{self, Object},
     typ::Type,
     verification::verify,
@@ -22,19 +22,19 @@ use crate::{
 pub(crate) struct Class {
     /// Fully qualified name, e.g. "java.lang.Object[]"
     pub(crate) name: Arc<str>,
-    pub(crate) super_class: Option<ClassPtr>,
+    pub(crate) super_class: Option<ClassRef>,
     /// For array classes, this is the type of the array elements; None for normal classes
     pub(crate) element_type: Option<Type>,
     /// Write access is required for resolution and hot reloading.
     /// Otherwise only read access is required.
     pub(crate) const_pool: RwLock<ConstPool>,
     pub(crate) access_flags: AccessFlags,
-    pub(crate) interfaces: Vec<ClassPtr>,
+    pub(crate) interfaces: Vec<ClassRef>,
     /// Does not contain inherited fields.
     /// Note: JVM supports field overloading.
     pub(crate) fields: HashMap<FieldNaT, Field>,
     /// At the moment, this includes any inherited methods. Change this?
-    pub(crate) methods: HashMap<MethodNaT, MethodPtr>,
+    pub(crate) methods: HashMap<MethodNaT, MethodRef>,
     pub(crate) static_storage: FieldStorage,
     /// Combined size of instance fields in normal class, 0 if array
     pub(crate) object_size: usize,
@@ -53,16 +53,16 @@ pub(crate) enum ClassState {
     Error(Object),
 }
 
-pub(crate) type ClassPtr = &'static Class;
+pub(crate) type ClassRef = &'static Class;
 
-impl Eq for ClassPtr {}
-impl PartialEq for ClassPtr {
+impl Eq for ClassRef {}
+impl PartialEq for ClassRef {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(*self, *other)
     }
 }
 
-impl std::hash::Hash for ClassPtr {
+impl std::hash::Hash for ClassRef {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::hash::Hash::hash(&(*self as *const Class as usize), state)
     }
@@ -115,6 +115,23 @@ impl Class {
     /// Convenience method for getting this class' type
     pub(crate) fn typ(&self) -> Type {
         Type::Ref(self.name.clone())
+    }
+
+    pub(crate) fn method(
+        &self,
+        name: &str,
+        args: impl IntoIterator<Item = Type>,
+        ret: Option<Type>,
+    ) -> Option<MethodRef> {
+        self.methods
+            .get(&MethodNaTBorrow {
+                name,
+                typ: &MethodDescriptor {
+                    args: args.into_iter().collect(),
+                    returns: ret,
+                },
+            })
+            .copied()
     }
 
     pub(crate) fn iter_fields(&'static self) -> impl Iterator<Item = &'static Field> {
@@ -320,13 +337,7 @@ impl Class {
     /// Requires class to be verified, may only be called from self.ensure_init
     fn init(&'static self, jvm: &Jvm) -> JvmResult<()> {
         // Initialization
-        if let Some(initializer) = self.methods.get(&MethodNaTBorrow {
-            name: "<clinit>",
-            typ: &MethodDescriptor {
-                args: vec![],
-                returns: None,
-            },
-        }) {
+        if let Some(initializer) = self.method("<clinit>", vec![], None) {
             crate::interpreter::invoke_initializer(jvm, initializer)?;
         }
 

@@ -1,3 +1,4 @@
+#![feature(ptr_as_ref_unchecked)]
 #![doc = include_str!("../README.md")]
 
 mod class;
@@ -62,70 +63,115 @@ macro_rules! define_guard {
         $(#[$doc])*
         #[derive(Copy, Clone, Eq)]
         pub struct $guard_typ {
-            value: $impl_typ,
+            value: usize,
             jvm: JvmId,
         }
 
         impl $guard_typ {
-            fn new(jvm: JvmId, value: $impl_typ) -> Self {
-                Self { value, jvm }
+            fn new(jvm: JvmId, value: &'static $impl_typ) -> Self {
+                Self { value: value as *const $impl_typ as usize, jvm }
             }
 
             #[allow(dead_code)]
-            fn into_inner(self, jvm: JvmId) -> $impl_typ {
+            fn into_inner(self, jvm: JvmId) -> &'static $impl_typ {
                 if self.jvm == jvm {
-                    self.value
+                    unsafe {(self.value as *const $impl_typ).as_ref_unchecked()}
                 } else {
                     panic!("Wrong JVM accessed")
                 }
             }
+
+            #[allow(dead_code)]
+            fn as_ref(self) -> &'static $impl_typ {
+                unsafe {(self.value as *const $impl_typ).as_ref_unchecked()}
+            }
         }
 
         impl Debug for $guard_typ {
-            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                Debug::fmt(&self.value, f)
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{:p}", self.value as *const $impl_typ)
             }
         }
 
         impl Hash for $guard_typ {
             fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                // This is safe because pointers are hashed instead of dereferenced
                 self.value.hash(state);
             }
         }
 
         impl PartialEq for $guard_typ {
             fn eq(&self, other: &Self) -> bool {
+                // This is safe because pointers are compared instead of dereferenced
                 self.value == other.value
             }
         }
     };
 }
 
-define_guard!(
-    /// A Java object, guaranteed to be non-null.
-    /// An object may only be used with the jvm by which it was created.
-    Object,
-    object::Object
-);
+/// A Java object, guaranteed to be non-null.
+/// An object may only be used with the jvm by which it was created.
+#[derive(Copy, Clone, Eq)]
+pub struct Object {
+    value: object::Object,
+    jvm: JvmId,
+}
+
+impl Hash for Object {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // This is safe because pointers are hashed instead of dereferenced
+        self.value.hash(state);
+    }
+}
+
+impl PartialEq for Object {
+    fn eq(&self, other: &Self) -> bool {
+        // This is safe because pointers are compared instead of dereferenced
+        self.value == other.value
+    }
+}
+
+impl Debug for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:x}", self.value.ptr.ptr())
+    }
+}
 
 impl Object {
+    fn new(jvm: JvmId, value: object::Object) -> Self {
+        Self { value, jvm }
+    }
+
+    #[allow(dead_code)]
+    fn into_inner(self, jvm: JvmId) -> object::Object {
+        if self.jvm == jvm {
+            self.value
+        } else {
+            panic!("Wrong JVM accessed")
+        }
+    }
+
     /// The class this is an instance of.
-    pub fn class(self) -> Class {
-        Class::new(self.jvm, self.value.class())
+    pub fn class(self, jvm: &Jvm) -> Class {
+        Class::new(self.jvm, self.into_inner(jvm.id).class())
     }
 
     /// Get the value of an object's field.
     ///
     /// # Panics
     /// Panics if the field does not exist or is static.
-    pub fn get(self, field_name: &str, field_type: Type) -> Value {
-        let Some(field) = self.class().field(field_name, field_type.clone()) else {
+    pub fn get(self, jvm: &Jvm, field_name: &str, field_type: Type) -> Value {
+        let Some(field) = self.class(jvm).field(jvm, field_name, field_type.clone()) else {
             panic!(
                 "Field {field_name} of type {field_type} not found in object of type {}",
-                self.class().value
+                self.class(jvm).into_inner(self.jvm)
             )
         };
-        field.instance_get(self)
+        Value::new(
+            self.jvm,
+            field.into_inner(self.jvm).instance_get(self.value),
+            &field.into_inner(self.jvm).nat.typ,
+        )
     }
 
     /// Set the value of an object's field.
@@ -134,14 +180,16 @@ impl Object {
     /// Panics if the field does not exist or is static or
     /// the value is not assignable to the field's type
     /// or is an object created by a different JVM
-    pub fn set(self, field_name: &str, field_type: Type, value: impl Into<Value>) {
-        let Some(field) = self.class().field(field_name, field_type.clone()) else {
+    pub fn set(self, jvm: &Jvm, field_name: &str, field_type: Type, value: impl Into<Value>) {
+        let Some(field) = self.class(jvm).field(jvm, field_name, field_type.clone()) else {
             panic!(
                 "Field {field_name} of type {field_type} not found in object of type {}",
-                self.class().value
+                self.class(jvm).into_inner(self.jvm)
             )
         };
-        field.instance_set(self, value.into())
+        field
+            .into_inner(self.jvm)
+            .instance_set(self.value, value.into().into_inner(self.jvm))
     }
 
     /// Returns whether this is an array.
@@ -161,11 +209,11 @@ impl Object {
     ///
     /// # Panics
     /// Panics if the object is not an array or the `index` is out of bounds.
-    pub fn array_read(self, index: i32) -> Value {
+    pub fn array_read(self, jvm: &Jvm, index: i32) -> Value {
         Value::new(
             self.jvm,
             self.value.array_read(index),
-            self.class().element_type().as_ref().unwrap(),
+            self.class(jvm).element_type(jvm).as_ref().unwrap(),
         )
     }
 
@@ -194,50 +242,50 @@ impl std::fmt::Pointer for Object {
 define_guard!(
     /// A class, interface, enum or array class.
     Class,
-    &'static class::Class
+    class::Class
 );
 
 impl Class {
     /// Fully qualified name.
-    pub fn name(&self) -> &str {
-        &self.value.name
+    pub fn name(self, jvm: &Jvm) -> &str {
+        &self.into_inner(jvm.id).name
     }
 
     /// Returns the super class. Is `Some()` for all classes except `java.lang.Object`.
-    pub fn super_class(self) -> Option<Self> {
-        self.value
+    pub fn super_class(self, jvm: &Jvm) -> Option<Self> {
+        self.into_inner(jvm.id)
             .super_class
             .map(|value| Class::new(self.jvm, value))
     }
 
     /// Returns the array class which has this class as its element type.
     pub fn array_class(self, jvm: &Jvm) -> Self {
-        Class::new(jvm.id, jvm.resolve_array_of(&self.typ()).unwrap())
+        Class::new(jvm.id, jvm.resolve_array_of(&self.typ(jvm)).unwrap())
     }
 
     /// Convenience method for getting this class' type.
-    pub fn typ(&self) -> Type {
-        self.value.typ()
+    pub fn typ(&self, jvm: &Jvm) -> Type {
+        self.into_inner(jvm.id).typ()
     }
 
-    pub fn is_interface(&self) -> bool {
-        self.value.is_interface()
+    pub fn is_interface(&self, jvm: &Jvm) -> bool {
+        self.into_inner(jvm.id).is_interface()
     }
 
     /// Is `Some()` for classes representing an array and `None` otherwise.
-    pub fn element_type(self) -> Option<Type> {
-        self.value.element_type.clone()
+    pub fn element_type(self, jvm: &Jvm) -> Option<Type> {
+        self.into_inner(jvm.id).element_type.clone()
     }
 
-    pub fn access_flags(self) -> AccessFlags {
-        self.value.access_flags
+    pub fn access_flags(self, jvm: &Jvm) -> AccessFlags {
+        self.into_inner(jvm.id).access_flags
     }
 
     /// Look up a field in this class by its name and type.
     /// Does not search the inheritance hierarchy.
     /// There may be multiple fields of the same name.
-    pub fn field(self, name: &str, typ: Type) -> Option<Field> {
-        self.value
+    pub fn field(self, jvm: &Jvm, name: &str, typ: Type) -> Option<Field> {
+        self.into_inner(jvm.id)
             .field(name, typ)
             .map(|value| Field::new(self.jvm, value))
     }
@@ -247,11 +295,13 @@ impl Class {
     /// Includes inherited dynamic methods.
     pub fn method(
         self,
+        jvm: &Jvm,
         name: &str,
         args: impl IntoIterator<Item = Type>,
         ret: Option<Type>,
     ) -> Option<Method> {
         self.method_by_descriptor(
+            jvm,
             name,
             &MethodDescriptor {
                 args: args.into_iter().collect(),
@@ -263,8 +313,13 @@ impl Class {
     /// Look up a method by its name and type.
     /// There may be multiple methods of the same name, as long as they differ in type.
     /// Includes inherited dynamic methods.
-    pub fn method_by_descriptor(self, name: &str, typ: &MethodDescriptor) -> Option<Method> {
-        self.value
+    pub fn method_by_descriptor(
+        self,
+        jvm: &Jvm,
+        name: &str,
+        typ: &MethodDescriptor,
+    ) -> Option<Method> {
+        self.into_inner(jvm.id)
             .methods
             .get(&MethodNaTBorrow { name, typ })
             .map(|value| Method::new(self.jvm, value))
@@ -306,10 +361,14 @@ impl Class {
             jvm.create_object_uninitialized(self.into_inner(jvm.id)),
         );
         args.insert(0, Value::Ref(Some(object)));
-        let constructor = self.method("<init>", arg_types, None).ok_or_else(|| {
+        let constructor = self.method(jvm, "<init>", arg_types, None).ok_or_else(|| {
             crate::Object::new(
                 jvm.id,
-                error(jvm, "NoSuchMethodError", &format!("{self} <init> …")),
+                error(
+                    jvm,
+                    "NoSuchMethodError",
+                    &format!("{} <init> …", self.into_inner(jvm.id)),
+                ),
             )
         })?;
         constructor.invoke(jvm, &args)?;
@@ -317,38 +376,32 @@ impl Class {
     }
 }
 
-impl std::fmt::Display for Class {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.value)
-    }
-}
-
 define_guard!(
     /// A static or instance field.
     Field,
-    &'static field::Field
+    field::Field
 );
 
 impl Field {
     /// The class this field is defined by.
-    pub fn class(&self) -> Class {
-        Class::new(self.jvm, self.value.class())
+    pub fn class(self, jvm: &Jvm) -> Class {
+        Class::new(self.jvm, self.into_inner(jvm.id).class())
     }
 
     /// Access flags, such as whether this field is static.
-    pub fn access_flags(&self) -> AccessFlags {
-        self.value.access_flags
+    pub fn access_flags(&self, jvm: &Jvm) -> AccessFlags {
+        self.into_inner(jvm.id).access_flags
     }
 
     /// Name of this field. There may be multiple fields of the same name
     /// but differing types on the same class.
-    pub fn name(&self) -> &str {
-        &self.value.nat.name
+    pub fn name(&self, jvm: &Jvm) -> &str {
+        &self.into_inner(jvm.id).nat.name
     }
 
     /// Type of this field.
-    pub fn typ(&self) -> &Type {
-        &self.value.nat.typ
+    pub fn typ(&self, jvm: &Jvm) -> &Type {
+        &self.into_inner(jvm.id).nat.typ
     }
 
     /// Get the value of a static field.
@@ -358,7 +411,11 @@ impl Field {
     /// Panics if the field is not static.
     #[track_caller]
     pub fn static_get(&self, jvm: &Jvm) -> Value {
-        Value::new(self.jvm, self.into_inner(jvm.id).static_get(), self.typ())
+        Value::new(
+            self.jvm,
+            self.into_inner(jvm.id).static_get(),
+            self.typ(jvm),
+        )
     }
 
     /// Get the value of an object's field.
@@ -366,11 +423,12 @@ impl Field {
     /// # Panics
     /// Panics if the field is static or the object is not an instance of the class corresponding to this field.
     #[track_caller]
-    pub fn instance_get(&self, object: Object) -> Value {
+    pub fn instance_get(&self, jvm: &Jvm, object: Object) -> Value {
         Value::new(
             self.jvm,
-            self.value.instance_get(object.into_inner(self.jvm)),
-            self.typ(),
+            self.into_inner(jvm.id)
+                .instance_get(object.into_inner(self.jvm)),
+            self.typ(jvm),
         )
     }
 
@@ -380,8 +438,9 @@ impl Field {
     /// Panics if the field is not static or the value is not assignable to the field's type
     /// or is an object created by a different JVM
     #[track_caller]
-    pub fn static_set(&self, value: impl Into<Value>) {
-        self.value.static_set(value.into().into_inner(self.jvm))
+    pub fn static_set(&self, jvm: &Jvm, value: impl Into<Value>) {
+        self.into_inner(jvm.id)
+            .static_set(value.into().into_inner(self.jvm))
     }
 
     /// Set the value of an object's field.
@@ -392,8 +451,8 @@ impl Field {
     /// the value is not assignable to the field's type
     /// or the value is an object created by a different JVM
     #[track_caller]
-    pub fn instance_set(&self, object: Object, value: impl Into<Value>) {
-        self.value.instance_set(
+    pub fn instance_set(&self, jvm: &Jvm, object: Object, value: impl Into<Value>) {
+        self.into_inner(jvm.id).instance_set(
             object.into_inner(self.jvm),
             value.into().into_inner(self.jvm),
         )
@@ -403,29 +462,29 @@ impl Field {
 define_guard!(
     /// A method. Does not necessarily have an implementation.
     Method,
-    &'static method::Method
+    method::Method
 );
 
 impl Method {
     /// The class this method is defined by.
-    pub fn class(&self) -> Class {
-        Class::new(self.jvm, self.value.class())
+    pub fn class(&self, jvm: &Jvm) -> Class {
+        Class::new(self.jvm, self.into_inner(jvm.id).class())
     }
 
     /// The name of this method. There may be multiple methods of the same
     /// name but differing types in the same class.
-    pub fn name(&self) -> &str {
-        &self.value.nat.name
+    pub fn name(&self, jvm: &Jvm) -> &str {
+        &self.into_inner(jvm.id).nat.name
     }
 
     /// Argument and return types of this method.
-    pub fn typ(&self) -> &MethodDescriptor {
-        &self.value.nat.typ
+    pub fn typ(&self, jvm: &Jvm) -> &MethodDescriptor {
+        &self.into_inner(jvm.id).nat.typ
     }
 
     /// Access flags of this method.
-    pub fn access_flags(self) -> AccessFlags {
-        self.value.access_flags
+    pub fn access_flags(self, jvm: &Jvm) -> AccessFlags {
+        self.into_inner(jvm.id).access_flags
     }
 
     /// Calls the method, initializing its class if necessary.
@@ -440,7 +499,8 @@ impl Method {
             args.iter().map(|arg| arg.into_inner(self.jvm)),
         )
         .map(|returned| {
-            returned.map(|value| Value::new(self.jvm, value, self.typ().returns.as_ref().unwrap()))
+            returned
+                .map(|value| Value::new(self.jvm, value, self.typ(jvm).returns.as_ref().unwrap()))
         })
         .map_err(|e| Object::new(self.jvm, e))
     }

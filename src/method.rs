@@ -6,7 +6,7 @@ use std::sync::{
 use hashbrown::Equivalent;
 
 use crate::{
-    class::{Class, ClassPtr},
+    class::{Class, ClassRef},
     typ::Type,
     AccessFlags, Jvm,
 };
@@ -21,7 +21,7 @@ pub(crate) struct Method {
 }
 
 impl Method {
-    pub fn class(&self) -> ClassPtr {
+    pub fn class(&self) -> ClassRef {
         // SAFETY: This reference will not outlive the JVM
         // and this function will only be called after class has been set
         unsafe { &*self.class.load(Ordering::SeqCst) }
@@ -91,16 +91,16 @@ pub(crate) struct ExceptionHandler {
     pub catch_type: u16,
 }
 
-pub(crate) type MethodPtr = &'static Method;
+pub(crate) type MethodRef = &'static Method;
 
-impl Eq for MethodPtr {}
-impl PartialEq for MethodPtr {
+impl Eq for MethodRef {}
+impl PartialEq for MethodRef {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(*self, *other)
     }
 }
 
-impl std::hash::Hash for MethodPtr {
+impl std::hash::Hash for MethodRef {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::hash::Hash::hash(&(*self as *const _ as usize), state)
     }

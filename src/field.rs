@@ -6,7 +6,7 @@ use std::sync::{
 use hashbrown::Equivalent;
 
 use crate::{
-    class::{Class, ClassPtr},
+    class::{Class, ClassRef},
     field_storage::FieldStorage,
     heap::NULL_PTR,
     object::Object,
@@ -49,7 +49,7 @@ impl<'a> Equivalent<FieldNaT> for FieldNaTBorrow<'a> {
 }
 
 impl Field {
-    pub(crate) fn class(&self) -> ClassPtr {
+    pub(crate) fn class(&self) -> ClassRef {
         // SAFETY: This reference will not outlive the JVM
         // and this function will only be called after class has been set
         unsafe { &*self.class.load(Ordering::SeqCst) }
