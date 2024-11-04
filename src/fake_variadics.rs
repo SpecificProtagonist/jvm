@@ -2,7 +2,10 @@
 
 // TODO: Directly use &[IVal]
 
-use crate::{method::Code, AccessFlags, Jvm, JvmResult, Method, Object, Type, Value};
+use crate::{
+    method::{Code, Method},
+    AccessFlags, Jvm, JvmResult, Object, Type, Value,
+};
 
 #[derive(Debug)]
 pub enum NativeBindError {
@@ -11,7 +14,7 @@ pub enum NativeBindError {
 }
 
 #[allow(private_bounds)]
-pub fn bind_native_code<F, T>(method: &Method, code: F) -> Result<(), NativeBindError>
+pub(crate) fn bind_native_code<F, T>(method: &Method, code: F) -> Result<(), NativeBindError>
 where
     F: NativeFn<T>,
 {
@@ -24,15 +27,15 @@ where
         Box::new(f)
     }
     let boxed = specify_lifetimes(move |jvm, args| F::invoke(&code, jvm, args));
-    if method.as_ref().access_flags.contains(AccessFlags::NATIVE) {
-        *method.as_ref().code.write().unwrap() = Code::Native(boxed);
+    if method.access_flags.contains(AccessFlags::NATIVE) {
+        *method.code.write().unwrap() = Code::Native(boxed);
         Ok(())
     } else {
         Err(NativeBindError::MethodNotNative)
     }
 }
 
-pub(crate) fn valid_signature<F, T>(method: &Method) -> bool
+fn valid_signature<F, T>(method: &Method) -> bool
 where
     F: NativeFn<T>,
 {
@@ -53,16 +56,16 @@ where
     let Some((args, ret)) = F::descriptor() else {
         return true;
     };
-    let mut iter = method.as_ref().nat.typ.args.iter();
+    let mut iter = method.nat.typ.args.iter();
     let mut args = args.into_iter();
-    if !method.as_ref().access_flags.contains(AccessFlags::STATIC) {
+    if !method.access_flags.contains(AccessFlags::STATIC) {
         iter.next();
         if !matches!(args.next(), Some(ArgTyp::This | ArgTyp::Object)) {
             return false;
         }
     }
     iter.zip(args).all(ok)
-        & match (&method.as_ref().nat.typ.returns, ret) {
+        & match (&method.nat.typ.returns, ret) {
             (Some(a), Some(b)) => ok((a, b)),
             (None, None) => true,
             _ => false,

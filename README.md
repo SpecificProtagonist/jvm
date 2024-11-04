@@ -5,24 +5,24 @@ not determined by practicality but by how interested I'm in doing so. It also us
 (the safety boundary essentially being the entire crate), is badly tested, doesn't have any benchmarks, and doesn't do any garbage collection.
 So if you're new to Rust, just know this isn't a representative example.
 
-(TODO: Fix interface by splitting guard object into id and lifetimed object)
 ```rust,ignore
 // Create a new JVM that loads classes from a folder called `classes`
 let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes"]));
 // Load class `Foo`
 let class = jvm.resolve_class("Foo").unwrap();
 // Resolve its method `void bar(int, String)`
-let method = class.method("bar", [Typ::Int, "java.lang.String".into()], None)?;
+let method = class.method(&jvm, "bar", [Typ::Int, "java.lang.String".into()], None)?;
 // And call it: `Foo.bar(0, null)`
 method.invoke(&jvm, &[Value::Int(0), Value::Ref(None)])?;
 // Resolve field `Foo.baz` of type bool
-let field = class.field("baz", Typ::Boolean).unwrap();
+let field = class.field(&jvm, "baz", Typ::Boolean).unwrap();
 // And read its value (panicking if it's not a static field)
 let value = field.static_get(&jvm);
 // Bind a native method
-class.method("add", [Typ::Float, Typ::Float], Some(Typ::Float))?
+class.method(&jvm, "add", [Typ::Float, Typ::Float], Some(Typ::Float))?
   .bind_native_code(|a: f32, b: f32| Ok(a + b)).unwrap();
 ```
+(TODO: Make interface pleasant again by splitting guard object into id and lifetimed object)
 
 Currently implemented:
 - classes, arrays, interfaces

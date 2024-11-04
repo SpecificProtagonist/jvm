@@ -22,6 +22,7 @@ mod verification;
 use std::{
     fmt::{Debug, Display},
     hash::Hash,
+    marker::PhantomData,
 };
 
 pub use class_loader::{ClassLoader, FolderClassLoader};
@@ -231,11 +232,29 @@ impl Object {
     pub fn format_short(self, jvm: &Jvm) -> String {
         self.into_inner(jvm.id).format_short()
     }
+
+    /// Creates a debug representation of the object. If the object is a string, this prints the string.
+    pub fn format(self, jvm: &Jvm) -> impl Debug {
+        ObjectFmt(self.into_inner(jvm.id), PhantomData)
+    }
+
+    /// Creates a debug representation of the object. If the object is a string, this prints the string.
+    pub fn to_string(self, jvm: &Jvm) -> String {
+        format!("{:?}", self.format(jvm))
+    }
 }
 
 impl std::fmt::Pointer for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         std::fmt::Pointer::fmt(&self.value, f)
+    }
+}
+
+struct ObjectFmt<'a>(object::Object, PhantomData<&'a Jvm>);
+
+impl Debug for ObjectFmt<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.0)
     }
 }
 
@@ -521,8 +540,12 @@ impl Method {
     /// The callback returning a value of wrong type will result in a panic.
     // TODO: Note guarantees about available stack size
     #[allow(private_bounds)]
-    pub fn bind_native_code<F: NativeFn<T>, T>(&self, code: F) -> Result<(), NativeBindError> {
-        fake_variadics::bind_native_code(self, code)
+    pub fn bind_native_code<F: NativeFn<T>, T>(
+        &self,
+        jvm: &Jvm,
+        code: F,
+    ) -> Result<(), NativeBindError> {
+        fake_variadics::bind_native_code(self.into_inner(jvm.id), code)
     }
 }
 
