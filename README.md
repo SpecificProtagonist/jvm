@@ -5,6 +5,7 @@ not determined by practicality but by how interested I'm in doing so. It also us
 (the safety boundary essentially being the entire crate), is badly tested, doesn't have any benchmarks, and doesn't do any garbage collection.
 So if you're new to Rust, just know this isn't a representative example.
 
+(TODO: Fix interface by splitting guard object into id and lifetimed object)
 ```rust,ignore
 // Create a new JVM that loads classes from a folder called `classes`
 let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes"]));

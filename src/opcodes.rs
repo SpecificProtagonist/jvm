@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 pub const NOP: u8 = 0;
 pub const ACONST_NULL: u8 = 1;
 pub const ICONST_M1: u8 = 2;
@@ -185,6 +184,7 @@ pub const INVOKEVIRTUAL: u8 = 182;
 pub const INVOKESPECIAL: u8 = 183;
 pub const INVOKESTATIC: u8 = 184;
 pub const INVOKEINTERFACE: u8 = 185;
+#[allow(dead_code)]
 pub const INVOKEDYNAMIC: u8 = 186; // TODO: Interpretation + Verification
 pub const NEW: u8 = 187;
 pub const NEWARRAY: u8 = 188;
@@ -195,7 +195,7 @@ pub const CHECKCAST: u8 = 192;
 pub const INSTANCEOF: u8 = 193;
 pub const MONITORENTER: u8 = 194; // TODO: Interpretation
 pub const MONITOREXIT: u8 = 195; // TODO: Interpretation
-pub const WIDE: u8 = 196; // TODO: Interpretation + Verification
+pub const WIDE: u8 = 196;
 pub const MULTIANEWARRAY: u8 = 197;
 pub const IFNULL: u8 = 198;
 pub const IFNONNULL: u8 = 199;

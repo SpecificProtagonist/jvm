@@ -108,7 +108,7 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
                     &format!("{}", method.nat),
                 ))
             } else {
-                unreachable!()
+                unreachable_verified()
             }
         }
         Code::Bytecode(code) => interpret(jvm, method, code, args),
@@ -405,7 +405,7 @@ fn run_until_exception_or_return(
                 let obj = unsafe { frame.pop().as_ref() }
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
                 let Some(Type::Ref(component)) = &obj.class().element_type else {
-                    unreachable!("checked during verification")
+                    unreachable_verified()
                 };
                 // Yay for covariant arrays, another consequence of Java launching without generics…
                 if !obj.class().assignable_to(component) {
@@ -521,7 +521,7 @@ fn run_until_exception_or_return(
                     IAND => a & b,
                     IOR => a | b,
                     IXOR => a ^ b,
-                    _ => unreachable!(),
+                    _ => unreachable_verified(),
                 };
                 frame.stack.push(result.into());
             }
@@ -548,7 +548,7 @@ fn run_until_exception_or_return(
                     LAND => a & b,
                     LOR => a | b,
                     LXOR => a ^ b,
-                    _ => unreachable!(),
+                    _ => unreachable_verified(),
                 };
                 frame.push_long(result);
             }
@@ -561,7 +561,7 @@ fn run_until_exception_or_return(
                     FMUL => a * b,
                     FDIV => a / b,
                     FREM => a % b,
-                    _ => unreachable!(),
+                    _ => unreachable_verified(),
                 };
                 frame.stack.push(result.into());
             }
@@ -574,7 +574,7 @@ fn run_until_exception_or_return(
                     DMUL => a * b,
                     DDIV => a / b,
                     DREM => a % b,
-                    _ => unreachable!(),
+                    _ => unreachable_verified(),
                 };
                 frame.push_double(result);
             }
@@ -725,7 +725,7 @@ fn run_until_exception_or_return(
                     IFGE => a >= b,
                     IFGT => a > b,
                     IFLE => a <= b,
-                    _ => unreachable!(),
+                    _ => unreachable_verified(),
                 } {
                     frame.jump_relative(base, target_offset as i32);
                 }
@@ -958,7 +958,7 @@ fn run_until_exception_or_return(
                     9 => Type::Float,
                     10 => Type::Int,
                     11 => Type::Long,
-                    _ => unreachable!(),
+                    _ => unreachable_verified(),
                 };
                 frame
                     .stack
@@ -1010,6 +1010,34 @@ fn run_until_exception_or_return(
                     }
                 } else {
                     frame.stack.push(IVal(0));
+                }
+            }
+            WIDE => {
+                let op = frame.read_code_u8();
+                let index = frame.read_code_u16();
+                match op {
+                    ILOAD | FLOAD | ALOAD => {
+                        frame.load_local(index as usize);
+                    }
+                    LLOAD | DLOAD => {
+                        frame.load_local_2(index as usize);
+                    }
+                    ISTORE | FSTORE | ASTORE => {
+                        let value = frame.pop();
+                        frame.set_local(index as usize, value);
+                    }
+                    LSTORE | DSTORE => {
+                        let value_1 = frame.pop();
+                        let value_2 = frame.pop();
+                        frame.set_local(index as usize + 1, value_1);
+                        frame.set_local(index as usize, value_2);
+                    }
+                    IINC => {
+                        let constant = frame.read_code_u16() as i32;
+                        frame.locals[index as usize] =
+                            (frame.locals[index as usize].as_int() + constant).into();
+                    }
+                    _ => unreachable_verified(),
                 }
             }
             MULTIANEWARRAY => {
@@ -1070,7 +1098,7 @@ fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) {
         Some(ConstPoolItem::Double(d)) => frame.push_double(*d),
         Some(&ConstPoolItem::String(object)) => frame.stack.push(object.into()),
         Some(ConstPoolItem::Class(_)) => todo!("Class objects"),
-        other => unreachable!("Invalid ldc/ldc_w/ldc2_w: {:?}", other),
+        _ => unreachable_verified(),
     }
 }
 

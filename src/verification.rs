@@ -897,7 +897,7 @@ fn verify_bytecode(
                 let index = read_code_u8(jvm, bytes, pc)?;
                 read_code_u8(jvm, bytes, pc)?;
                 if type_state.locals.get(index as usize) != Some(&VerificationType::Integer) {
-                    return Err(error!(jvm, "invalid iinc or equivalent"));
+                    return Err(error!(jvm, "invalid iinc"));
                 }
             }
             I2F => {
@@ -1343,6 +1343,34 @@ fn verify_bytecode(
                     _ => return Err(error!(jvm, "invalid instanceof")),
                 }
                 type_state.push(VerificationType::Integer);
+            }
+            WIDE => {
+                let op = read_code_u8(jvm, bytes, pc)?;
+                let index = read_code_u16(jvm, bytes, pc)?;
+                match op {
+                    ILOAD => type_state.load(jvm, index, VerificationType::Integer)?,
+                    LLOAD => {
+                        type_state.load(jvm, index, VerificationType::Long)?;
+                    }
+                    FLOAD => type_state.load(jvm, index, VerificationType::Float)?,
+                    DLOAD => {
+                        type_state.load(jvm, index, VerificationType::Double)?;
+                    }
+                    ALOAD => type_state.load(jvm, index, VerificationType::Reference)?,
+                    ISTORE => type_state.store(jvm, index, VerificationType::Integer)?,
+                    LSTORE => type_state.store(jvm, index, VerificationType::Long)?,
+                    FSTORE => type_state.store(jvm, index, VerificationType::Float)?,
+                    DSTORE => type_state.store(jvm, index, VerificationType::Double)?,
+                    ASTORE => type_state.store(jvm, index, VerificationType::Reference)?,
+                    IINC => {
+                        read_code_u16(jvm, bytes, pc)?;
+                        if type_state.locals.get(index as usize) != Some(&VerificationType::Integer)
+                        {
+                            return Err(error!(jvm, "invalid wide iinc"));
+                        }
+                    }
+                    _ => return Err(error!(jvm, "invalid wide")),
+                }
             }
             MONITORENTER | MONITOREXIT => {
                 if !type_state
