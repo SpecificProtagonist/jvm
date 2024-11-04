@@ -608,10 +608,10 @@ impl PartialEq<Value> for Object {
 
 // Value should be 16 byte when using 4 byte pointers;
 // for 8 byte pointers this isn't possible because the alignment creates padding that can't be reused
-fn _assert_value_size() {
-    const _: () =
-        assert!((std::mem::size_of::<JvmPtr>() != 4) | (std::mem::size_of::<Value>() == 16));
-}
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!((std::mem::size_of::<JvmPtr>() == 4) & (std::mem::size_of::<Value>() == 12));
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!((std::mem::size_of::<JvmPtr>() == 8) | (std::mem::size_of::<Value>() == 16));
 
 /// Err is an object that extends Throwable.
 /// Currently no call stack is provided.

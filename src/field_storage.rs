@@ -19,7 +19,7 @@ pub(crate) struct FieldStorage(JvmPtrNonNull);
 
 macro_rules! access {
     ($read:ident, $write:ident, $array_read:ident, $array_write:ident, $array_read_freestanding:ident, $array_write_freestanding:ident, $atomic:ident, $typ:ident, $convert_read:path, $convert_write:ident) => {
-        /// SAFETY: Must be in-bound & correctly alligned
+        /// SAFETY: Must be in-bound & correctly aligned
         #[inline]
         pub unsafe fn $read(&self, offset: usize, volatile: bool) -> $typ {
             $convert_read(
@@ -33,7 +33,7 @@ macro_rules! access {
             )
         }
 
-        /// SAFETY: Must be in-bound & correctly alligned
+        /// SAFETY: Must be in-bound & correctly aligned
         #[inline]
         pub unsafe fn $write(&self, offset: usize, value: $typ, volatile: bool) {
             (&*(heap::ptr_decode(self.0.into()).add(offset) as *const $atomic)).store(

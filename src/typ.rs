@@ -1,6 +1,12 @@
-use std::{alloc::Layout, sync::Arc};
+use std::{
+    alloc::Layout,
+    sync::{
+        atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicU8},
+        Arc,
+    },
+};
 
-use crate::heap::JvmPtr;
+use crate::heap::AtomicJvmPtr;
 
 /// A Java type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -23,11 +29,11 @@ impl Type {
     pub fn layout(&self) -> Layout {
         use Type::*;
         match self {
-            Boolean | Byte => Layout::new::<u8>(),
-            Short | Char => Layout::new::<u16>(),
-            Int | Float => Layout::new::<u32>(),
-            Long | Double => Layout::new::<u64>(),
-            Ref(..) => Layout::new::<JvmPtr>(),
+            Boolean | Byte => Layout::new::<AtomicU8>(),
+            Short | Char => Layout::new::<AtomicU16>(),
+            Int | Float => Layout::new::<AtomicU32>(),
+            Long | Double => Layout::new::<AtomicU64>(),
+            Ref(..) => Layout::new::<AtomicJvmPtr>(),
         }
     }
 

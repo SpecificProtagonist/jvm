@@ -190,6 +190,7 @@ fn lazy_init() {
     assert_eq!(method.invoke(&jvm, &[true.into()]).unwrap().unwrap(), 2);
 }
 
+#[cfg(not(miri))]
 #[test]
 fn many_allocs() {
     let jvm = make_jvm();
@@ -293,6 +294,7 @@ fn hot_reloading() {
     assert_eq!(field.static_get(&jvm), 1);
 }
 
+#[cfg(not(miri))]
 #[test]
 fn stackoverflow() {
     let jvm = make_jvm();

@@ -52,7 +52,7 @@ mod backend {
                 addr_hint as *mut libc::c_void,
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED | libc::MAP_ANONYMOUS | libc::MAP_32BIT,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT,
                 -1,
                 0,
             );

@@ -238,10 +238,4 @@ pub fn header_size() -> usize {
     size_of::<JvmPtr>().max(align_of::<u64>())
 }
 
-#[test]
-fn object_reference_niche() {
-    assert_eq!(
-        std::mem::size_of::<Object>(),
-        std::mem::size_of::<Option<Object>>()
-    )
-}
+const _: () = assert!(std::mem::size_of::<Object>() == std::mem::size_of::<Option<Object>>());

@@ -98,9 +98,9 @@ impl Class {
                 } else {
                     &mut object_layout
                 };
-                let result = fields_layout.extend(layout).unwrap();
-                *fields_layout = result.0;
-                field.byte_offset = result.1;
+                let (new_layout, offset) = fields_layout.extend(layout).unwrap();
+                *fields_layout = new_layout;
+                field.byte_offset = offset;
                 (field.nat.clone(), field)
             })
             .collect();
