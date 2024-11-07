@@ -12,6 +12,7 @@ mod hot_reloading;
 mod interpreter;
 mod jvm;
 mod method;
+mod monitor;
 mod object;
 mod opcodes;
 mod parse;
