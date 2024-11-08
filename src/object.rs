@@ -1,6 +1,6 @@
 use std::{
     alloc::Layout,
-    mem::{align_of, size_of},
+    mem::size_of,
     ops::Deref,
     sync::atomic::{
         AtomicI16, AtomicI32, AtomicI64, AtomicI8,
@@ -12,16 +12,56 @@ use crate::{
     class::{Class, ClassRef},
     heap::{self, AtomicJvmPtr, Heap, JvmPtr, JvmPtrNonNull},
     jvm::{throwable, JvmResult},
+    monitor::Monitor,
     typ::Type,
     value::Value,
     AccessFlags, Jvm,
 };
 
-// TODO: These are handed out to the user. When garbage collection gets implemented, only hand them out in a non-copy wrapper.
-// Object layout:
-// JvmPtrSize to Class
-// if array: i32 array size, array elements
-// if fields: fields (sorted by alignment)
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod layout {
+    use crate::heap::JvmPtr;
+    use crate::monitor::Monitor;
+
+    const _: () = assert!(size_of::<JvmPtr>() == 4);
+
+    // +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————
+    // |        Monitor        | Class |  Len  | Items…
+    // |                       |       |  Fields…
+    // +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————————————
+    pub const OFFSET_MONITOR: usize = 0;
+    pub const OFFSET_CLASS: usize = Monitor::SIZE;
+    pub const OFFSET_FIELDS: usize = OFFSET_CLASS + size_of::<JvmPtr>();
+    pub const OFFSET_ARRAY_LENGTH: usize = OFFSET_FIELDS;
+    pub const OFFSET_ARRAY_ITEMS: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
+}
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+mod layout {
+    use crate::heap::JvmPtr;
+    use crate::monitor::Monitor;
+
+    const _: () = assert!(size_of::<JvmPtr>() == size_of::<usize>());
+
+    // 64 bit arch:
+    // +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————
+    // |     Class     |        Monitor        |  Len  | Items…
+    // |               |                       |  Fields…
+    // +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————————————
+    //
+    // 32 bit arch:
+    // +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————
+    // | Class |    Monitor    |  Len  | Items…
+    // |       |               |  Fields…
+    // +—+—+—+—+—+—+—+—+—+—+—+—+———————————————
+    pub const OFFSET_CLASS: usize = 0;
+    pub const OFFSET_MONITOR: usize = size_of::<JvmPtr>();
+    pub const OFFSET_FIELDS: usize = OFFSET_MONITOR + Monitor::SIZE;
+    pub const OFFSET_ARRAY_LENGTH: usize = OFFSET_FIELDS;
+    pub const OFFSET_ARRAY_ITEMS: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
+}
+pub use layout::OFFSET_FIELDS;
+use layout::*;
+
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub(crate) struct Object(JvmPtrNonNull);
@@ -29,27 +69,25 @@ pub(crate) struct Object(JvmPtrNonNull);
 impl Object {
     pub(crate) fn new_uninitialized(heap: &Heap, class: ClassRef) -> Self {
         unsafe {
-            let ptr = heap.alloc(Layout::from_size_align_unchecked(
-                size_of::<JvmPtr>() + class.object_size,
-                8,
-            ));
-            (ptr as *const AtomicJvmPtr)
+            let ptr = heap.alloc(Layout::from_size_align_unchecked(class.object_size, 8));
+            let class_ptr = heap::ptr_encode(class as *const Class as *mut u8);
+            ((ptr + OFFSET_CLASS) as *const AtomicJvmPtr)
                 .as_ref_unchecked()
-                .store(heap::ptr_encode(class as *const Class as *mut u8), Relaxed);
+                .store(class_ptr, Relaxed);
             Self(heap::ptr_encode(ptr as *mut u8).try_into().unwrap())
         }
     }
 
     pub(crate) fn new_array(heap: &Heap, class: ClassRef, length: i32) -> Self {
         unsafe {
-            let size = size_of::<JvmPtr>()
-                + size_of::<i32>()
-                + length as usize * class.element_type.as_ref().unwrap().layout().size();
+            let size =
+                OFFSET_ARRAY_ITEMS + length as usize * class.element_type.as_ref().unwrap().size();
             let ptr = heap.alloc(Layout::from_size_align_unchecked(size, 8));
-            (ptr as *const AtomicJvmPtr)
+            let class_ptr = heap::ptr_encode(class as *const Class as *mut u8);
+            ((ptr + OFFSET_CLASS) as *const AtomicJvmPtr)
                 .as_ref_unchecked()
-                .store(heap::ptr_encode(class as *const Class as *mut u8), Relaxed);
-            ((ptr + size_of::<JvmPtr>()) as *const AtomicI32)
+                .store(class_ptr, Relaxed);
+            ((ptr + OFFSET_ARRAY_LENGTH) as *const AtomicI32)
                 .as_ref_unchecked()
                 .store(length, Relaxed);
             Self(heap::ptr_encode(ptr as *mut u8).try_into().unwrap())
@@ -67,7 +105,10 @@ impl Object {
 
     #[inline]
     pub(crate) fn class(self) -> ClassRef {
-        unsafe { &*(heap::ptr_decode(*(self.deref() as *const JvmPtr)) as *const Class) }
+        unsafe {
+            &*(heap::ptr_decode(*(self.deref().byte_add(OFFSET_CLASS) as *const JvmPtr))
+                as *const Class)
+        }
     }
 
     pub(crate) fn ptr(self) -> JvmPtrNonNull {
@@ -75,12 +116,12 @@ impl Object {
     }
 
     pub fn fields(self) -> FieldStorage {
-        FieldStorage(self.deref() as usize + size_of::<JvmPtr>())
+        FieldStorage(self.deref() as usize)
     }
 
     pub(crate) fn array_length(self) -> i32 {
         unsafe {
-            (self.deref().byte_add(size_of::<JvmPtr>()) as *const AtomicI32)
+            (self.deref().byte_add(OFFSET_ARRAY_LENGTH) as *const AtomicI32)
                 .as_ref_unchecked()
                 .load(Relaxed)
         }
@@ -92,10 +133,10 @@ impl Object {
             None
         } else {
             Some(
-                (self.deref().wrapping_byte_offset(
-                    (size_of::<JvmPtr>() + size_of::<i32>() + index as usize * size_of::<T>())
-                        as isize,
-                )) as *const T,
+                (self
+                    .deref()
+                    .wrapping_byte_add(OFFSET_ARRAY_ITEMS + index as usize * size_of::<T>()))
+                    as *const T,
             )
         }
     }
@@ -192,6 +233,10 @@ impl Object {
         }
     }
 
+    pub(crate) fn monitor(self) -> *const Monitor {
+        self.deref().wrapping_byte_add(OFFSET_MONITOR) as *const Monitor
+    }
+
     pub(crate) fn format_short(self) -> String {
         struct Fmt(Object);
         impl std::fmt::Debug for Fmt {
@@ -232,8 +277,8 @@ fn fmt_object(object: Object, f: &mut std::fmt::Formatter<'_>, full: bool) -> st
             unreachable!()
         };
         if let Some(chars) = chars {
-            let length = chars.array_length();
             write!(f, "\"")?;
+            let length = chars.array_length();
             for char in
                 char::decode_utf16((0..length).map(|i| chars.array_read_panic::<i16>(i) as u16))
             {
@@ -305,13 +350,6 @@ impl std::fmt::Pointer for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "@{:x}", self.ptr())
     }
-}
-
-/// Size of an object with no fields/an empty array, not counting FieldData's length header
-pub fn header_size() -> usize {
-    // Afaik the alignment of 64-bit ints is usize even on 32-bit systems,
-    // but better make sure of this (as there would be unaligned accesses elsewise):
-    size_of::<JvmPtr>().max(align_of::<u64>())
 }
 
 const _: () = assert!(std::mem::size_of::<Object>() == std::mem::size_of::<Option<Object>>());

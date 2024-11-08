@@ -22,23 +22,21 @@ let value = field.static_get(&jvm);
 class.method(&jvm, "add", [Typ::Float, Typ::Float], Some(Typ::Float))?
   .bind_native_code(|a: f32, b: f32| Ok(a + b)).unwrap();
 ```
-(TODO: Make interface pleasant again)
+(TODO: Make interface pleasant)
 
 Currently implemented:
 - classes, arrays, interfaces
 - verification by type checking
 - lazy loading
-- almost all instructions (see `src/opcodes.rs`)
 - exceptions
+- synchronized methods
 - compressed pointers on x86-64 Linux
-- multi-threaded access
 - hot method body reloading
 
 Some mayor missing features:
 - garbage collection
 - method references
 - private/protected
-- locking
 - string interning
 - reliable protection from stack & memory exhaustion
 

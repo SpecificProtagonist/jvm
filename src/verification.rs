@@ -14,7 +14,7 @@ use crate::{
 
 macro_rules! error {
     ($jvm:expr) => {
-        error($jvm, "VerifyError", &format!("verrify error {}", line!()))
+        error($jvm, "VerifyError", &format!("verify error {}", line!()))
     };
 }
 
@@ -358,7 +358,6 @@ fn verify_bytecode(
     let pc = &mut pc;
 
     // Iterate over all instructions
-    // TODO: switch result to bool
     while (*pc as usize) < code.bytes.len() {
         connected_to_previous_block = true;
         match read_code_u8(jvm, bytes, pc)? {
@@ -1194,20 +1193,20 @@ fn verify_bytecode(
             }
             NEWARRAY => {
                 type_state.pop_type(jvm, &Type::Int)?;
-                let component = match read_code_u8(jvm, bytes, pc)? {
+                let read = read_code_u8(jvm, bytes, pc)?;
+                let component = match read {
                     4 => Type::Boolean,
-                    5 => Type::Byte,
-                    6 => Type::Char,
-                    7 => Type::Short,
-                    8 => Type::Double,
-                    9 => Type::Float,
+                    5 => Type::Char,
+                    6 => Type::Float,
+                    7 => Type::Double,
+                    8 => Type::Byte,
+                    9 => Type::Short,
                     10 => Type::Int,
                     11 => Type::Long,
                     _ => verify_failed!(jvm),
                 };
-                type_state.push(VerificationType::ObjectVariable(
-                    jvm.resolve_array_of(&component)?,
-                ));
+                let class = jvm.resolve_array_of(&component)?;
+                type_state.push(VerificationType::ObjectVariable(class));
             }
             ANEWARRAY => {
                 verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);

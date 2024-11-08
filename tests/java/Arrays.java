@@ -1,10 +1,21 @@
 public class Arrays {
-    public static boolean test() {
-        boolean[] primitive = new boolean[4];
-        primitive[2] = true;
-        Object[] objects = new Object[4];
-        objects[2] = new Object();
-        return primitive.length == 4 & primitive[2] & objects.length == 4 & objects[2] != null;
+    public static boolean char_array() {
+        char[] array = new char[4];
+        array[2] = 'A';
+        return array.length == 4 & array[2] == 'A';
+    }
+
+    public static boolean double_array() {
+        double[] array = new double[4];
+        array[2] = 3.;
+        return array.length == 4 & array[2] == 3.;
+    }
+
+    public static boolean object_array() {
+        Object[] array = new Object[4];
+        Object object = new Object();
+        array[2] = object;
+        return array.length == 4 & array[2] == object;
     }
 
     public static boolean multianewarray() {

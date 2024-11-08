@@ -1,9 +1,6 @@
-use std::{
-    alloc::Layout,
-    sync::{
-        atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicU8},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicU8},
+    Arc,
 };
 
 use crate::heap::AtomicJvmPtr;
@@ -26,14 +23,14 @@ pub enum Type {
 }
 
 impl Type {
-    pub fn layout(&self) -> Layout {
+    pub fn size(&self) -> usize {
         use Type::*;
         match self {
-            Boolean | Byte => Layout::new::<AtomicU8>(),
-            Short | Char => Layout::new::<AtomicU16>(),
-            Int | Float => Layout::new::<AtomicU32>(),
-            Long | Double => Layout::new::<AtomicU64>(),
-            Ref(..) => Layout::new::<AtomicJvmPtr>(),
+            Boolean | Byte => size_of::<AtomicU8>(),
+            Short | Char => size_of::<AtomicU16>(),
+            Int | Float => size_of::<AtomicU32>(),
+            Long | Double => size_of::<AtomicU64>(),
+            Ref(..) => size_of::<AtomicJvmPtr>(),
         }
     }
 

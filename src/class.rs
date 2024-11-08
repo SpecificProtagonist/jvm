@@ -1,6 +1,5 @@
 use hashbrown::HashMap;
 use std::{
-    alloc::Layout,
     sync::{Arc, Condvar, Mutex, RwLock},
     thread::ThreadId,
 };
@@ -11,6 +10,7 @@ use crate::{
     heap::JvmPtr,
     jvm::{error, JvmResult},
     method::{MethodDescriptor, MethodNaT, MethodNaTBorrow, MethodRef},
+    monitor::Monitor,
     object::{self, FieldStorage, Object},
     typ::Type,
     verification::verify,
@@ -71,41 +71,60 @@ impl std::hash::Hash for ClassRef {
 impl Class {
     pub(crate) fn set_layouts(
         super_class: Option<&Class>,
-        mut fields: Vec<Field>,
+        fields: Vec<Field>,
     ) -> (
         HashMap<FieldNaT, Field>,
         /*static size*/ usize,
         /*instance size*/ usize,
     ) {
-        // Minimize space used
-        fields.sort_by_key(|field| field.nat.typ.layout().align());
-        let mut static_layout = Layout::new::<()>();
-        let mut object_layout = Layout::from_size_align(
-            match super_class {
-                Some(super_class) => super_class.object_size,
-                None => object::header_size(),
-            },
-            8,
-        )
-        .unwrap();
+        let mut static_fields = Vec::new();
+        let mut object_fields = Vec::new();
+        for field in fields {
+            if field.access_flags.contains(AccessFlags::STATIC) {
+                static_fields.push(field);
+            } else {
+                object_fields.push(field);
+            }
+        }
 
-        let fields = fields
-            .into_iter()
-            .map(|mut field| {
-                let layout = field.nat.typ.layout();
-                let fields_layout = if field.access_flags.contains(AccessFlags::STATIC) {
-                    &mut static_layout
-                } else {
-                    &mut object_layout
-                };
-                let (new_layout, offset) = fields_layout.extend(layout).unwrap();
-                *fields_layout = new_layout;
-                field.byte_offset = offset;
-                (field.nat.clone(), field)
-            })
-            .collect();
+        let mut fields = HashMap::default();
 
-        (fields, static_layout.size(), object_layout.size())
+        let mut set_layouts = |storage_size: &mut usize, mut add_fields: Vec<Field>| {
+            add_fields.sort_by_key(|field| field.nat.typ.size());
+            'outer: while !add_fields.is_empty() {
+                // Try to find the biggest field we can append without padding
+                let log_align = storage_size.trailing_zeros();
+                for i in 0..add_fields.len() {
+                    if add_fields[i].nat.typ.size().trailing_zeros() <= log_align {
+                        let mut field = add_fields.remove(i);
+                        field.byte_offset = *storage_size;
+                        *storage_size += field.nat.typ.size();
+                        fields.insert(field.nat.clone(), field);
+                        continue 'outer;
+                    }
+                }
+
+                // Alright, we need padding, so continue with the smallest field
+                let mut field = add_fields.pop().unwrap();
+                while storage_size.trailing_zeros() < field.nat.typ.size().trailing_zeros() {
+                    *storage_size += 1;
+                }
+                field.byte_offset = *storage_size;
+                *storage_size += field.nat.typ.size();
+                fields.insert(field.nat.clone(), field);
+            }
+        };
+
+        let mut static_size = Monitor::SIZE;
+        set_layouts(&mut static_size, static_fields);
+
+        let mut object_size = match super_class {
+            Some(super_class) => super_class.object_size,
+            None => object::OFFSET_FIELDS,
+        };
+        set_layouts(&mut object_size, object_fields);
+
+        (fields, static_size, object_size)
     }
 
     pub(crate) fn is_interface(&self) -> bool {
@@ -168,6 +187,10 @@ impl Class {
         self.fields
             .get(&nat)
             .or_else(|| self.super_class.and_then(|c| c.field_by_nat(nat)))
+    }
+
+    pub(crate) fn monitor(&self) -> *const Monitor {
+        self.static_storage.0 as *const Monitor
     }
 
     // TODO: provide fields() and methods()

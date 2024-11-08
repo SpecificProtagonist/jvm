@@ -21,8 +21,9 @@ pub(crate) struct Monitor {
     count: AtomicU32,
 }
 
-pub const SIZE: usize = size_of::<usize>() + size_of::<u32>();
-pub const ALIGN: usize = align_of::<usize>();
+impl Monitor {
+    pub const SIZE: usize = size_of::<usize>() + size_of::<u32>();
+}
 
 const CONTENDED: u32 = 1;
 const STEP: u32 = 2;
@@ -51,18 +52,18 @@ fn count(monitor: *const Monitor) -> &'static AtomicU32 {
 }
 
 #[inline]
-pub fn lock(monitor: *const Monitor) {
+pub fn enter(monitor: *const Monitor) {
     match count(monitor).compare_exchange(0, STEP, Acquire, Relaxed) {
         Ok(_) => {
             // Locked without contention
             locked_by(monitor).store(thread_id(), Release);
         }
-        Err(loaded) => lock_locked(monitor, loaded),
+        Err(loaded) => enter_locked(monitor, loaded),
     }
 }
 
 #[cold]
-fn lock_locked(monitor: *const Monitor, loaded: u32) {
+fn enter_locked(monitor: *const Monitor, loaded: u32) {
     // Already locked, checked if by the same thread
     if locked_by(monitor).load(Acquire) == thread_id() {
         // If we reach u32::MAX, we never unlock the object again.
@@ -87,7 +88,7 @@ fn lock_locked(monitor: *const Monitor, loaded: u32) {
 #[derive(Debug)]
 pub struct NotLockedByThread;
 
-pub fn unlock(monitor: *const Monitor) -> Result<(), NotLockedByThread> {
+pub fn exit(monitor: *const Monitor) -> Result<(), NotLockedByThread> {
     if locked_by(monitor).load(Relaxed) != thread_id() {
         return Err(NotLockedByThread);
     }
@@ -100,7 +101,7 @@ pub fn unlock(monitor: *const Monitor) -> Result<(), NotLockedByThread> {
     if current < 2 * STEP {
         locked_by(monitor).store(NO_THREAD, Release);
         if count(monitor).swap(0, AcqRel) == STEP + CONTENDED {
-            notify_one(monitor);
+            atomic_wait::wake_one(count(monitor));
         }
     } else {
         count(monitor).swap(current - STEP, AcqRel);
@@ -112,12 +113,20 @@ pub fn wait(monitor: *const Monitor) {
     atomic_wait::wait(count(monitor), 0);
 }
 
-pub fn notify_one(monitor: *const Monitor) {
+pub fn notify_one(monitor: *const Monitor) -> Result<(), NotLockedByThread> {
+    if locked_by(monitor).load(Relaxed) != thread_id() {
+        return Err(NotLockedByThread);
+    }
     atomic_wait::wake_one(count(monitor));
+    Ok(())
 }
 
-pub fn notify_all(monitor: *const Monitor) {
+pub fn notify_all(monitor: *const Monitor) -> Result<(), NotLockedByThread> {
+    if locked_by(monitor).load(Relaxed) != thread_id() {
+        return Err(NotLockedByThread);
+    }
     atomic_wait::wake_all(count(monitor));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -133,10 +142,9 @@ mod test {
 
     impl Wrapper {
         fn new() -> Self {
-            Self(
-                unsafe { alloc_zeroed(Layout::from_size_align(SIZE, ALIGN).unwrap()) }
-                    as *const Monitor,
-            )
+            Self(unsafe {
+                alloc_zeroed(Layout::from_size_align(Monitor::SIZE, align_of::<usize>()).unwrap())
+            } as *const Monitor)
         }
     }
 
@@ -145,7 +153,7 @@ mod test {
             unsafe {
                 dealloc(
                     self.0 as *mut u8,
-                    Layout::from_size_align(SIZE, ALIGN).unwrap(),
+                    Layout::from_size_align(Monitor::SIZE, align_of::<usize>()).unwrap(),
                 );
             }
         }
@@ -153,17 +161,17 @@ mod test {
 
     unsafe impl Sync for Wrapper {}
 
-    // #[test]
+    #[test]
     fn monitor_reentrancy() {
         let monitor = Wrapper::new();
-        lock(monitor.0);
-        lock(monitor.0);
-        unlock(monitor.0).unwrap();
-        unlock(monitor.0).unwrap();
+        enter(monitor.0);
+        enter(monitor.0);
+        exit(monitor.0).unwrap();
+        exit(monitor.0).unwrap();
         assert_eq!(count(monitor.0).load(SeqCst), 0);
     }
 
-    // #[test]
+    #[test]
     fn monitor_contention() {
         let threads = 16;
         let per_thread = 1000;
@@ -176,17 +184,17 @@ mod test {
                 scope.spawn(|| {
                     for _ in 0..per_thread {
                         let _ = &monitor;
-                        lock(monitor.0);
-                        lock(monitor.0);
+                        enter(monitor.0);
+                        enter(monitor.0);
                         sum.store(sum.load(Relaxed) + 1, Relaxed);
-                        unlock(monitor.0).unwrap();
-                        unlock(monitor.0).unwrap();
+                        exit(monitor.0).unwrap();
+                        exit(monitor.0).unwrap();
                     }
                 });
             }
         });
 
-        lock(monitor.0);
+        enter(monitor.0);
         assert_eq!(sum.load(Relaxed), threads * per_thread);
     }
 }

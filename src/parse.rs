@@ -499,6 +499,18 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
             return Err(cfe(jvm, "Method missing code attribute"));
         }
     }
+    if access_flags.contains(AccessFlags::ABSTRACT)
+        && access_flags.intersects(
+            AccessFlags::PRIVATE
+                | AccessFlags::STATIC
+                | AccessFlags::FINAL
+                | AccessFlags::SYNCHRONIZED
+                | AccessFlags::NATIVE
+                | AccessFlags::STRICT,
+        )
+    {
+        return Err(cfe(jvm, "Invalid access flags"));
+    }
 
     Ok(Method {
         nat: MethodNaT {
@@ -592,6 +604,18 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
     }
 
     let methods = read_methods(input, &const_pool, jvm)?;
+    if access_flags.contains(AccessFlags::INTERFACE)
+        && methods.values().any(|m| {
+            m.access_flags.intersects(
+                AccessFlags::PROTECTED
+                    | AccessFlags::FINAL
+                    | AccessFlags::SYNCHRONIZED
+                    | AccessFlags::NATIVE,
+            )
+        })
+    {
+        return Err(cfe(jvm, "Invalid access flags"));
+    }
 
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {

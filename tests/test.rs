@@ -1,5 +1,8 @@
 #![feature(closure_lifetime_binder)]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    thread::scope,
+};
 
 use jvm::*;
 
@@ -158,7 +161,17 @@ fn arrays() {
     let jvm = make_jvm();
 
     let method = jvm
-        .resolve_method("Arrays", "test", [], Some(Type::Boolean))
+        .resolve_method("Arrays", "char_array", [], Some(Type::Boolean))
+        .unwrap();
+    assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), true);
+
+    let method = jvm
+        .resolve_method("Arrays", "double_array", [], Some(Type::Boolean))
+        .unwrap();
+    assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), true);
+
+    let method = jvm
+        .resolve_method("Arrays", "object_array", [], Some(Type::Boolean))
         .unwrap();
     assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), true);
 
@@ -219,13 +232,13 @@ fn strings() {
     let class = jvm.resolve_class("Strings").unwrap();
     class.ensure_init(&jvm).unwrap();
     let Value::Ref(Some(string)) = class
-        .field(&jvm, "foo", Type::Ref("java.lang.String".into()))
+        .field(&jvm, "string", Type::Ref("java.lang.String".into()))
         .unwrap()
         .static_get(&jvm)
     else {
         panic!()
     };
-    assert_eq!(string.to_string(&jvm), "\"bar\"");
+    assert_eq!(string.to_string(&jvm), "\"ABC\"");
 }
 
 #[test]
@@ -331,4 +344,43 @@ fn guard_obj_lifetime() {
     assert_eq!(field, field);
     class.hash(&mut DefaultHasher::new());
     field.hash(&mut DefaultHasher::new());
+}
+
+#[test]
+fn sync() {
+    let jvm = make_jvm();
+    let class = jvm.resolve_class("Sync").unwrap();
+
+    let threads = 8;
+    let per_thread = 50;
+
+    let static_method = class.method(&jvm, "static_sync", None, None).unwrap();
+    let instance_method = class.method(&jvm, "instance_sync", None, None).unwrap();
+    let instance = class.create_object_uninitialized(&jvm);
+
+    scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                for _ in 0..per_thread {
+                    static_method.invoke(&jvm, &[]).unwrap();
+                    instance_method.invoke(&jvm, &[instance.into()]).unwrap();
+                }
+            });
+        }
+    });
+
+    assert_eq!(
+        class
+            .field(&jvm, "static_counter", Type::Int)
+            .unwrap()
+            .static_get(&jvm),
+        threads * per_thread
+    );
+    assert_eq!(
+        class
+            .field(&jvm, "instance_counter", Type::Int)
+            .unwrap()
+            .instance_get(&jvm, instance),
+        threads * per_thread
+    );
 }

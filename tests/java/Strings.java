@@ -1,3 +1,3 @@
 public class Strings {
-    static String foo = "bar";
+    static String string = "ABC";
 }
