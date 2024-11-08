@@ -13,8 +13,22 @@ use crate::{
 };
 
 macro_rules! error {
-    ($jvm:expr, $fmt:literal $(, $exprs:expr)*) => {
-        error($jvm, "VerifyError", &format!($fmt, $($exprs),*))
+    ($jvm:expr) => {
+        error($jvm, "VerifyError", &format!("verrify error {}", line!()))
+    };
+}
+
+macro_rules! verify {
+    ($jvm:expr, $expr:expr) => {
+        if !$expr {
+            return Err(error!($jvm));
+        }
+    };
+}
+
+macro_rules! verify_failed {
+    ($jvm:expr) => {
+        return Err(error!($jvm))
     };
 }
 
@@ -105,17 +119,11 @@ impl StackMapFrame {
 
     /// In case of category 2 type, pops both the top type and the actual type
     fn pop(&mut self, jvm: &Jvm) -> JvmResult<VerificationType> {
-        let typ = self
-            .stack
-            .pop()
-            .ok_or_else(|| error!(jvm, "popped empty stack"))?;
+        let typ = self.stack.pop().ok_or_else(|| error!(jvm))?;
         if typ == VerificationType::Top {
-            self.stack
-                .pop()
-                .ok_or_else(|| error!(jvm, "popped empty stack"))
-        } else if typ.category_2() {
-            Err(error!(jvm, "stack missing top"))
+            self.stack.pop().ok_or_else(|| error!(jvm))
         } else {
+            verify!(jvm, !typ.category_2());
             Ok(typ)
         }
     }
@@ -128,40 +136,37 @@ impl StackMapFrame {
     }
 
     fn pop_type(&mut self, jvm: &Jvm, typ: &Type) -> JvmResult<()> {
-        if match (typ, self.stack.pop()) {
-            (
-                Type::Boolean | Type::Byte | Type::Short | Type::Char | Type::Int,
-                Some(VerificationType::Integer),
-            ) => true,
-            (Type::Long, Some(VerificationType::Top)) => {
-                matches!(self.stack.pop(), Some(VerificationType::Long))
+        verify!(
+            jvm,
+            match (typ, self.stack.pop()) {
+                (
+                    Type::Boolean | Type::Byte | Type::Short | Type::Char | Type::Int,
+                    Some(VerificationType::Integer),
+                ) => true,
+                (Type::Long, Some(VerificationType::Top)) => {
+                    matches!(self.stack.pop(), Some(VerificationType::Long))
+                }
+                (Type::Float, Some(VerificationType::Float)) => true,
+                (Type::Double, Some(VerificationType::Top)) => {
+                    matches!(self.stack.pop(), Some(VerificationType::Double))
+                }
+                (Type::Ref(ref_type), Some(VerificationType::ObjectVariable(obj))) => {
+                    obj.assignable_to(ref_type)
+                }
+                _ => false,
             }
-            (Type::Float, Some(VerificationType::Float)) => true,
-            (Type::Double, Some(VerificationType::Top)) => {
-                matches!(self.stack.pop(), Some(VerificationType::Double))
-            }
-            (Type::Ref(ref_type), Some(VerificationType::ObjectVariable(obj))) => {
-                obj.assignable_to(ref_type)
-            }
-            _ => false,
-        } {
-            Ok(())
-        } else {
-            Err(error!(jvm, "Failed to pop {typ:?}"))
-        }
+        );
+        Ok(())
     }
 
     fn load(&mut self, jvm: &Jvm, index: u16, typ: VerificationType) -> JvmResult<()> {
-        let var = self
-            .locals
-            .get(index as usize)
-            .ok_or_else(|| error!(jvm, "Index out of bounds"))?;
-        if !var.is_assignable_to(typ)
-            | (var.category_2()
-                & (self.locals.get(index as usize + 1) != Some(&VerificationType::Top)))
-        {
-            return Err(error!(jvm, "load type mismatch"));
-        }
+        let var = self.locals.get(index as usize).ok_or_else(|| error!(jvm))?;
+        verify!(
+            jvm,
+            var.is_assignable_to(typ)
+                & !(var.category_2()
+                    & (self.locals.get(index as usize + 1) != Some(&VerificationType::Top)))
+        );
         self.push(*var);
         Ok(())
     }
@@ -177,32 +182,29 @@ impl StackMapFrame {
                 cat2_success = false;
             }
         }
-        if cat2_success && on_stack.is_assignable_to(typ) & (index < self.locals.len() as u16) {
-            self.locals[index as usize] = on_stack;
-            Ok(())
-        } else {
-            Err(error!(
-                jvm,
-                "invalid store of {on_stack:?} as {typ:?} ({self:?})"
-            ))
-        }
+        verify!(
+            jvm,
+            cat2_success && on_stack.is_assignable_to(typ) & (index < self.locals.len() as u16)
+        );
+        self.locals[index as usize] = on_stack;
+        Ok(())
     }
 
     fn top_of_stack(&mut self, jvm: &Jvm, typ: VerificationType) -> JvmResult<()> {
         if typ.category_2() {
-            if (self.stack.len() > 1)
-                && self.stack[self.stack.len() - 1] == VerificationType::Top
-                && self.stack[self.stack.len() - 2].is_assignable_to(typ)
-            {
-                Ok(())
-            } else {
-                Err(error!(jvm, "top of stack mismatch"))
-            }
-        } else if !self.stack.is_empty() && self.stack[self.stack.len() - 1].is_assignable_to(typ) {
-            Ok(())
+            verify!(
+                jvm,
+                (self.stack.len() > 1)
+                    && self.stack[self.stack.len() - 1] == VerificationType::Top
+                    && self.stack[self.stack.len() - 2].is_assignable_to(typ)
+            );
         } else {
-            Err(error!(jvm, "top of stack mismatch"))
+            verify!(
+                jvm,
+                !self.stack.is_empty() && self.stack[self.stack.len() - 1].is_assignable_to(typ)
+            );
         }
+        Ok(())
     }
 
     fn relative_jump(
@@ -230,16 +232,10 @@ impl StackMapFrame {
         target: u16,
     ) -> JvmResult<()> {
         if let Some(target_state) = stack_map_table.get(&target) {
-            if self.is_assignable_to(target_state) {
-                Ok(())
-            } else {
-                Err(error!(
-                    jvm,
-                    "invalid jump target typestate: typestate {self:?}, target state {target_state:?}"
-                ))
-            }
+            verify!(jvm, self.is_assignable_to(target_state));
+            Ok(())
         } else {
-            Err(error!(jvm, "missing stack map frame"))
+            verify_failed!(jvm)
         }
     }
 }
@@ -249,8 +245,8 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassRef) -> JvmResult<()>
     if let Some(super_class) = class.super_class {
         super_class.verify(jvm)?;
         // Check whether the super class is final (as described in spec) is redundant (has to already be checked during loading)
-    } else if class.name.as_ref() != "java.lang.Object" {
-        return Err(error!(jvm, "{class} has no superclass"));
+    } else {
+        verify!(jvm, class.name.as_ref() == "java.lang.Object");
     }
 
     let const_pool = class.const_pool.read().unwrap();
@@ -270,17 +266,13 @@ pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) 
         method.class().super_class,
     ) {
         if let Some(super_method) = super_class.methods.get(&method.nat) {
-            if super_method.access_flags.contains(AccessFlags::FINAL) {
-                return Err(error!(jvm, "{method}: tried to overwrite final method"));
-            }
+            verify!(jvm, !super_method.access_flags.contains(AccessFlags::FINAL));
         }
     }
 
     match &*method.code.read().unwrap() {
         Code::None => {
-            if !method.access_flags.intersects(AccessFlags::ABSTRACT) {
-                return Err(error!(jvm, "{method}: missing code attribute"));
-            }
+            verify!(jvm, method.access_flags.intersects(AccessFlags::ABSTRACT))
         }
         Code::Bytecode(code) => {
             verify_bytecode(jvm, const_pool, method, code).inspect_err(|err| {
@@ -328,9 +320,7 @@ fn verify_bytecode(
         for arg in &method.nat.typ.args {
             push_type(jvm, &mut locals, arg)?
         }
-        if locals.len() > code.max_locals as usize {
-            return Err(error!(jvm, "max locals too low"));
-        }
+        verify!(jvm, locals.len() <= code.max_locals as usize);
         locals
     };
 
@@ -344,20 +334,18 @@ fn verify_bytecode(
 
     // Verify max locals & stack length
     for frame in stack_map_table.values_mut() {
-        if (frame.locals.len() > code.max_locals as usize)
-            | (frame.stack.len() > code.max_stack as usize)
-        {
-            return Err(error!(jvm, "invalid stack map table"));
-        }
+        verify!(
+            jvm,
+            (frame.locals.len() <= code.max_locals as usize)
+                & (frame.stack.len() <= code.max_stack as usize)
+        );
         frame
             .locals
             .resize(code.max_locals as usize, VerificationType::Top);
     }
 
     if let Some((last_pc, _)) = stack_map_table.last_key_value() {
-        if *last_pc as usize > bytes.len() {
-            return Err(error!(jvm, "stack map frame out of bounds"));
-        }
+        verify!(jvm, *last_pc as usize <= bytes.len());
     }
 
     let mut type_states = stack_map_table.iter();
@@ -407,7 +395,7 @@ fn verify_bytecode(
                     Some(ConstPoolItem::Class(class)) => {
                         type_state.push(VerificationType::ObjectVariable(class))
                     }
-                    _ => return Err(error!(jvm, "invalid ldc")),
+                    _ => verify_failed!(jvm),
                 }
             }
             LDC_W => {
@@ -423,7 +411,7 @@ fn verify_bytecode(
                     Some(ConstPoolItem::Class(class)) => {
                         type_state.push(VerificationType::ObjectVariable(class))
                     }
-                    _ => return Err(error!(jvm, "invalid ldc_w")),
+                    _ => verify_failed!(jvm),
                 }
             }
             LDC2_W => {
@@ -435,7 +423,7 @@ fn verify_bytecode(
                     Some(ConstPoolItem::Long(_)) => {
                         type_state.push(VerificationType::Long);
                     }
-                    _ => return Err(error!(jvm, "invalid ldc2_w")),
+                    _ => verify_failed!(jvm),
                 }
             }
             ILOAD => {
@@ -504,7 +492,7 @@ fn verify_bytecode(
                         })
                     )
                 {
-                    return Err(error!(jvm, "invalid iaload"));
+                    verify_failed!(jvm);
                 }
                 type_state.push(VerificationType::Integer);
             }
@@ -518,7 +506,7 @@ fn verify_bytecode(
                         })
                     )
                 {
-                    return Err(error!(jvm, "invalid laload"));
+                    verify_failed!(jvm);
                 }
                 type_state.push(VerificationType::Long);
             }
@@ -532,7 +520,7 @@ fn verify_bytecode(
                         })
                     )
                 {
-                    return Err(error!(jvm, "invalid faload"));
+                    verify_failed!(jvm);
                 }
                 type_state.push(VerificationType::Float);
             }
@@ -546,13 +534,13 @@ fn verify_bytecode(
                         })
                     )
                 {
-                    return Err(error!(jvm, "invalid daload"));
+                    verify_failed!(jvm);
                 }
                 type_state.push(VerificationType::Double);
             }
             AALOAD => {
                 if type_state.pop(jvm)? != VerificationType::Integer {
-                    return Err(error!(jvm, "invalid aaload"));
+                    verify_failed!(jvm);
                 }
                 let component = match type_state.pop(jvm)? {
                     VerificationType::Null => VerificationType::Null,
@@ -561,49 +549,49 @@ fn verify_bytecode(
                             let class = jvm.resolve_class_internal(component)?;
                             VerificationType::ObjectVariable(class)
                         } else {
-                            return Err(error!(jvm, "invalid aaload"));
+                            verify_failed!(jvm);
                         }
                     }
                     _ => {
-                        return Err(error!(jvm, "invalid aaload"));
+                        verify_failed!(jvm);
                     }
                 };
                 type_state.push(component);
             }
             BALOAD => {
-                if (type_state.pop(jvm)? != VerificationType::Integer)
-                    | !small_array_type(type_state.pop(jvm)?)
-                {
-                    return Err(error!(jvm, "invalid baload"));
-                }
+                verify!(
+                    jvm,
+                    (type_state.pop(jvm)? == VerificationType::Integer)
+                        & small_array_type(type_state.pop(jvm)?)
+                );
                 type_state.push(VerificationType::Integer);
             }
             CALOAD => {
-                if (type_state.pop(jvm)? != VerificationType::Integer)
-                    | !matches!(
-                        type_state.pop(jvm)?,
-                        VerificationType::ObjectVariable(Class {
-                            element_type: Some(Type::Char),
-                            ..
-                        })
-                    )
-                {
-                    return Err(error!(jvm, "invalid caload"));
-                }
+                verify!(
+                    jvm,
+                    (type_state.pop(jvm)? == VerificationType::Integer)
+                        & matches!(
+                            type_state.pop(jvm)?,
+                            VerificationType::ObjectVariable(Class {
+                                element_type: Some(Type::Char),
+                                ..
+                            })
+                        )
+                );
                 type_state.push(VerificationType::Integer);
             }
             SALOAD => {
-                if (type_state.pop(jvm)? != VerificationType::Integer)
-                    | !matches!(
-                        type_state.pop(jvm)?,
-                        VerificationType::ObjectVariable(Class {
-                            element_type: Some(Type::Short),
-                            ..
-                        })
-                    )
-                {
-                    return Err(error!(jvm, "invalid saload"));
-                }
+                verify!(
+                    jvm,
+                    (type_state.pop(jvm)? == VerificationType::Integer)
+                        & matches!(
+                            type_state.pop(jvm)?,
+                            VerificationType::ObjectVariable(Class {
+                                element_type: Some(Type::Short),
+                                ..
+                            })
+                        )
+                );
                 type_state.push(VerificationType::Integer);
             }
             ISTORE => {
@@ -647,140 +635,134 @@ fn verify_bytecode(
             ASTORE_2 => type_state.store(jvm, 2, VerificationType::Reference)?,
             ASTORE_3 => type_state.store(jvm, 3, VerificationType::Reference)?,
             IASTORE => {
-                if !((type_state.pop(jvm)? == VerificationType::Integer)
-                    & (type_state.pop(jvm)? == VerificationType::Integer)
-                    & matches!(
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(
+                    jvm,
+                    matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
                             element_type: Some(Type::Int),
                             ..
                         })
-                    ))
-                {
-                    return Err(error!(jvm, "invalid iastore"));
-                }
+                    )
+                )
             }
             LASTORE => {
-                if !((type_state.pop(jvm)? == VerificationType::Long)
-                    & (type_state.pop(jvm)? == VerificationType::Integer)
-                    & matches!(
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Long);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(
+                    jvm,
+                    matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
                             element_type: Some(Type::Long),
                             ..
                         })
-                    ))
-                {
-                    return Err(error!(jvm, "invalid lastore"));
-                }
+                    )
+                );
             }
             FASTORE => {
-                if !((type_state.pop(jvm)? == VerificationType::Float)
-                    & (type_state.pop(jvm)? == VerificationType::Integer)
-                    & matches!(
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Float);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(
+                    jvm,
+                    matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
                             element_type: Some(Type::Float),
                             ..
                         })
-                    ))
-                {
-                    return Err(error!(jvm, "invalid fastore"));
-                }
+                    )
+                );
             }
             DASTORE => {
-                if !((type_state.pop(jvm)? == VerificationType::Double)
-                    & (type_state.pop(jvm)? == VerificationType::Integer)
-                    & matches!(
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Double);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(
+                    jvm,
+                    matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
                             element_type: Some(Type::Double),
                             ..
                         })
-                    ))
-                {
-                    return Err(error!(jvm, "invalid dastore"));
-                }
+                    )
+                );
             }
             AASTORE => {
-                if !matches!(
-                    (
-                        type_state.pop(jvm)?,
-                        type_state.pop(jvm)?,
-                        type_state.pop(jvm)?
-                    ),
-                    (
-                        VerificationType::ObjectVariable(_),
-                        VerificationType::Integer,
-                        VerificationType::ObjectVariable(Class {
-                            element_type: Some(Type::Ref(_)),
-                            ..
-                        })
+                verify!(
+                    jvm,
+                    matches!(
+                        (
+                            type_state.pop(jvm)?,
+                            type_state.pop(jvm)?,
+                            type_state.pop(jvm)?
+                        ),
+                        (
+                            VerificationType::ObjectVariable(_),
+                            VerificationType::Integer,
+                            VerificationType::ObjectVariable(Class {
+                                element_type: Some(Type::Ref(_)),
+                                ..
+                            })
+                        )
                     )
-                ) {
-                    return Err(error!(jvm, "invalid aastore"));
-                }
+                );
             }
             BASTORE => {
-                if !((type_state.pop(jvm)? == VerificationType::Integer)
-                    & (type_state.pop(jvm)? == VerificationType::Integer)
-                    & small_array_type(type_state.pop(jvm)?))
-                {
-                    return Err(error!(jvm, "invalid bastore"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(jvm, small_array_type(type_state.pop(jvm)?));
             }
             CASTORE => {
-                if !((type_state.pop(jvm)? == VerificationType::Integer)
-                    & (type_state.pop(jvm)? == VerificationType::Integer)
-                    & matches!(
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(
+                    jvm,
+                    matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
                             element_type: Some(Type::Char),
                             ..
                         })
-                    ))
-                {
-                    return Err(error!(jvm, "invalid castore"));
-                }
+                    )
+                );
             }
             SASTORE => {
-                if !((type_state.pop(jvm)? == VerificationType::Integer)
-                    & (type_state.pop(jvm)? == VerificationType::Integer)
-                    & matches!(
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(
+                    jvm,
+                    matches!(
                         type_state.pop(jvm)?,
                         VerificationType::ObjectVariable(Class {
                             element_type: Some(Type::Short),
                             ..
                         })
-                    ))
-                {
-                    return Err(error!(jvm, "invalid sastore"));
-                }
+                    )
+                );
             }
             POP => {
-                if type_state.pop(jvm)?.category_2() {
-                    return Err(error!(jvm, "invalid pop"));
-                }
+                verify!(jvm, !type_state.pop(jvm)?.category_2());
             }
             POP2 => {
-                if !type_state.pop(jvm)?.category_2() && type_state.pop(jvm)?.category_2() {
-                    return Err(error!(jvm, "invalid pop2"));
-                }
+                verify!(
+                    jvm,
+                    type_state.pop(jvm)?.category_2() || !type_state.pop(jvm)?.category_2()
+                );
             }
             DUP => {
                 let typ = type_state.pop(jvm)?;
-                if typ.category_2() {
-                    return Err(error!(jvm, "invalid dup"));
-                }
+                verify!(jvm, !typ.category_2());
                 type_state.push(typ);
                 type_state.push(typ);
             }
             DUP_X1 => {
                 let first = type_state.pop(jvm)?;
                 let second = type_state.pop(jvm)?;
-                if first.category_2() | second.category_2() {
-                    return Err(error!(jvm, "invalid dup_x1"));
-                }
+                verify!(jvm, !first.category_2());
+                verify!(jvm, !second.category_2());
                 type_state.stack.push(first);
                 type_state.stack.push(second);
                 type_state.stack.push(first);
@@ -789,11 +771,9 @@ fn verify_bytecode(
                 let first = type_state.pop(jvm)?;
                 let (Some(second), Some(third)) = (type_state.stack.pop(), type_state.stack.pop())
                 else {
-                    return Err(error!(jvm, "invalid dup_x2"));
+                    verify_failed!(jvm);
                 };
-                if third == VerificationType::Top {
-                    return Err(error!(jvm, "invalid dup_x2"));
-                }
+                verify!(jvm, third != VerificationType::Top);
                 type_state.stack.push(first);
                 type_state.stack.push(third);
                 type_state.stack.push(second);
@@ -802,11 +782,9 @@ fn verify_bytecode(
             DUP2 => {
                 let (Some(first), Some(second)) = (type_state.stack.pop(), type_state.stack.pop())
                 else {
-                    return Err(error!(jvm, "invalid dup2"));
+                    verify_failed!(jvm);
                 };
-                if second == VerificationType::Top {
-                    return Err(error!(jvm, "invalid dup2"));
-                }
+                verify!(jvm, second != VerificationType::Top);
                 type_state.stack.push(second);
                 type_state.stack.push(first);
                 type_state.stack.push(second);
@@ -818,11 +796,10 @@ fn verify_bytecode(
                     type_state.stack.pop(),
                     type_state.stack.pop(),
                 ) else {
-                    return Err(error!(jvm, "invalid dup2_x1"));
+                    verify_failed!(jvm);
                 };
-                if (second == VerificationType::Top) | (third == VerificationType::Top) {
-                    return Err(error!(jvm, "invalid dup2_x1"));
-                }
+                verify!(jvm, second != VerificationType::Top);
+                verify!(jvm, third != VerificationType::Top);
                 type_state.stack.push(second);
                 type_state.stack.push(first);
                 type_state.stack.push(third);
@@ -836,11 +813,10 @@ fn verify_bytecode(
                     type_state.stack.pop(),
                     type_state.stack.pop(),
                 ) else {
-                    return Err(error!(jvm, "invalid dup2_x2"));
+                    verify_failed!(jvm);
                 };
-                if (second == VerificationType::Top) | (fourth == VerificationType::Top) {
-                    return Err(error!(jvm, "invalid dup2_x2"));
-                }
+                verify!(jvm, second != VerificationType::Top);
+                verify!(jvm, fourth != VerificationType::Top);
                 type_state.stack.push(second);
                 type_state.stack.push(first);
                 type_state.stack.push(fourth);
@@ -851,42 +827,29 @@ fn verify_bytecode(
             SWAP => {
                 let first = type_state.pop(jvm)?;
                 let second = type_state.pop(jvm)?;
-                if first.category_2() | second.category_2() {
-                    return Err(error!(jvm, "invalid swap"));
-                }
+                verify!(jvm, !first.category_2());
+                verify!(jvm, !second.category_2());
                 type_state.push(first);
                 type_state.push(second);
             }
             IADD | ISUB | IMUL | IDIV | IREM | ISHL | ISHR | IUSHR | IAND | IOR | IXOR => {
-                if (type_state.pop(jvm)?, type_state.pop(jvm)?)
-                    != (VerificationType::Integer, VerificationType::Integer)
-                {
-                    return Err(error!(jvm, "invalid integer arithmetic"));
-                };
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
                 type_state.push(VerificationType::Integer)
             }
             LADD | LSUB | LMUL | LDIV | LREM | LSHL | LSHR | LUSHR | LAND | LOR | LXOR => {
-                if (type_state.pop(jvm)?, type_state.pop(jvm)?)
-                    != (VerificationType::Long, VerificationType::Long)
-                {
-                    return Err(error!(jvm, "invalid long arithmetic"));
-                };
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Long);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Long);
                 type_state.push(VerificationType::Long)
             }
             FADD | FSUB | FMUL | FDIV | FREM => {
-                if (type_state.pop(jvm)?, type_state.pop(jvm)?)
-                    != (VerificationType::Float, VerificationType::Float)
-                {
-                    return Err(error!(jvm, "invalid float arithmetic"));
-                };
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Float);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Float);
                 type_state.push(VerificationType::Float)
             }
             DADD | DSUB | DMUL | DDIV | DREM => {
-                if (type_state.pop(jvm)?, type_state.pop(jvm)?)
-                    != (VerificationType::Double, VerificationType::Double)
-                {
-                    return Err(error!(jvm, "invalid double arithmetic"));
-                };
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Double);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Double);
                 type_state.push(VerificationType::Double);
             }
             INEG | I2B | I2C | I2S => type_state.top_of_stack(jvm, VerificationType::Integer)?,
@@ -896,132 +859,98 @@ fn verify_bytecode(
             IINC => {
                 let index = read_code_u8(jvm, bytes, pc)?;
                 read_code_u8(jvm, bytes, pc)?;
-                if type_state.locals.get(index as usize) != Some(&VerificationType::Integer) {
-                    return Err(error!(jvm, "invalid iinc"));
-                }
+                verify!(
+                    jvm,
+                    type_state.locals.get(index as usize) == Some(&VerificationType::Integer)
+                );
             }
             I2F => {
-                if type_state.pop(jvm)? != VerificationType::Integer {
-                    return Err(error!(jvm, "invalid i2f"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
                 type_state.push(VerificationType::Float)
             }
             I2D => {
-                if type_state.pop(jvm)? != VerificationType::Integer {
-                    return Err(error!(jvm, "invalid i2d"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
                 type_state.push(VerificationType::Double);
             }
             I2L => {
-                if type_state.pop(jvm)? != VerificationType::Integer {
-                    return Err(error!(jvm, "invalid i2l"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
                 type_state.push(VerificationType::Long);
             }
             L2I => {
-                if type_state.pop(jvm)? != VerificationType::Long {
-                    return Err(error!(jvm, "invalid l2i"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Long);
                 type_state.push(VerificationType::Integer);
             }
             L2F => {
-                if type_state.pop(jvm)? != VerificationType::Long {
-                    return Err(error!(jvm, "invalid l2f"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Long);
                 type_state.push(VerificationType::Float);
             }
             L2D => {
-                if type_state.pop(jvm)? != VerificationType::Long {
-                    return Err(error!(jvm, "invalid l2d"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Long);
                 type_state.push(VerificationType::Double);
             }
             F2I => {
-                if type_state.pop(jvm)? != VerificationType::Float {
-                    return Err(error!(jvm, "invalid f2i"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Float);
                 type_state.push(VerificationType::Integer);
             }
             F2L => {
-                if type_state.pop(jvm)? != VerificationType::Float {
-                    return Err(error!(jvm, "invalid f2l"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Float);
                 type_state.push(VerificationType::Long);
             }
             F2D => {
-                if type_state.pop(jvm)? != VerificationType::Float {
-                    return Err(error!(jvm, "invalid f2d"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Float);
                 type_state.push(VerificationType::Double);
             }
             D2I => {
-                if type_state.pop(jvm)? != VerificationType::Double {
-                    return Err(error!(jvm, "invalid d2i"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Double);
                 type_state.push(VerificationType::Integer);
             }
             D2L => {
-                if type_state.pop(jvm)? != VerificationType::Double {
-                    return Err(error!(jvm, "invalid d2l"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Double);
                 type_state.push(VerificationType::Long);
             }
             D2F => {
-                if type_state.pop(jvm)? != VerificationType::Double {
-                    return Err(error!(jvm, "invalid d2f"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Double);
                 type_state.push(VerificationType::Float);
             }
             LCMP => {
-                if (type_state.pop(jvm)?, type_state.pop(jvm)?)
-                    != (VerificationType::Long, VerificationType::Long)
-                {
-                    return Err(error!(jvm, "invalid lcmp"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Long);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Long);
                 type_state.push(VerificationType::Integer);
             }
             FCMPL | FCMPG => {
-                if (type_state.pop(jvm)?, type_state.pop(jvm)?)
-                    != (VerificationType::Float, VerificationType::Float)
-                {
-                    return Err(error!(jvm, "invalid fcmp"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Float);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Float);
                 type_state.push(VerificationType::Integer);
             }
             DCMPL | DCMPG => {
-                if (type_state.pop(jvm)?, type_state.pop(jvm)?)
-                    != (VerificationType::Double, VerificationType::Double)
-                {
-                    return Err(error!(jvm, "invalid dcmp"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Double);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Double);
                 type_state.push(VerificationType::Integer);
             }
             IFEQ | IFNE | IFLT | IFGE | IFGT | IFLE => {
-                if type_state.pop(jvm)? != VerificationType::Integer {
-                    return Err(error!(jvm, "invalid if"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
                 type_state.relative_jump(jvm, &stack_map_table, bytes, pc, false)?;
                 connected_to_previous_block = false;
             }
             IF_ICMPEQ | IF_ICMPNE | IF_ICMPLT | IF_ICMPGE | IF_ICMPGT | IF_ICMPLE => {
-                if (type_state.pop(jvm)? != VerificationType::Integer)
-                    | (type_state.pop(jvm)? != VerificationType::Integer)
-                {
-                    return Err(error!(jvm, "invalid if_cmp"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
                 type_state.relative_jump(jvm, &stack_map_table, bytes, pc, false)?;
                 connected_to_previous_block = false;
             }
             IF_ACMPEQ | IF_ACMPNE => {
-                if (!type_state
-                    .pop(jvm)?
-                    .is_assignable_to(VerificationType::Reference))
-                    | (!type_state
+                verify!(
+                    jvm,
+                    type_state
                         .pop(jvm)?
-                        .is_assignable_to(VerificationType::Reference))
-                {
-                    return Err(error!(jvm, "invalid if_acmp"));
-                }
+                        .is_assignable_to(VerificationType::Reference)
+                );
+                verify!(
+                    jvm,
+                    type_state
+                        .pop(jvm)?
+                        .is_assignable_to(VerificationType::Reference)
+                );
                 type_state.relative_jump(jvm, &stack_map_table, bytes, pc, false)?;
                 connected_to_previous_block = false;
             }
@@ -1039,9 +968,7 @@ fn verify_bytecode(
                 let default = read_code_u32(jvm, bytes, pc)? as i32;
                 let low = read_code_u32(jvm, bytes, pc)? as i32;
                 let high = read_code_u32(jvm, bytes, pc)? as i32;
-                if low > high {
-                    return Err(error!(jvm, "invalid tableswitch"));
-                }
+                verify!(jvm, low <= high);
 
                 type_state.pop_type(jvm, &Type::Int)?;
 
@@ -1050,9 +977,7 @@ fn verify_bytecode(
                 for _ in low..=high {
                     let offset = read_code_u32(jvm, bytes, pc)? as i32;
                     type_state.jump(jvm, &stack_map_table, (base as i32 + offset) as u16)?;
-                    if offset < prev {
-                        return Err(error!(jvm, "invalid tableswitch"));
-                    }
+                    verify!(jvm, offset > prev);
                     prev = offset;
                 }
                 connected_to_previous_block = false;
@@ -1066,9 +991,7 @@ fn verify_bytecode(
 
                 let default = read_code_u32(jvm, bytes, pc)? as i32;
                 let npairs = read_code_u32(jvm, bytes, pc)? as i32;
-                if npairs < 0 {
-                    return Err(error!(jvm, "invalid lookupswitch"));
-                }
+                verify!(jvm, npairs >= 0);
 
                 type_state.pop_type(jvm, &Type::Int)?;
 
@@ -1078,56 +1001,46 @@ fn verify_bytecode(
                     let i_match = read_code_u32(jvm, bytes, pc)? as i32;
                     let offset = read_code_u32(jvm, bytes, pc)? as i32;
                     type_state.jump(jvm, &stack_map_table, (base as i32 + offset) as u16)?;
-                    if i_match < prev {
-                        return Err(error!(jvm, "invalid lookupswitch"));
-                    }
+                    verify!(jvm, i_match >= prev);
                     prev = i_match;
                 }
                 connected_to_previous_block = false;
             }
             IRETURN => {
-                if !matches!(
-                    method.nat.typ.returns,
-                    Some(Type::Boolean | Type::Byte | Type::Char | Type::Short | Type::Int)
-                ) | (type_state.pop(jvm)? != VerificationType::Integer)
-                {
-                    return Err(error!(jvm, "invalid ireturn"));
-                }
+                verify!(
+                    jvm,
+                    matches!(
+                        method.nat.typ.returns,
+                        Some(Type::Boolean | Type::Byte | Type::Char | Type::Short | Type::Int)
+                    )
+                );
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
                 connected_to_previous_block = false
             }
             LRETURN => {
-                if (method.nat.typ.returns != Some(Type::Long))
-                    | (type_state.pop(jvm)? != VerificationType::Long)
-                {
-                    return Err(error!(jvm, "invalid lreturn"));
-                }
+                verify!(jvm, method.nat.typ.returns == Some(Type::Long));
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Long);
                 connected_to_previous_block = false
             }
             FRETURN => {
-                if (method.nat.typ.returns != Some(Type::Float))
-                    | (type_state.pop(jvm)? != VerificationType::Float)
-                {
-                    return Err(error!(jvm, "invalid freturn"));
-                }
+                verify!(jvm, method.nat.typ.returns == Some(Type::Float));
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Float);
                 connected_to_previous_block = false
             }
             DRETURN => {
-                if (method.nat.typ.returns != Some(Type::Double))
-                    | (type_state.pop(jvm)? != VerificationType::Double)
-                {
-                    return Err(error!(jvm, "invalid dreturn"));
-                }
+                verify!(jvm, method.nat.typ.returns == Some(Type::Double));
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Double);
                 connected_to_previous_block = false
             }
             RETURN => {
-                if method.nat.typ.returns.is_some()
-                    | ((method.nat.name.deref() == "<init>")
-                        & type_state
+                verify!(jvm, method.nat.typ.returns.is_none());
+                verify!(
+                    jvm,
+                    (method.nat.name.deref() != "<init>")
+                        || !type_state
                             .locals
-                            .contains(&VerificationType::UninitializedThis))
-                {
-                    return Err(error!(jvm, "invalid return"));
-                }
+                            .contains(&VerificationType::UninitializedThis)
+                );
                 connected_to_previous_block = false
             }
             GETSTATIC => {
@@ -1146,56 +1059,61 @@ fn verify_bytecode(
             GETFIELD => {
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let field = const_pool.get_field(jvm, index)?;
-                if match type_state.pop(jvm)? {
-                    VerificationType::ObjectVariable(class) => {
-                        !class.assignable_to(&field.class().name)
+                verify!(
+                    jvm,
+                    match type_state.pop(jvm)? {
+                        VerificationType::ObjectVariable(class) => {
+                            class.assignable_to(&field.class().name)
+                        }
+                        _ => false,
                     }
-                    _ => true,
-                } {
-                    return Err(error!(jvm, "invalid getfield"));
-                }
+                );
                 push_type(jvm, &mut type_state.stack, &field.nat.typ)?;
             }
             PUTFIELD => {
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let field = const_pool.get_field(jvm, index)?;
                 type_state.pop_type(jvm, &field.nat.typ)?;
-                if match type_state.pop(jvm)? {
-                    VerificationType::ObjectVariable(class) => {
-                        !class.assignable_to(&field.class().name)
+                verify!(
+                    jvm,
+                    match type_state.pop(jvm)? {
+                        VerificationType::ObjectVariable(class) => {
+                            class.assignable_to(&field.class().name)
+                        }
+                        VerificationType::UninitializedThis => {
+                            !((method.nat.name.as_ref() == "<init>")
+                                & method.class().assignable_to(&field.class().name))
+                        }
+                        _ => false,
                     }
-                    VerificationType::UninitializedThis => {
-                        (method.nat.name.as_ref() == "<init>")
-                            & method.class().assignable_to(&field.class().name)
-                    }
-                    _ => true,
-                } {
-                    return Err(error!(jvm, "invalid putfield"));
-                }
+                );
             }
             INVOKEVIRTUAL => {
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let (invoke_class, invoke_nat) = const_pool.get_virtual_method(jvm, index)?;
-                let mut valid = !matches!(invoke_nat.name.as_ref(), "<init>" | "<clinit>");
+                verify!(
+                    jvm,
+                    !matches!(invoke_nat.name.as_ref(), "<init>" | "<clinit>")
+                );
                 for arg in invoke_nat.typ.args.iter().rev() {
-                    valid &= type_state.pop(jvm)?.matches(arg);
+                    verify!(jvm, type_state.pop(jvm)?.matches(arg));
                 }
-                valid &= type_state.pop(jvm)? == VerificationType::ObjectVariable(invoke_class);
+                verify!(
+                    jvm,
+                    type_state.pop(jvm)? == VerificationType::ObjectVariable(invoke_class)
+                );
                 if let Some(return_type) = &invoke_nat.typ.returns {
                     push_type(jvm, &mut type_state.stack, return_type)?
-                }
-                if !valid {
-                    return Err(error!(jvm, "invalid invokevirtual"));
                 }
             }
             INVOKESPECIAL => {
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let (invoke_class, invoke_nat) = const_pool.get_virtual_method(jvm, index)?;
-                let mut valid = invoke_nat.name.deref() != "<clinit>";
+                verify!(jvm, invoke_nat.name.deref() != "<clinit>");
                 if invoke_nat.name.deref() == "<init>" {
-                    valid &= invoke_nat.typ.returns.is_none();
+                    verify!(jvm, invoke_nat.typ.returns.is_none());
                     for arg in invoke_nat.typ.args.iter().rev() {
-                        valid &= type_state.pop(jvm)?.matches(arg);
+                        verify!(jvm, type_state.pop(jvm)?.matches(arg));
                     }
                     let uninit_type = type_state.pop(jvm)?;
                     let init_type = match uninit_type {
@@ -1203,10 +1121,10 @@ fn verify_bytecode(
                             VerificationType::ObjectVariable(method.class())
                         }
                         VerificationType::UninitializedVariable { offset } => {
-                            valid &= code.bytes[offset as usize] == NEW;
+                            verify!(jvm, code.bytes[offset as usize] == NEW);
                             VerificationType::ObjectVariable(invoke_class)
                         }
-                        _ => return Err(error!(jvm, "invalid invokespecial")),
+                        _ => verify_failed!(jvm),
                     };
                     for typ in type_state
                         .locals
@@ -1219,31 +1137,28 @@ fn verify_bytecode(
                     }
                 } else {
                     for arg in invoke_nat.typ.args.iter().rev() {
-                        valid &= type_state.pop(jvm)?.matches(arg);
+                        verify!(jvm, type_state.pop(jvm)?.matches(arg));
                     }
                     let object = type_state.pop(jvm)?;
-                    valid &= invoke_class == method.class();
-                    valid &= object.matches(&Type::Ref(invoke_class.name.clone()));
+                    verify!(jvm, invoke_class == method.class());
+                    verify!(jvm, object.matches(&Type::Ref(invoke_class.name.clone())));
                     if let Some(return_type) = &invoke_nat.typ.returns {
                         push_type(jvm, &mut type_state.stack, return_type)?
                     }
-                }
-                if !valid {
-                    return Err(error!(jvm, "invalid invokespecial"));
                 }
             }
             INVOKESTATIC => {
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let invoke_method = const_pool.get_static_method(jvm, index)?;
-                let mut valid = !matches!(invoke_method.nat.name.as_ref(), "<init>" | "<clinit>");
+                verify!(
+                    jvm,
+                    !matches!(invoke_method.nat.name.as_ref(), "<init>" | "<clinit>")
+                );
                 for arg in invoke_method.nat.typ.args.iter().rev() {
-                    valid &= type_state.pop(jvm)?.matches(arg);
+                    verify!(jvm, type_state.pop(jvm)?.matches(arg));
                 }
                 if let Some(return_type) = &invoke_method.nat.typ.returns {
                     push_type(jvm, &mut type_state.stack, return_type)?
-                }
-                if !valid {
-                    return Err(error!(jvm, "invalid invokestatic"));
                 }
             }
             INVOKEINTERFACE => {
@@ -1251,32 +1166,30 @@ fn verify_bytecode(
                 let (interface, invoke_nat) = const_pool.get_interface_method(jvm, index)?;
                 let count = read_code_u8(jvm, bytes, pc)?;
                 let zero = read_code_u8(jvm, bytes, pc)?;
-                let mut valid =
-                    (zero == 0) & !matches!(invoke_nat.name.as_ref(), "<init>" | "<clinit>");
+                verify!(
+                    jvm,
+                    (zero == 0) & !matches!(invoke_nat.name.as_ref(), "<init>" | "<clinit>")
+                );
                 let stack_in = type_state.stack.len();
                 for arg in invoke_nat.typ.args.iter().rev() {
-                    valid &= type_state.pop(jvm)?.matches(arg);
+                    verify!(jvm, type_state.pop(jvm)?.matches(arg));
                 }
-                valid &= type_state.stack.len() + count as usize == stack_in;
+                verify!(jvm, type_state.stack.len() + count as usize == stack_in);
                 if let VerificationType::ObjectVariable(invoke_class) = type_state.pop(jvm)? {
-                    valid &= invoke_class.assignable_to(&interface.name);
+                    verify!(jvm, invoke_class.assignable_to(&interface.name));
                 } else {
-                    valid = false;
+                    verify_failed!(jvm)
                 }
                 if let Some(return_type) = &invoke_nat.typ.returns {
                     push_type(jvm, &mut type_state.stack, return_type)?
-                }
-                if !valid {
-                    return Err(error!(jvm, "invalid invokeinterface"));
                 }
             }
             NEW => {
                 let uninit = VerificationType::UninitializedVariable { offset: *pc - 1 };
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let class = const_pool.get_class(jvm, index)?;
-                if class.element_type.is_some() | type_state.stack.contains(&uninit) {
-                    return Err(error!(jvm, "invalid new"));
-                }
+                verify!(jvm, class.element_type.is_none());
+                verify!(jvm, !type_state.stack.contains(&uninit));
                 type_state.push(uninit);
             }
             NEWARRAY => {
@@ -1290,38 +1203,37 @@ fn verify_bytecode(
                     9 => Type::Float,
                     10 => Type::Int,
                     11 => Type::Long,
-                    _ => return Err(error!(jvm, "invalid array type")),
+                    _ => verify_failed!(jvm),
                 };
                 type_state.push(VerificationType::ObjectVariable(
                     jvm.resolve_array_of(&component)?,
                 ));
             }
             ANEWARRAY => {
-                if type_state.pop(jvm)? != VerificationType::Integer {
-                    return Err(error!(jvm, "invalid anewarray"));
-                }
+                verify!(jvm, type_state.pop(jvm)? == VerificationType::Integer);
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let component = const_pool.get_class(jvm, index)?;
                 let typ = jvm.resolve_array_of(&component.typ())?;
                 type_state.push(VerificationType::ObjectVariable(typ));
             }
             ARRAYLENGTH => {
-                if !matches!(
-                    type_state.pop(jvm)?,
-                    VerificationType::ObjectVariable(Class {
-                        element_type: Some(_),
-                        ..
-                    }),
-                ) {
-                    return Err(error!(jvm, "invalid arraylength"));
-                }
+                verify!(
+                    jvm,
+                    matches!(
+                        type_state.pop(jvm)?,
+                        VerificationType::ObjectVariable(Class {
+                            element_type: Some(_),
+                            ..
+                        }),
+                    )
+                );
                 type_state.push(VerificationType::Integer);
             }
             ATHROW => {
                 match type_state.pop(jvm)? {
                     VerificationType::ObjectVariable(thrown)
                         if thrown.assignable_to("java.lang.Throwable") => {}
-                    _ => return Err(error!(jvm, "invalid athrow")),
+                    _ => verify_failed!(jvm),
                 }
                 connected_to_previous_block = false
             }
@@ -1330,7 +1242,7 @@ fn verify_bytecode(
                 let casted = const_pool.get_class(jvm, index)?;
                 match type_state.pop(jvm)? {
                     VerificationType::ObjectVariable(_) => {}
-                    _ => return Err(error!(jvm, "invalid checkcast")),
+                    _ => verify_failed!(jvm),
                 }
                 type_state.push(VerificationType::ObjectVariable(casted));
             }
@@ -1340,7 +1252,7 @@ fn verify_bytecode(
                 match type_state.pop(jvm)? {
                     // Spec bug: Interfaces in reality allowed
                     VerificationType::ObjectVariable(_) => {}
-                    _ => return Err(error!(jvm, "invalid instanceof")),
+                    _ => verify_failed!(jvm),
                 }
                 type_state.push(VerificationType::Integer);
             }
@@ -1364,21 +1276,22 @@ fn verify_bytecode(
                     ASTORE => type_state.store(jvm, index, VerificationType::Reference)?,
                     IINC => {
                         read_code_u16(jvm, bytes, pc)?;
-                        if type_state.locals.get(index as usize) != Some(&VerificationType::Integer)
-                        {
-                            return Err(error!(jvm, "invalid wide iinc"));
-                        }
+                        verify!(
+                            jvm,
+                            type_state.locals.get(index as usize)
+                                == Some(&VerificationType::Integer)
+                        );
                     }
-                    _ => return Err(error!(jvm, "invalid wide")),
+                    _ => verify_failed!(jvm),
                 }
             }
             MONITORENTER | MONITOREXIT => {
-                if !type_state
-                    .pop(jvm)?
-                    .is_assignable_to(VerificationType::Reference)
-                {
-                    return Err(error!(jvm, "invalid monitor"));
-                }
+                verify!(
+                    jvm,
+                    type_state
+                        .pop(jvm)?
+                        .is_assignable_to(VerificationType::Reference)
+                );
             }
             MULTIANEWARRAY => {
                 let index = read_code_u16(jvm, bytes, pc)?;
@@ -1394,18 +1307,18 @@ fn verify_bytecode(
                         break;
                     }
                 }
-                if (dimensions == 0) | (dimensions > class_dimensions) {
-                    return Err(error!(jvm, "invalid multianewarray"));
-                }
+                verify!(jvm, dimensions > 0);
+                verify!(jvm, dimensions <= class_dimensions);
                 for _ in 0..dimensions {
                     type_state.pop_type(jvm, &Type::Int)?;
                 }
                 type_state.push(VerificationType::ObjectVariable(class));
             }
             IFNULL | IFNONNULL => {
-                if !matches!(type_state.pop(jvm)?, VerificationType::ObjectVariable(_)) {
-                    return Err(error!(jvm, "invalid if"));
-                }
+                verify!(
+                    jvm,
+                    matches!(type_state.pop(jvm)?, VerificationType::ObjectVariable(_))
+                );
                 type_state.relative_jump(jvm, &stack_map_table, bytes, pc, false)?;
                 connected_to_previous_block = false;
             }
@@ -1416,38 +1329,25 @@ fn verify_bytecode(
             other => todo!("bytecode {other}"),
         }
 
-        if type_state.stack.len() > code.max_stack as usize {
-            return Err(error!(jvm, "max stack exceeded"));
-        }
+        verify!(jvm, type_state.stack.len() <= code.max_stack as usize);
         // If the next specified stack map frame is reached, check if it matches the inferred one
         if let Some((type_state_pc, explicit_type_state)) = next_explicit_type_state {
             match (*pc).cmp(type_state_pc) {
                 std::cmp::Ordering::Less => {} // Not at frame yet
                 std::cmp::Ordering::Equal => {
-                    if !connected_to_previous_block
-                        | type_state.is_assignable_to(explicit_type_state)
-                    {
-                        type_state = explicit_type_state.clone();
-                        next_explicit_type_state = type_states.next();
-                    } else {
-                        return Err(error!(
-                            jvm,
-                            "typestates not assignable: {type_state:?} to {explicit_type_state:?}"
-                        ));
-                    }
-                }
-                std::cmp::Ordering::Greater => {
-                    return Err(error!(
+                    verify!(
                         jvm,
-                        "Stack map frame within instruction (pc: {pc}, frame at {type_state_pc})"
-                    ))
+                        !connected_to_previous_block
+                            | type_state.is_assignable_to(explicit_type_state)
+                    );
+                    type_state = explicit_type_state.clone();
+                    next_explicit_type_state = type_states.next();
                 }
+                std::cmp::Ordering::Greater => verify_failed!(jvm),
             }
         }
     }
-    if connected_to_previous_block {
-        return Err(error!(jvm, "final block open"));
-    }
+    verify!(jvm, !connected_to_previous_block);
     Ok(())
 }
 
@@ -1487,7 +1387,7 @@ fn read_code_u8(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JvmResult<u8> {
     bytes
         .get(*pc as usize - 1)
         .copied()
-        .ok_or_else(|| error!(jvm, "incomplete instruction"))
+        .ok_or_else(|| error!(jvm))
 }
 
 fn read_code_u16(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JvmResult<u16> {
