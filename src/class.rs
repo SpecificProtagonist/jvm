@@ -8,10 +8,10 @@ use std::{
 use crate::{
     const_pool::ConstPool,
     field::{Field, FieldNaT, FieldNaTBorrow},
-    field_storage::FieldStorage,
+    heap::JvmPtr,
     jvm::{error, JvmResult},
     method::{MethodDescriptor, MethodNaT, MethodNaTBorrow, MethodRef},
-    object::{self, Object},
+    object::{self, FieldStorage, Object},
     typ::Type,
     verification::verify,
     AccessFlags, Jvm,
@@ -261,57 +261,43 @@ impl Class {
         for field in self.fields.values() {
             if let Some(index) = field.const_value_index {
                 match &field.nat.typ {
-                    Type::Boolean | Type::Byte => unsafe {
-                        self.static_storage.write_i8(
-                            field.byte_offset,
-                            const_pool.get_int(jvm, index)? as i8,
-                            true,
-                        )
-                    },
-                    Type::Short | Type::Char => unsafe {
-                        self.static_storage.write_i16(
-                            field.byte_offset,
-                            const_pool.get_int(jvm, index)? as i16,
-                            true,
-                        )
-                    },
-                    Type::Int => unsafe {
-                        self.static_storage.write_i32(
-                            field.byte_offset,
-                            const_pool.get_int(jvm, index)?,
-                            true,
-                        )
-                    },
-                    Type::Float => unsafe {
-                        self.static_storage.write_f32(
-                            field.byte_offset,
-                            const_pool.get_float(jvm, index)?,
-                            true,
-                        )
-                    },
-                    Type::Double => unsafe {
-                        self.static_storage.write_f64(
-                            field.byte_offset,
-                            const_pool.get_double(jvm, index)?,
-                            true,
-                        )
-                    },
-                    Type::Long => unsafe {
-                        self.static_storage.write_i64(
-                            field.byte_offset,
-                            const_pool.get_long(jvm, index)?,
-                            true,
-                        )
-                    },
+                    Type::Boolean | Type::Byte => self.static_storage.write::<i8>(
+                        field.byte_offset,
+                        const_pool.get_int(jvm, index)? as i8,
+                        true,
+                    ),
+                    Type::Short | Type::Char => self.static_storage.write::<i16>(
+                        field.byte_offset,
+                        const_pool.get_int(jvm, index)? as i16,
+                        true,
+                    ),
+                    Type::Int => self.static_storage.write::<i32>(
+                        field.byte_offset,
+                        const_pool.get_int(jvm, index)?,
+                        true,
+                    ),
+                    Type::Float => self.static_storage.write::<f32>(
+                        field.byte_offset,
+                        const_pool.get_float(jvm, index)?,
+                        true,
+                    ),
+                    Type::Double => self.static_storage.write::<f64>(
+                        field.byte_offset,
+                        const_pool.get_double(jvm, index)?,
+                        true,
+                    ),
+                    Type::Long => self.static_storage.write::<i64>(
+                        field.byte_offset,
+                        const_pool.get_long(jvm, index)?,
+                        true,
+                    ),
                     Type::Ref(name) => {
                         if name.as_ref() == "java.lang.String" {
-                            unsafe {
-                                self.static_storage.write_ptr(
-                                    field.byte_offset,
-                                    const_pool.get_string(jvm, index)?.ptr().into(),
-                                    true,
-                                )
-                            }
+                            self.static_storage.write::<JvmPtr>(
+                                field.byte_offset,
+                                const_pool.get_string(jvm, index)?.ptr().into(),
+                                true,
+                            )
                         } else {
                             return Err(error(
                                 jvm,

@@ -2,16 +2,15 @@ use crate::heap::Heap;
 use crate::hot_reloading::{reload_method_bytecodes_for_class, ReloadErr};
 use crate::{class_loader::ClassLoader, AccessFlags};
 use fixed_typed_arena::ManuallyDropArena;
+use std::alloc::Layout;
 use std::sync::atomic::AtomicU32;
 use std::sync::{atomic::Ordering, Arc};
 use std::sync::{Mutex, RwLock};
 // TODO: posibly exchange for different hasher (benchmark)
 use hashbrown::HashMap;
 
-use crate::field_storage::FieldStorage;
-use crate::heap;
 use crate::method::*;
-use crate::object;
+use crate::object::FieldStorage;
 use crate::object::Object;
 use crate::parse;
 use crate::typ::Type;
@@ -152,7 +151,7 @@ impl Jvm {
             ],
             fields: default(),
             methods: super_class.methods.clone(),
-            static_storage: FieldStorage::new(&self.heap, 0),
+            static_storage: FieldStorage::EMPTY,
             object_size: 0,
             init: ClassState::Unverified.into(),
             init_waiter: default(),
@@ -267,7 +266,14 @@ impl Jvm {
         }
 
         let (fields, static_size, object_size) = Class::set_layouts(super_class, class_desc.fields);
-        let static_storage = FieldStorage::new(&self.heap, static_size);
+        let static_storage = if static_size == 0 {
+            FieldStorage::EMPTY
+        } else {
+            FieldStorage(
+                self.heap
+                    .alloc(Layout::from_size_align(static_size, 8).unwrap()),
+            )
+        };
 
         let ref_type = unsafe {
             self.heap.alloc_typed(Class {
@@ -319,10 +325,7 @@ impl Jvm {
         if class.element_type.is_some() | class.is_interface() {
             panic!("{} is an array or interface type", class.name)
         }
-        let ptr = FieldStorage::new(&self.heap, class.object_size);
-        // SAFETY: object_size takes object head into account
-        unsafe { ptr.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true) };
-        Object { ptr }
+        Object::new_uninitialized(&self.heap, class)
     }
 
     /// Creates an object via constructor.
@@ -375,19 +378,7 @@ impl Jvm {
         let class = self
             .resolve_array_of(component)
             .expect("Failed to resolve class");
-        self.create_array_internal(class, length)
-    }
-
-    #[track_caller]
-    pub(crate) fn create_array_internal(&self, class: ClassRef, length: i32) -> Object {
-        let data = FieldStorage::new(
-            &self.heap,
-            object::header_size()
-                + class.element_type.as_ref().unwrap().layout().size() * length as usize,
-        );
-        // SAFETY: object_size takes object head into account
-        unsafe { data.write_ptr(0, heap::ptr_encode(class as *const Class as *mut u8), true) };
-        Object { ptr: data }
+        Object::new_array(&self.heap, class, length)
     }
 }
 
@@ -446,7 +437,7 @@ pub(crate) fn str_to_java(jvm: &Jvm, utf8: &str) -> Object {
     let chars: Vec<u16> = utf8.encode_utf16().collect();
     let chars_object = jvm.create_array_of(&Type::Char, chars.len() as i32);
     for (i, char) in chars.iter().enumerate() {
-        chars_object.array_write(i as i32, Value::Int(*char as i32));
+        chars_object.array_write_value(i as i32, Value::Int(*char as i32));
     }
     let string_class = jvm
         .resolve_class_internal("java.lang.String")

@@ -4,11 +4,10 @@ use crate::{
     class::{ClassRef, ClassState},
     const_pool::{ConstPool, ConstPoolItem},
     field::Field,
-    field_storage::FieldStorage,
     heap::{JvmPtr, NULL_PTR},
     jvm::{error, throwable, Jvm, JvmResult},
     method::{Bytecode, Code, Method, MethodNaT, NativeCode},
-    object::Object,
+    object::{FieldStorage, Object},
     opcodes::*,
     typ::Type,
     unreachable_verified,
@@ -86,7 +85,7 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
         // Try to check for stack exhaustion. This is far from foolproof, e.g.
         // a malicious class can already cause a stack overflow during loading.
         // Also doesn't work on wasm.
-        const STACK_CHECK: usize = 20_000;
+        const STACK_CHECK: usize = 30_000;
         if stacker::remaining_stack().unwrap_or(usize::MAX) < STACK_CHECK {
             return Err(error(jvm, "StackOverflowError", ""));
         }
@@ -126,11 +125,11 @@ fn native(
     let mut values = Vec::new();
     let mut i = 0;
     if !method.access_flags.contains(AccessFlags::STATIC) {
-        values.push(crate::Value::Ref(unsafe {
+        values.push(crate::Value::Ref(
             args[0]
                 .as_ref()
-                .map(|value| crate::Object::new(jvm.id, value))
-        }));
+                .map(|value| crate::Object::new(jvm.id, value)),
+        ));
         i += 1;
     }
     for arg in &method.nat.typ.args {
@@ -168,11 +167,11 @@ fn native(
                 i += 2;
             }
             Type::Ref(_) => {
-                values.push(crate::Value::Ref(unsafe {
+                values.push(crate::Value::Ref(
                     args[i]
                         .as_ref()
-                        .map(|value| crate::Object::new(jvm.id, value))
-                }));
+                        .map(|value| crate::Object::new(jvm.id, value)),
+                ));
                 i += 1;
             }
         }
@@ -313,45 +312,59 @@ fn run_until_exception_or_return(
             LLOAD_3 | DLOAD_3 => frame.load_local_2(3),
             IALOAD | FALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                frame.stack.push(obj.ptr.array_read_i32(jvm, index)?.into());
+                frame.stack.push(obj.array_read::<i32>(jvm, index)?.into());
             }
             LALOAD | DALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                frame.push_long(obj.ptr.array_read_i64(jvm, index)?);
+                frame.push_long(obj.array_read::<i64>(jvm, index)?);
             }
             AALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                frame.stack.push(IVal(obj.ptr.array_read_ptr(jvm, index)?));
+                frame
+                    .stack
+                    .push(IVal(obj.array_read::<JvmPtr>(jvm, index)?));
             }
             BALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
                 frame
                     .stack
-                    .push((obj.ptr.array_read_i8(jvm, index)? as i32).into());
+                    .push((obj.array_read::<i8>(jvm, index)? as i32).into());
             }
             CALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
                 frame
                     .stack
-                    .push((obj.ptr.array_read_i16(jvm, index)? as u16 as i32).into());
+                    .push((obj.array_read::<i16>(jvm, index)? as u16 as i32).into());
             }
             SALOAD => {
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
                 frame
                     .stack
-                    .push((obj.ptr.array_read_i16(jvm, index)? as i32).into());
+                    .push((obj.array_read::<i16>(jvm, index)? as i32).into());
             }
             ISTORE | FSTORE | ASTORE => {
                 let index = frame.read_code_u8() as u16;
@@ -388,21 +401,27 @@ fn run_until_exception_or_return(
             IASTORE | FASTORE => {
                 let value = frame.pop().as_int();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                obj.ptr.array_write_i32(jvm, index, value)?
+                obj.array_write::<i32>(jvm, index, value)?
             }
             LASTORE | DASTORE => {
                 let value = frame.pop_long();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                obj.ptr.array_write_i64(jvm, index, value)?
+                obj.array_write::<i64>(jvm, index, value)?
             }
             AASTORE => {
                 let value = frame.pop();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
                 let Some(Type::Ref(component)) = &obj.class().element_type else {
                     unreachable_verified()
@@ -411,28 +430,34 @@ fn run_until_exception_or_return(
                 if !obj.class().assignable_to(component) {
                     return Err(throwable(jvm, "ArrayStoreException"));
                 }
-                obj.ptr.array_write_ptr(jvm, index, value.0)?
+                obj.array_write::<JvmPtr>(jvm, index, value.0)?
             }
             BASTORE => {
                 let value = frame.pop().as_int();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                obj.ptr.array_write_i8(jvm, index, value as u8 as i8)?
+                obj.array_write::<i8>(jvm, index, value as u8 as i8)?
             }
             CASTORE => {
                 let value = frame.pop().as_int();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                obj.ptr.array_write_i16(jvm, index, value as u16 as i16)?
+                obj.array_write::<i16>(jvm, index, value as u16 as i16)?
             }
             SASTORE => {
                 let value = frame.pop().as_int();
                 let index = frame.pop().as_int();
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                obj.ptr.array_write_i16(jvm, index, value as u16 as i16)?
+                obj.array_write::<i16>(jvm, index, value as u16 as i16)?
             }
             POP => {
                 frame.pop();
@@ -796,26 +821,28 @@ fn run_until_exception_or_return(
             LRETURN => return Ok(Some(frame.pop_long().into())),
             FRETURN => return Ok(Some(frame.pop().as_float().into())),
             DRETURN => return Ok(Some(frame.pop_double().into())),
-            ARETURN => return Ok(Some(unsafe { frame.pop().as_ref() }.into())),
+            ARETURN => return Ok(Some(frame.pop().as_ref().into())),
             RETURN => return Ok(None),
             GETSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field_verified(index);
                 field.class().ensure_init(jvm)?;
-                get_field(frame, field, &field.class().static_storage);
+                get_field(frame, field, field.class().static_storage);
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field_verified(index);
                 field.class().ensure_init(jvm)?;
-                put_field(frame, field, &field.class().static_storage);
+                put_field(frame, field, field.class().static_storage);
             }
             GETFIELD => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field_verified(index);
-                let object = unsafe { frame.pop().as_ref() }
+                let object = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                get_field(frame, field, &object.ptr);
+                get_field(frame, field, object.fields());
             }
             PUTFIELD => {
                 let index = frame.read_code_u16();
@@ -825,24 +852,25 @@ fn run_until_exception_or_return(
                 let object = if matches!(field.nat.typ, Type::Long | Type::Double) {
                     let high = frame.pop();
                     let low = frame.pop();
-                    let obj = unsafe { frame.pop().as_ref() };
+                    let obj = frame.pop().as_ref();
                     frame.stack.push(low);
                     frame.stack.push(high);
                     obj
                 } else {
                     let value = frame.pop();
-                    let obj = unsafe { frame.pop().as_ref() };
+                    let obj = frame.pop().as_ref();
                     frame.stack.push(value);
                     obj
                 }
                 .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                put_field(frame, field, &object.ptr);
+                put_field(frame, field, object.fields());
             }
             INVOKEVIRTUAL => {
                 let index = frame.read_code_u16();
                 let (_, nat) = const_pool.get_virtual_method_verified(index);
                 let obj_index = frame.stack.len() - nat.typ.arg_slots() - 1;
-                let obj = unsafe { frame.stack[obj_index].as_ref() }
+                let obj = frame.stack[obj_index]
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
                 // TODO: move method linking (incl NoSuchMethodError and IncompatibleClassChangeError) to class init
                 let invoke_method = obj
@@ -891,7 +919,8 @@ fn run_until_exception_or_return(
                 let index = frame.read_code_u16();
                 let (interface, nat) = const_pool.get_virtual_method_verified(index);
                 let obj_index = frame.stack.len() - nat.typ.arg_slots() - 1;
-                let obj = unsafe { frame.stack[obj_index].as_ref() }
+                let obj = frame.stack[obj_index]
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
                 if !obj.class().interfaces.contains(&interface) {
                     return Err(throwable(jvm, "IncompatibleClassChangeError"));
@@ -974,18 +1003,19 @@ fn run_until_exception_or_return(
                 }
                 frame
                     .stack
-                    .push(jvm.create_array_internal(class, length).into());
+                    .push(Object::new_array(&jvm.heap, class, length).into());
             }
             ARRAYLENGTH => {
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                let Some(length) = obj.array_len() else {
-                    unreachable_verified()
-                };
-                frame.stack.push(length.into());
+                frame.stack.push(obj.array_length().into());
             }
             ATHROW => {
-                let obj = unsafe { frame.pop().as_ref() }
+                let obj = frame
+                    .pop()
+                    .as_ref()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
                 return Err(obj);
             }
@@ -1002,7 +1032,7 @@ fn run_until_exception_or_return(
             INSTANCEOF => {
                 let index = frame.read_code_u16();
                 let check_class = const_pool.get_class_verified(index);
-                if let Some(object) = unsafe { frame.pop().as_ref() } {
+                if let Some(object) = frame.pop().as_ref() {
                     if object.class().assignable_to(&check_class.name) {
                         frame.stack.push(IVal(1));
                     } else {
@@ -1050,11 +1080,15 @@ fn run_until_exception_or_return(
                 let class = const_pool.get_class(jvm, index)?;
                 fn create_array(jvm: &Jvm, dimensions: &[IVal], class: ClassRef) -> Object {
                     let len = dimensions[0].as_int();
-                    let array = jvm.create_array_internal(class, len);
+                    let array = Object::new_array(&jvm.heap, class, len);
                     if let Some(Type::Ref(element_type)) = &class.element_type {
                         let class = jvm.resolve_class_internal(element_type).unwrap();
                         for i in 0..len {
-                            array.array_write(i, create_array(jvm, &dimensions[1..], class).into());
+                            let _ = array.array_write::<JvmPtr>(
+                                jvm,
+                                i,
+                                create_array(jvm, &dimensions[1..], class).ptr().into(),
+                            );
                         }
                     }
                     array
@@ -1102,47 +1136,43 @@ fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) {
     }
 }
 
-fn get_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
+fn get_field(frame: &mut Frame, field: &Field, storage: FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
-    unsafe {
-        match field.nat.typ {
-            Type::Boolean | Type::Byte => frame
-                .stack
-                .push((storage.read_i8(field.byte_offset, volatile) as i32).into()),
-            Type::Short | Type::Char => frame
-                .stack
-                .push((storage.read_i16(field.byte_offset, volatile) as i32).into()),
-            Type::Int => frame
-                .stack
-                .push(storage.read_i32(field.byte_offset, volatile).into()),
-            Type::Float => frame
-                .stack
-                .push(storage.read_f32(field.byte_offset, volatile).into()),
-            Type::Long => frame.push_long(storage.read_i64(field.byte_offset, volatile)),
-            Type::Double => frame.push_double(storage.read_f64(field.byte_offset, volatile)),
-            Type::Ref(..) => frame
-                .stack
-                .push(IVal(storage.read_ptr(field.byte_offset, volatile))),
-        }
+    match field.nat.typ {
+        Type::Boolean | Type::Byte => frame
+            .stack
+            .push((storage.read::<i8>(field.byte_offset, volatile) as i32).into()),
+        Type::Short | Type::Char => frame
+            .stack
+            .push((storage.read::<i16>(field.byte_offset, volatile) as i32).into()),
+        Type::Int => frame
+            .stack
+            .push(storage.read::<i32>(field.byte_offset, volatile).into()),
+        Type::Float => frame
+            .stack
+            .push(storage.read::<f32>(field.byte_offset, volatile).into()),
+        Type::Long => frame.push_long(storage.read::<i64>(field.byte_offset, volatile)),
+        Type::Double => frame.push_double(storage.read::<f64>(field.byte_offset, volatile)),
+        Type::Ref(..) => frame
+            .stack
+            .push(IVal(storage.read::<JvmPtr>(field.byte_offset, volatile))),
     }
 }
 
-fn put_field(frame: &mut Frame, field: &Field, storage: &FieldStorage) {
+fn put_field(frame: &mut Frame, field: &Field, storage: FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
-    unsafe {
-        match field.nat.typ {
-            Type::Boolean | Type::Byte => {
-                storage.write_i8(field.byte_offset, frame.pop().as_int() as i8, volatile)
-            }
-            Type::Short | Type::Char => {
-                storage.write_i16(field.byte_offset, frame.pop().as_int() as i16, volatile)
-            }
-            Type::Int => storage.write_i32(field.byte_offset, frame.pop().as_int(), volatile),
-            Type::Float => storage.write_f32(field.byte_offset, frame.pop().as_float(), volatile),
-            Type::Long => storage.write_i64(field.byte_offset, frame.pop_long(), volatile),
-            Type::Double => storage.write_f64(field.byte_offset, frame.pop_double(), volatile),
-            Type::Ref(..) => storage.write_ptr(field.byte_offset, frame.pop().0, volatile),
+    match field.nat.typ {
+        Type::Boolean | Type::Byte => {
+            storage.write::<i8>(field.byte_offset, frame.pop().as_int() as i8, volatile)
         }
+        Type::Short | Type::Char => {
+            storage.write::<i16>(field.byte_offset, frame.pop().as_int() as i16, volatile)
+        }
+        Type::Int => storage.write::<i32>(field.byte_offset, frame.pop().as_int(), volatile),
+        Type::Float => storage.write::<f32>(field.byte_offset, frame.pop().as_float(), volatile),
+        Type::Long => storage.write::<i64>(field.byte_offset, frame.pop_long(), volatile),
+        Type::Double => storage.write::<f64>(field.byte_offset, frame.pop_double(), volatile),
+        Type::Ref(..) => storage.write::<JvmPtr>(field.byte_offset, frame.pop().0, volatile),
     }
 }
 
@@ -1226,8 +1256,7 @@ impl IVal {
         f64::from_bits(low.0 as u64 + ((high.0 as u64) << 32))
     }
 
-    /// SAFETY: Must be null or a valid ptr to an object
-    unsafe fn as_ref(self) -> Option<Object> {
+    fn as_ref(self) -> Option<Object> {
         Object::from_ptr(self.0)
     }
 }

@@ -115,9 +115,7 @@ impl ConstPool {
                     let length = string.encode_utf16().count();
                     let backing_array = jvm.create_array_of(&Type::Char, length as i32);
                     for (index, char) in string.encode_utf16().enumerate() {
-                        backing_array
-                            .ptr
-                            .array_write_i16(jvm, index as i32, char as i16)?
+                        backing_array.array_write::<i16>(jvm, index as i32, char as i16)?
                     }
                     let string_class = jvm.resolve_class_internal("java.lang.String")?;
                     let obj = jvm.create_object_uninitialized(string_class);

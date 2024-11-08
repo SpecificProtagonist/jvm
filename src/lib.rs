@@ -6,7 +6,6 @@ mod class_loader;
 mod const_pool;
 mod fake_variadics;
 mod field;
-mod field_storage;
 mod heap;
 mod hot_reloading;
 mod interpreter;
@@ -137,7 +136,7 @@ impl PartialEq for Object {
 
 impl Debug for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:x}", self.value.ptr.ptr())
+        write!(f, "{:x}", self.value.ptr())
     }
 }
 
@@ -197,26 +196,32 @@ impl Object {
     }
 
     /// Returns whether this is an array.
-    pub fn is_array(self) -> bool {
-        self.value.is_array()
+    pub fn is_array(self, jvm: &Jvm) -> bool {
+        self.into_inner(jvm.id).is_array()
     }
 
     /// Returns the number of items in this array.
     ///
     /// # Panics
     /// Panics if the object is not an array.
-    pub fn array_len(self) -> i32 {
-        self.value.array_len().expect("not an array")
+    #[track_caller]
+    pub fn array_length(self, jvm: &Jvm) -> i32 {
+        let obj = self.into_inner(jvm.id);
+        if obj.class().element_type.is_none() {
+            panic!("not an array");
+        }
+        obj.array_length()
     }
 
     /// Get an array element.
     ///
     /// # Panics
     /// Panics if the object is not an array or the `index` is out of bounds.
+    #[track_caller]
     pub fn array_read(self, jvm: &Jvm, index: i32) -> Value {
         Value::new(
             self.jvm,
-            self.value.array_read(index),
+            self.value.array_read_value(index),
             self.class(jvm).element_type(jvm).as_ref().unwrap(),
         )
     }
@@ -227,8 +232,10 @@ impl Object {
     /// # Panics
     /// Panics if object is not an array, the element type mismatches, `index` is out of bounds
     /// or the value is an object created by another JVM.
+    #[track_caller]
     pub fn array_write(self, index: i32, value: Value) {
-        self.value.array_write(index, value.into_inner(self.jvm))
+        self.value
+            .array_write_value(index, value.into_inner(self.jvm))
     }
 
     /// Creates a debug representation of the object. For a full object tree, use `Debug`.

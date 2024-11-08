@@ -7,9 +7,8 @@ use hashbrown::Equivalent;
 
 use crate::{
     class::{Class, ClassRef},
-    field_storage::FieldStorage,
-    heap::NULL_PTR,
-    object::Object,
+    heap::{JvmPtr, NULL_PTR},
+    object::{FieldStorage, Object},
     typ::Type,
     value::Value,
     AccessFlags,
@@ -65,7 +64,7 @@ impl Field {
         if !self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is not static", self.nat.name)
         }
-        self.read(&self.class().static_storage)
+        self.read(self.class().static_storage)
     }
 
     /// Get the value of an object's field.
@@ -84,27 +83,24 @@ impl Field {
                 self.class().name
             )
         }
-        self.read(&object.ptr)
+        self.read(object.fields())
     }
 
-    fn read(&self, storage: &FieldStorage) -> Value {
+    fn read(&self, storage: FieldStorage) -> Value {
         let volatile = self.access_flags.contains(AccessFlags::VOLATILE);
-        // SAFETY: bounds, alignment & datatype unchanged after construction
-        unsafe {
-            match self.nat.typ {
-                Type::Boolean | Type::Byte => {
-                    Value::Int(storage.read_i8(self.byte_offset, volatile) as i32)
-                }
-                Type::Short | Type::Char => {
-                    Value::Int(storage.read_i16(self.byte_offset, volatile) as i32)
-                }
-                Type::Int => storage.read_i32(self.byte_offset, volatile).into(),
-                Type::Float => storage.read_f32(self.byte_offset, volatile).into(),
-                Type::Long => storage.read_i64(self.byte_offset, volatile).into(),
-                Type::Double => storage.read_f64(self.byte_offset, volatile).into(),
-                Type::Ref(..) => {
-                    Object::from_ptr(storage.read_ptr(self.byte_offset, volatile)).into()
-                }
+        match self.nat.typ {
+            Type::Boolean | Type::Byte => {
+                Value::Int(storage.read::<i8>(self.byte_offset, volatile) as i32)
+            }
+            Type::Short | Type::Char => {
+                Value::Int(storage.read::<i16>(self.byte_offset, volatile) as i32)
+            }
+            Type::Int => storage.read::<i32>(self.byte_offset, volatile).into(),
+            Type::Float => storage.read::<f32>(self.byte_offset, volatile).into(),
+            Type::Long => storage.read::<i64>(self.byte_offset, volatile).into(),
+            Type::Double => storage.read::<f64>(self.byte_offset, volatile).into(),
+            Type::Ref(..) => {
+                Object::from_ptr(storage.read::<JvmPtr>(self.byte_offset, volatile)).into()
             }
         }
     }
@@ -118,7 +114,7 @@ impl Field {
         if !self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is not static", self.nat.name)
         }
-        self.write(&self.class().static_storage, value)
+        self.write(self.class().static_storage, value)
     }
 
     /// Get the value of an object's field.
@@ -139,10 +135,10 @@ impl Field {
                 self.class().name
             )
         }
-        self.write(&object.ptr, value)
+        self.write(object.fields(), value)
     }
 
-    fn write(&self, storage: &FieldStorage, value: Value) {
+    fn write(&self, storage: FieldStorage, value: Value) {
         let volatile = self.access_flags.contains(AccessFlags::VOLATILE);
 
         // This is to avoid the need to take a ref to JVM for resolution
@@ -150,41 +146,38 @@ impl Field {
             to == class.name.as_ref() || class.super_class.map_or(false, |s| assignable(s, to))
         }
 
-        // SAFETY: bounds, alignment & datatype unchanged after construction
-        unsafe {
-            match (&self.nat.typ, value) {
-                (Type::Boolean | Type::Byte, Value::Int(value)) => {
-                    storage.write_i8(self.byte_offset, value as i8, volatile)
-                }
-                (Type::Short | Type::Char, Value::Int(value)) => {
-                    storage.write_i16(self.byte_offset, value as i16, volatile)
-                }
-                (Type::Int, Value::Int(value)) => {
-                    storage.write_i32(self.byte_offset, value, volatile)
-                }
-                (Type::Float, Value::Float(value)) => {
-                    storage.write_f32(self.byte_offset, value, volatile)
-                }
-                (Type::Long, Value::Long(value)) => {
-                    storage.write_i64(self.byte_offset, value, volatile)
-                }
-                (Type::Double, Value::Double(value)) => {
-                    storage.write_f64(self.byte_offset, value, volatile)
-                }
-                (Type::Ref(name), Value::Ref(obj))
-                    if obj.map(|o| assignable(o.class(), name)).unwrap_or(true) =>
-                {
-                    storage.write_ptr(
-                        self.byte_offset,
-                        obj.map(|o| o.ptr().into()).unwrap_or(NULL_PTR),
-                        volatile,
-                    )
-                }
-                _ => panic!(
-                    "type mismatch: Field has type {}, value is {:?}",
-                    self.nat.typ, value
-                ),
+        match (&self.nat.typ, value) {
+            (Type::Boolean | Type::Byte, Value::Int(value)) => {
+                storage.write::<i8>(self.byte_offset, value as i8, volatile)
             }
+            (Type::Short | Type::Char, Value::Int(value)) => {
+                storage.write::<i16>(self.byte_offset, value as i16, volatile)
+            }
+            (Type::Int, Value::Int(value)) => {
+                storage.write::<i32>(self.byte_offset, value, volatile)
+            }
+            (Type::Float, Value::Float(value)) => {
+                storage.write::<f32>(self.byte_offset, value, volatile)
+            }
+            (Type::Long, Value::Long(value)) => {
+                storage.write::<i64>(self.byte_offset, value, volatile)
+            }
+            (Type::Double, Value::Double(value)) => {
+                storage.write::<f64>(self.byte_offset, value, volatile)
+            }
+            (Type::Ref(name), Value::Ref(obj))
+                if obj.map(|o| assignable(o.class(), name)).unwrap_or(true) =>
+            {
+                storage.write::<JvmPtr>(
+                    self.byte_offset,
+                    obj.map(|o| o.ptr().into()).unwrap_or(NULL_PTR),
+                    volatile,
+                )
+            }
+            _ => panic!(
+                "type mismatch: Field has type {}, value is {:?}",
+                self.nat.typ, value
+            ),
         }
     }
 }
