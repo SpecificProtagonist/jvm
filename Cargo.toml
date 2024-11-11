@@ -4,6 +4,10 @@ version = "0.1.0"
 authors = ["SpecificProtagonist <specificprotagonist@posteo.net>"]
 edition = "2021"
 
+[features]
+# Internal
+miri_monitor_debug_print = []
+
 [dependencies]
 # AccessFlags
 bitflags = "1.3"

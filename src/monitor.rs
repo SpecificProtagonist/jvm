@@ -3,7 +3,22 @@ use std::{
     sync::atomic::{AtomicU32, AtomicUsize, Ordering::*},
 };
 
-/// Reentrant futex embedded in every object.
+#[cfg(feature = "miri_monitor_debug_print")]
+extern "Rust" {
+    fn miri_write_to_stdout(bytes: &[u8]);
+}
+
+macro_rules! miri_println {
+    ($fmt:literal $(, $exprs:expr)*) => {
+        #[cfg(feature="miri_monitor_debug_print")]
+        unsafe {
+            let message = format!($fmt, $($exprs),*) + "\n";
+            miri_write_to_stdout(message.as_bytes());
+        }
+    };
+}
+
+/// Reëntrant futex embedded in every object.
 /// Overflowing the lock count permanently locks the object.
 ///
 /// This type will never actually be instantiated, as it has padding
@@ -26,7 +41,7 @@ impl Monitor {
 }
 
 const CONTENDED: u32 = 1;
-const STEP: u32 = 2;
+const INCREMENT: u32 = 2;
 const NO_THREAD: usize = 0;
 
 // Custom thread id, never NO_THREAD
@@ -53,7 +68,12 @@ fn count(monitor: *const Monitor) -> &'static AtomicU32 {
 
 #[inline]
 pub fn enter(monitor: *const Monitor) {
-    match count(monitor).compare_exchange(0, STEP, Acquire, Relaxed) {
+    miri_println!(
+        "[{}] enter, count = {}",
+        thread_id(),
+        count(monitor).load(Relaxed)
+    );
+    match count(monitor).compare_exchange(0, INCREMENT, Acquire, Relaxed) {
         Ok(_) => {
             // Locked without contention
             locked_by(monitor).store(thread_id(), Release);
@@ -67,11 +87,15 @@ fn enter_locked(monitor: *const Monitor, loaded: u32) {
     // Already locked, checked if by the same thread
     if locked_by(monitor).load(Acquire) == thread_id() {
         // If we reach u32::MAX, we never unlock the object again.
-        count(monitor).store(loaded.saturating_add(STEP), Relaxed);
+        let new_count = loaded.saturating_add(INCREMENT);
+        // Try to increase count, but don't overwrite contended flag
+        if count(monitor).swap(new_count, Relaxed) & CONTENDED != 0 {
+            count(monitor).store(new_count | CONTENDED, Relaxed);
+        }
         return;
     }
     loop {
-        match count(monitor).compare_exchange(0, STEP + CONTENDED, Acquire, Relaxed) {
+        match count(monitor).compare_exchange(0, INCREMENT + CONTENDED, Acquire, Relaxed) {
             Ok(_) => {
                 // Locked; contention flag set because it got cleared during the previous unlock
                 // Previous locked_by value was NO_THREAD
@@ -79,6 +103,14 @@ fn enter_locked(monitor: *const Monitor, loaded: u32) {
                 return;
             }
             Err(loaded) => {
+                if (loaded & CONTENDED == 0)
+                    && count(monitor)
+                        .compare_exchange(loaded, loaded | CONTENDED, Release, Relaxed)
+                        .is_ok()
+                {
+                    miri_println!("[{}] Set contended", thread_id());
+                }
+                miri_println!("[{}] Try to sleep on {}", thread_id(), loaded | CONTENDED);
                 atomic_wait::wait(count(monitor), loaded | CONTENDED);
             }
         }
@@ -89,6 +121,11 @@ fn enter_locked(monitor: *const Monitor, loaded: u32) {
 pub struct NotLockedByThread;
 
 pub fn exit(monitor: *const Monitor) -> Result<(), NotLockedByThread> {
+    miri_println!(
+        "[{}] exit, count = {}",
+        thread_id(),
+        count(monitor).load(Relaxed)
+    );
     if locked_by(monitor).load(Relaxed) != thread_id() {
         return Err(NotLockedByThread);
     }
@@ -97,14 +134,17 @@ pub fn exit(monitor: *const Monitor) -> Result<(), NotLockedByThread> {
         return Ok(());
     }
 
-    // Clear the CONTENDED flag & notify waiter only if releasing the lock
-    if current < 2 * STEP {
-        locked_by(monitor).store(NO_THREAD, Release);
-        if count(monitor).swap(0, AcqRel) == STEP + CONTENDED {
-            atomic_wait::wake_one(count(monitor));
+    if current > INCREMENT | CONTENDED {
+        let loaded = count(monitor).swap(current - INCREMENT, AcqRel);
+        if (current & CONTENDED == 0) & (loaded & CONTENDED == CONTENDED) {
+            count(monitor).store((current - INCREMENT) | CONTENDED, Relaxed);
         }
     } else {
-        count(monitor).swap(current - STEP, AcqRel);
+        locked_by(monitor).store(NO_THREAD, Release);
+        if count(monitor).swap(0, AcqRel) == INCREMENT + CONTENDED {
+            miri_println!("[{}] wake one", thread_id());
+            atomic_wait::wake_one(count(monitor));
+        }
     }
     Ok(())
 }

@@ -171,8 +171,7 @@ impl Jvm {
     /// Does not initialize this class nor load any other class referenced.
     /// `name` must be fully qualified and may describe an array.
     pub(crate) fn resolve_class_internal(&self, name: &str) -> JvmResult<ClassRef> {
-        let a = Vec::new();
-        self.resolve_class_impl(name, a)
+        self.resolve_class_impl(name, Vec::new())
     }
 
     /// This is only to be called by `resolve_class` and errors out on loops in the class hierarchy

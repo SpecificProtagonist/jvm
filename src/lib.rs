@@ -240,7 +240,7 @@ impl Object {
 
     /// Enters this object's monitor, blocking if it is already locked by another thread.
     ///
-    /// This is reentrant: A thread may enter the monitor multiple times, and must [`exit`](Object::exit_monitor)
+    /// This is reëntrant: A thread may enter the monitor multiple times, and must [`exit`](Object::exit_monitor)
     /// is as many times to unlock the object.
     pub fn enter_monitor(self, jvm: &Jvm) {
         monitor::enter(self.into_inner(jvm.id).monitor());
