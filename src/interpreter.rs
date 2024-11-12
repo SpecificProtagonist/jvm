@@ -85,6 +85,7 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
         // Try to check for stack exhaustion. This is far from foolproof, e.g.
         // a malicious class can already cause a stack overflow during loading.
         // Also doesn't work on wasm.
+        // TODO: Figure out what value is reliable without being too big
         const STACK_CHECK: usize = 30_000;
         if stacker::remaining_stack().unwrap_or(usize::MAX) < STACK_CHECK {
             return Err(error(jvm, "StackOverflowError", ""));

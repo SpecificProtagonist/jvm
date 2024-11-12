@@ -4,6 +4,9 @@ version = "0.1.0"
 authors = ["SpecificProtagonist <specificprotagonist@posteo.net>"]
 edition = "2021"
 
+[lib]
+bench = false
+
 [features]
 # Internal
 miri_monitor_debug_print = []
@@ -21,3 +24,10 @@ hashbrown = "0.14"
 stacker = "0.1"
 cesu8 = "1.1"
 atomic-wait = "1.1.0"
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "monitor"
+harness = false

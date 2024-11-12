@@ -36,8 +36,7 @@ pub(crate) struct Monitor {
     count: AtomicU32,
 }
 
-const CONTENDED: u32 = 1;
-const INCREMENT: u32 = 2;
+const INCREMENT: u32 = 1;
 
 const NO_THREAD: u32 = 0;
 
@@ -94,7 +93,11 @@ impl Monitor {
         ensure_thread_id_initialized();
         match self.count.compare_exchange(0, INCREMENT, Acquire, Relaxed) {
             Ok(_) => {
-                miri_println!("[{}] {} locked uncontended", thread_id(), monitor);
+                miri_println!(
+                    "[{}] {:p} locked uncontended",
+                    thread_id(),
+                    self as *const _
+                );
                 self.locked_by.store(thread_id(), Release);
             }
             Err(loaded) => self.enter_locked(loaded),
@@ -107,40 +110,19 @@ impl Monitor {
         if self.locked_by.load(Acquire) == thread_id() {
             // If we reach u32::MAX, we never unlock the object again.
             let new_count = loaded.saturating_add(INCREMENT);
-            // Try to increase count, but don't overwrite contended flag
-            if self.count.swap(new_count, Relaxed) & CONTENDED != 0 {
-                self.count.store(new_count | CONTENDED, Relaxed);
-            }
-            miri_println!("[{}] {} locked recursive", thread_id(), monitor);
+            self.count.store(new_count, Relaxed);
+            miri_println!("[{}] {:p} locked recursive", thread_id(), self as *const _);
             return;
         }
         loop {
-            if (loaded & CONTENDED == 0)
-                && self
-                    .count
-                    .compare_exchange(loaded, loaded | CONTENDED, Release, Relaxed)
-                    .is_ok()
-            {
-                miri_println!("[{}] {} set contended flag", thread_id(), monitor);
-            }
-            miri_println!(
-                "[{}] {} trying to wait with {}",
-                thread_id(),
-                monitor,
-                loaded | CONTENDED
-            );
             // Only sleep if contended flag got set and lock didn't get released
-            atomic_wait::wait(&self.count, loaded | CONTENDED);
+            atomic_wait::wait(&self.count, loaded);
 
             loaded = self.count.load(Relaxed);
             if loaded == 0 {
-                match self
-                    .count
-                    .compare_exchange(0, INCREMENT | CONTENDED, Acquire, Relaxed)
-                {
+                match self.count.compare_exchange(0, INCREMENT, Acquire, Relaxed) {
                     Ok(_) => {
-                        // Locked; contention flag set because it got cleared during the previous unlock
-                        miri_println!("[{}] {} locked contended", thread_id(), monitor);
+                        miri_println!("[{}] {:p} locked contended", thread_id(), self as *const _);
                         self.locked_by.store(thread_id(), Release);
                         return;
                     }
@@ -158,26 +140,23 @@ impl Monitor {
         }
         let current = self.count.load(Relaxed);
         if current == u32::MAX {
-            miri_println!("[{}] {} overflow detected", thread_id(), monitor);
+            miri_println!("[{}] {:p} overflow detected", thread_id(), self as *const _);
             return Ok(());
         }
 
-        if current > INCREMENT | CONTENDED {
+        if current > INCREMENT {
             miri_println!(
-                "[{}] {} decrease count to {}",
+                "[{}] {:p} decrease count to {}",
                 thread_id(),
-                monitor,
+                self as *const _,
                 current - INCREMENT
             );
-            let loaded = self.count.swap(current - INCREMENT, AcqRel);
-            if (current & CONTENDED == 0) & (loaded & CONTENDED == CONTENDED) {
-                self.count.store((current - INCREMENT) | CONTENDED, Relaxed);
-            }
+            self.count.store(current - INCREMENT, Release);
         } else {
-            miri_println!("[{}] {} release lock", thread_id(), monitor);
+            miri_println!("[{}] {:p} release lock", thread_id(), self as *const _);
             self.locked_by.store(NO_THREAD, Release);
-            if self.count.swap(0, AcqRel) == INCREMENT + CONTENDED {
-                miri_println!("[{}] {} wake one", thread_id(), monitor);
+            if self.count.swap(0, AcqRel) == INCREMENT {
+                miri_println!("[{}] {:p} wake one", thread_id(), self as *const _);
                 atomic_wait::wake_one(&self.count);
             }
         }
@@ -192,9 +171,7 @@ impl Monitor {
         // First we need to release the lock. This differs from exit() in that we release the lock
         // no matter how high the lock count is, and in that we don't clear the thread id.
         let count = self.count.swap(0, AcqRel);
-        if (count & CONTENDED) == CONTENDED {
-            atomic_wait::wake_one(&self.count);
-        }
+        atomic_wait::wake_one(&self.count);
 
         // Wait, but only if the lock hasn't been taken since
         // (which would be required for sending notifications).
@@ -207,10 +184,7 @@ impl Monitor {
         loop {
             let mut loaded = self.count.load(Relaxed);
             if loaded == 0 {
-                match self
-                    .count
-                    .compare_exchange(0, count | CONTENDED, Acquire, Relaxed)
-                {
+                match self.count.compare_exchange(0, count, Acquire, Relaxed) {
                     Ok(_) => {
                         // Locked; contention flag set because it got cleared during the previous unlock
                         self.locked_by.store(thread_id(), Release);
@@ -222,12 +196,7 @@ impl Monitor {
                 }
             }
 
-            if loaded & CONTENDED == 0 {
-                let _ = self
-                    .count
-                    .compare_exchange(loaded, loaded | CONTENDED, Release, Relaxed);
-            }
-            atomic_wait::wait(&self.count, loaded | CONTENDED);
+            atomic_wait::wait(&self.count, loaded);
         }
     }
 
