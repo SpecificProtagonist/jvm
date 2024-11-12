@@ -271,7 +271,7 @@ impl Object {
 
     /// Notifies a thread [`wait`ing](Object::wait) on this object.
     ///
-    /// This thread must hold the object's lock beforehand (otherwise `IllegalMonitorStateException` will be thrown).
+    /// This thread must hold the object's lock (otherwise `IllegalMonitorStateException` will be thrown).
     pub fn notify(self, jvm: &Jvm) -> JvmResult<()> {
         self.into_inner(jvm.id)
             .monitor()
@@ -281,7 +281,7 @@ impl Object {
 
     /// Notifies all threads [`wait`ing](Object::wait) on this object.
     ///
-    /// This thread must hold the object's lock beforehand (otherwise `IllegalMonitorStateException` will be thrown).
+    /// This thread must hold the object's lock (otherwise `IllegalMonitorStateException` will be thrown).
     pub fn notify_all(self, jvm: &Jvm) -> JvmResult<()> {
         self.into_inner(jvm.id)
             .monitor()
