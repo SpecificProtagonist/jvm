@@ -115,7 +115,7 @@ impl Class {
             }
         };
 
-        let mut static_size = Monitor::SIZE;
+        let mut static_size = size_of::<Monitor>();
         set_layouts(&mut static_size, static_fields);
 
         let mut object_size = match super_class {
@@ -189,8 +189,8 @@ impl Class {
             .or_else(|| self.super_class.and_then(|c| c.field_by_nat(nat)))
     }
 
-    pub(crate) fn monitor(&self) -> *const Monitor {
-        self.static_storage.0 as *const Monitor
+    pub(crate) fn monitor(&self) -> &'static Monitor {
+        unsafe { (self.static_storage.0 as *const Monitor).as_ref_unchecked() }
     }
 
     // TODO: provide fields() and methods()

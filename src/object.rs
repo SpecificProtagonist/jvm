@@ -18,49 +18,22 @@ use crate::{
     AccessFlags, Jvm,
 };
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod layout {
-    use crate::heap::JvmPtr;
-    use crate::monitor::Monitor;
-
-    const _: () = assert!(size_of::<JvmPtr>() == 4);
-
-    // +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————
-    // |        Monitor        | Class |  Len  | Items…
-    // |                       |       |  Fields…
-    // +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————————————
-    pub const OFFSET_MONITOR: usize = 0;
-    pub const OFFSET_CLASS: usize = Monitor::SIZE;
-    pub const OFFSET_FIELDS: usize = OFFSET_CLASS + size_of::<JvmPtr>();
-    pub const OFFSET_ARRAY_LENGTH: usize = OFFSET_FIELDS;
-    pub const OFFSET_ARRAY_ITEMS: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
-}
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-mod layout {
-    use crate::heap::JvmPtr;
-    use crate::monitor::Monitor;
-
-    const _: () = assert!(size_of::<JvmPtr>() == size_of::<usize>());
-
-    // 64 bit arch:
-    // +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————
-    // |     Class     |        Monitor        |  Len  | Items…
-    // |               |                       |  Fields…
-    // +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————————————
-    //
-    // 32 bit arch:
-    // +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————
-    // | Class |    Monitor    |  Len  | Items…
-    // |       |               |  Fields…
-    // +—+—+—+—+—+—+—+—+—+—+—+—+———————————————
-    pub const OFFSET_CLASS: usize = 0;
-    pub const OFFSET_MONITOR: usize = size_of::<JvmPtr>();
-    pub const OFFSET_FIELDS: usize = OFFSET_MONITOR + Monitor::SIZE;
-    pub const OFFSET_ARRAY_LENGTH: usize = OFFSET_FIELDS;
-    pub const OFFSET_ARRAY_ITEMS: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
-}
-pub use layout::OFFSET_FIELDS;
-use layout::*;
+// 64 bit arch:
+// +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————
+// |     Class     |    Monitor    |  Len  | Items…
+// |               |               |  Fields…
+// +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————————————
+//
+// 32 bit arch or compressed pointers:
+// +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————
+// | Class |    Monitor    |  Len  | Items…
+// |       |               |  Fields…
+// +—+—+—+—+—+—+—+—+—+—+—+—+———————————————
+const OFFSET_CLASS: usize = 0;
+const OFFSET_MONITOR: usize = size_of::<JvmPtr>();
+pub const OFFSET_FIELDS: usize = OFFSET_MONITOR + size_of::<Monitor>();
+const OFFSET_ARRAY_LENGTH: usize = OFFSET_FIELDS;
+const OFFSET_ARRAY_ITEMS: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
@@ -233,8 +206,10 @@ impl Object {
         }
     }
 
-    pub(crate) fn monitor(self) -> *const Monitor {
-        self.deref().wrapping_byte_add(OFFSET_MONITOR) as *const Monitor
+    pub(crate) fn monitor(self) -> &'static Monitor {
+        unsafe {
+            (self.deref().wrapping_byte_add(OFFSET_MONITOR) as *const Monitor).as_ref_unchecked()
+        }
     }
 
     pub(crate) fn format_short(self) -> String {

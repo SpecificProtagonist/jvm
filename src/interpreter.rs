@@ -7,7 +7,6 @@ use crate::{
     heap::{JvmPtr, NULL_PTR},
     jvm::{error, throwable, Jvm, JvmResult},
     method::{Bytecode, Code, Method, MethodNaT, NativeCode},
-    monitor,
     object::{FieldStorage, Object},
     opcodes::*,
     typ::Type,
@@ -103,7 +102,7 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
     };
 
     if let Some(m) = method_monitor {
-        monitor::enter(m)
+        m.enter();
     }
 
     let code = method.code.read().unwrap();
@@ -130,7 +129,7 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
     };
 
     if let Some(m) = method_monitor {
-        if monitor::exit(m).is_err() {
+        if m.exit().is_err() {
             return Err(error(jvm, "IllegalMonitorStateException", ""));
         }
     }
@@ -1069,14 +1068,14 @@ fn run_until_exception_or_return(
                     .pop()
                     .as_obj()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                monitor::enter(obj.monitor());
+                obj.monitor().enter();
             }
             MONITOREXIT => {
                 let obj = frame
                     .pop()
                     .as_obj()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                if monitor::exit(obj.monitor()).is_err() {
+                if obj.monitor().exit().is_err() {
                     return Err(throwable(jvm, "IllegalMonitorStateException"));
                 }
             }

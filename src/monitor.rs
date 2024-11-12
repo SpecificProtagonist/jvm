@@ -1,6 +1,5 @@
 use std::{
     cell::Cell,
-    mem::size_of,
     sync::{
         atomic::{AtomicU32, Ordering::*},
         Mutex,
@@ -25,11 +24,7 @@ macro_rules! miri_println {
 /// Reëntrant futex embedded in every object.
 /// Overflowing the lock count permanently locks the object.
 ///
-/// This type will never actually be instantiated, as it has padding
-/// we don't want. Rather, all operations on it take a pointer and
-/// don't interact with padding.
 /// Zeroed memory can represent an unlocked monitor.
-// TODO: This is outdated, there's no padding anymore. Consider moving back to references.
 #[repr(C)]
 pub(crate) struct Monitor {
     /// Custom thread id
@@ -39,10 +34,6 @@ pub(crate) struct Monitor {
     /// Lowermost bit: Whether the lock was contended.
     /// Overflow is handled by perma-locking the object.
     count: AtomicU32,
-}
-
-impl Monitor {
-    pub const SIZE: usize = size_of::<u32>() + size_of::<u32>();
 }
 
 const CONTENDED: u32 = 1;
@@ -91,172 +82,141 @@ pub(crate) fn ensure_thread_id_initialized() {
     THREAD_ID.with(|key| key.0.set(id))
 }
 
-#[inline]
-fn locked_by(monitor: *const Monitor) -> &'static AtomicU32 {
-    unsafe {
-        let id = &raw const (*monitor).locked_by;
-        id.as_ref_unchecked()
-    }
-}
-
-#[inline]
-fn count(monitor: *const Monitor) -> &'static AtomicU32 {
-    unsafe {
-        let ptr = &raw const (*monitor).count;
-        ptr.as_ref_unchecked()
-    }
-}
-
-#[inline]
-pub fn enter(monitor: *const Monitor) {
-    ensure_thread_id_initialized();
-    match count(monitor).compare_exchange(0, INCREMENT, Acquire, Relaxed) {
-        Ok(_) => {
-            miri_println!("[{}] {} locked uncontended", thread_id(), monitor);
-            locked_by(monitor).store(thread_id(), Release);
-        }
-        Err(loaded) => enter_locked(monitor, loaded),
-    }
-}
-
-#[cold]
-fn enter_locked(monitor: *const Monitor, loaded: u32) {
-    // Already locked, checked if by the same thread
-    if locked_by(monitor).load(Acquire) == thread_id() {
-        // If we reach u32::MAX, we never unlock the object again.
-        let new_count = loaded.saturating_add(INCREMENT);
-        // Try to increase count, but don't overwrite contended flag
-        if count(monitor).swap(new_count, Relaxed) & CONTENDED != 0 {
-            count(monitor).store(new_count | CONTENDED, Relaxed);
-        }
-        miri_println!("[{}] {} locked recursive", thread_id(), monitor);
-        return;
-    }
-    loop {
-        // TODO: Do a load first to not claim ownership of a cache line
-        match count(monitor).compare_exchange(0, INCREMENT + CONTENDED, Acquire, Relaxed) {
-            Ok(_) => {
-                // Locked; contention flag set because it got cleared during the previous unlock
-                // Previous locked_by value was NO_THREAD
-                miri_println!("[{}] {} locked contended", thread_id(), monitor);
-                locked_by(monitor).store(thread_id(), Release);
-                return;
-            }
-            Err(loaded) => {
-                if (loaded & CONTENDED == 0)
-                    && count(monitor)
-                        .compare_exchange(loaded, loaded | CONTENDED, Release, Relaxed)
-                        .is_ok()
-                {
-                    miri_println!("[{}] {} set contended flag", thread_id(), monitor);
-                }
-                miri_println!(
-                    "[{}] {} trying to wait with {}",
-                    thread_id(),
-                    monitor,
-                    loaded | CONTENDED
-                );
-                atomic_wait::wait(count(monitor), loaded | CONTENDED);
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct NotLockedByThread;
 
-pub fn exit(monitor: *const Monitor) -> Result<(), NotLockedByThread> {
-    if locked_by(monitor).load(Relaxed) != thread_id() {
-        return Err(NotLockedByThread);
-    }
-    let current = count(monitor).load(Relaxed);
-    if current == u32::MAX {
-        miri_println!("[{}] {} overflow detected", thread_id(), monitor);
-        return Ok(());
-    }
-
-    if current > INCREMENT | CONTENDED {
-        miri_println!(
-            "[{}] {} decrease count to {}",
-            thread_id(),
-            monitor,
-            current - INCREMENT
-        );
-        let loaded = count(monitor).swap(current - INCREMENT, AcqRel);
-        if (current & CONTENDED == 0) & (loaded & CONTENDED == CONTENDED) {
-            count(monitor).store((current - INCREMENT) | CONTENDED, Relaxed);
-        }
-    } else {
-        miri_println!("[{}] {} release lock", thread_id(), monitor);
-        locked_by(monitor).store(NO_THREAD, Release);
-        if count(monitor).swap(0, AcqRel) == INCREMENT + CONTENDED {
-            miri_println!("[{}] {} wake one", thread_id(), monitor);
-            atomic_wait::wake_one(count(monitor));
+impl Monitor {
+    #[inline]
+    pub fn enter(&self) {
+        ensure_thread_id_initialized();
+        match self.count.compare_exchange(0, INCREMENT, Acquire, Relaxed) {
+            Ok(_) => {
+                miri_println!("[{}] {} locked uncontended", thread_id(), monitor);
+                self.locked_by.store(thread_id(), Release);
+            }
+            Err(loaded) => self.enter_locked(loaded),
         }
     }
-    Ok(())
-}
 
-pub fn wait(monitor: *const Monitor) {
-    atomic_wait::wait(count(monitor), 0);
-}
-
-pub fn notify_one(monitor: *const Monitor) -> Result<(), NotLockedByThread> {
-    if locked_by(monitor).load(Relaxed) != thread_id() {
-        return Err(NotLockedByThread);
+    #[cold]
+    fn enter_locked(&self, loaded: u32) {
+        // Already locked, checked if by the same thread
+        if self.locked_by.load(Acquire) == thread_id() {
+            // If we reach u32::MAX, we never unlock the object again.
+            let new_count = loaded.saturating_add(INCREMENT);
+            // Try to increase count, but don't overwrite contended flag
+            if self.count.swap(new_count, Relaxed) & CONTENDED != 0 {
+                self.count.store(new_count | CONTENDED, Relaxed);
+            }
+            miri_println!("[{}] {} locked recursive", thread_id(), monitor);
+            return;
+        }
+        loop {
+            // TODO: Do a load first to not claim ownership of a cache line
+            match self
+                .count
+                .compare_exchange(0, INCREMENT + CONTENDED, Acquire, Relaxed)
+            {
+                Ok(_) => {
+                    // Locked; contention flag set because it got cleared during the previous unlock
+                    // Previous locked_by value was NO_THREAD
+                    miri_println!("[{}] {} locked contended", thread_id(), monitor);
+                    self.locked_by.store(thread_id(), Release);
+                    return;
+                }
+                Err(loaded) => {
+                    if (loaded & CONTENDED == 0)
+                        && self
+                            .count
+                            .compare_exchange(loaded, loaded | CONTENDED, Release, Relaxed)
+                            .is_ok()
+                    {
+                        miri_println!("[{}] {} set contended flag", thread_id(), monitor);
+                    }
+                    miri_println!(
+                        "[{}] {} trying to wait with {}",
+                        thread_id(),
+                        monitor,
+                        loaded | CONTENDED
+                    );
+                    atomic_wait::wait(&self.count, loaded | CONTENDED);
+                }
+            }
+        }
     }
-    atomic_wait::wake_one(count(monitor));
-    Ok(())
-}
 
-pub fn notify_all(monitor: *const Monitor) -> Result<(), NotLockedByThread> {
-    if locked_by(monitor).load(Relaxed) != thread_id() {
-        return Err(NotLockedByThread);
+    pub fn exit(&self) -> Result<(), NotLockedByThread> {
+        if self.locked_by.load(Relaxed) != thread_id() {
+            return Err(NotLockedByThread);
+        }
+        let current = self.count.load(Relaxed);
+        if current == u32::MAX {
+            miri_println!("[{}] {} overflow detected", thread_id(), monitor);
+            return Ok(());
+        }
+
+        if current > INCREMENT | CONTENDED {
+            miri_println!(
+                "[{}] {} decrease count to {}",
+                thread_id(),
+                monitor,
+                current - INCREMENT
+            );
+            let loaded = self.count.swap(current - INCREMENT, AcqRel);
+            if (current & CONTENDED == 0) & (loaded & CONTENDED == CONTENDED) {
+                self.count.store((current - INCREMENT) | CONTENDED, Relaxed);
+            }
+        } else {
+            miri_println!("[{}] {} release lock", thread_id(), monitor);
+            self.locked_by.store(NO_THREAD, Release);
+            if self.count.swap(0, AcqRel) == INCREMENT + CONTENDED {
+                miri_println!("[{}] {} wake one", thread_id(), monitor);
+                atomic_wait::wake_one(&self.count);
+            }
+        }
+        Ok(())
     }
-    atomic_wait::wake_all(count(monitor));
-    Ok(())
+
+    pub fn wait(&self) -> Result<(), NotLockedByThread> {
+        todo!()
+    }
+
+    pub fn notify_one(&self) -> Result<(), NotLockedByThread> {
+        if self.locked_by.load(Relaxed) != thread_id() {
+            return Err(NotLockedByThread);
+        }
+        todo!()
+    }
+
+    pub fn notify_all(&self) -> Result<(), NotLockedByThread> {
+        if self.locked_by.load(Relaxed) != thread_id() {
+            return Err(NotLockedByThread);
+        }
+        todo!()
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use std::{
-        alloc::{alloc_zeroed, dealloc, Layout},
-        thread::scope,
-    };
-
     use super::*;
+    use crate::default;
+    use std::thread::scope;
 
-    struct Wrapper(*const Monitor);
-
-    impl Wrapper {
-        fn new() -> Self {
-            Self(unsafe {
-                alloc_zeroed(Layout::from_size_align(Monitor::SIZE, align_of::<usize>()).unwrap())
-            } as *const Monitor)
-        }
+    fn new() -> Box<Monitor> {
+        Box::new(Monitor {
+            locked_by: default(),
+            count: default(),
+        })
     }
-
-    impl Drop for Wrapper {
-        fn drop(&mut self) {
-            unsafe {
-                dealloc(
-                    self.0 as *mut u8,
-                    Layout::from_size_align(Monitor::SIZE, align_of::<usize>()).unwrap(),
-                );
-            }
-        }
-    }
-
-    unsafe impl Sync for Wrapper {}
 
     #[test]
     fn monitor_reentrancy() {
-        let monitor = Wrapper::new();
-        enter(monitor.0);
-        enter(monitor.0);
-        exit(monitor.0).unwrap();
-        exit(monitor.0).unwrap();
-        assert_eq!(count(monitor.0).load(SeqCst), 0);
+        let monitor = new();
+        monitor.enter();
+        monitor.enter();
+        monitor.exit().unwrap();
+        monitor.exit().unwrap();
+        assert_eq!(monitor.count.load(SeqCst), 0);
     }
 
     #[test]
@@ -264,7 +224,7 @@ mod test {
         let threads = 16;
         let per_thread = 1000;
 
-        let monitor = Wrapper::new();
+        let monitor = new();
         let sum = AtomicU32::new(0);
 
         scope(|scope| {
@@ -272,17 +232,17 @@ mod test {
                 scope.spawn(|| {
                     for _ in 0..per_thread {
                         let _ = &monitor;
-                        enter(monitor.0);
-                        enter(monitor.0);
+                        monitor.enter();
+                        monitor.enter();
                         sum.store(sum.load(Relaxed) + 1, Relaxed);
-                        exit(monitor.0).unwrap();
-                        exit(monitor.0).unwrap();
+                        monitor.exit().unwrap();
+                        monitor.exit().unwrap();
                     }
                 });
             }
         });
 
-        enter(monitor.0);
+        monitor.enter();
         assert_eq!(sum.load(Relaxed), threads * per_thread);
     }
 }

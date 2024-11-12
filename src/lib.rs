@@ -243,7 +243,7 @@ impl Object {
     /// This is reëntrant: A thread may enter the monitor multiple times, and must [`exit`](Object::exit_monitor)
     /// is as many times to unlock the object.
     pub fn enter_monitor(self, jvm: &Jvm) {
-        monitor::enter(self.into_inner(jvm.id).monitor());
+        self.into_inner(jvm.id).monitor().enter();
     }
 
     /// Exists this object's monitor.
@@ -251,7 +251,7 @@ impl Object {
     /// Throws `IllegalMonitorStateException` is the object is not locked by this thread.
     pub fn exit_monitor(self, jvm: &Jvm) -> JvmResult<()> {
         let m = self.into_inner(jvm.id).monitor();
-        if monitor::exit(m).is_err() {
+        if m.exit().is_err() {
             error(jvm, "IllegalMonitorStateException", "");
         }
         Ok(())
@@ -263,35 +263,30 @@ impl Object {
     /// This thread must hold the object's lock beforehand (otherwise `IllegalMonitorStateException` will be thrown).
     /// and will reäquire the lock when woken.
     pub fn wait(self, jvm: &Jvm) -> JvmResult<()> {
-        let m = self.into_inner(jvm.id).monitor();
-        if monitor::exit(m).is_err() {
-            error(jvm, "IllegalMonitorStateException", "");
-        }
-        monitor::wait(m);
-        monitor::enter(m);
-        Ok(())
+        self.into_inner(jvm.id)
+            .monitor()
+            .wait()
+            .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
     }
 
     /// Notifies a thread [`wait`ing](Object::wait) on this object.
     ///
     /// This thread must hold the object's lock beforehand (otherwise `IllegalMonitorStateException` will be thrown).
     pub fn notify(self, jvm: &Jvm) -> JvmResult<()> {
-        let m = self.into_inner(jvm.id).monitor();
-        if monitor::notify_one(m).is_err() {
-            error(jvm, "IllegalMonitorStateException", "");
-        }
-        Ok(())
+        self.into_inner(jvm.id)
+            .monitor()
+            .notify_one()
+            .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
     }
 
     /// Notifies all threads [`wait`ing](Object::wait) on this object.
     ///
     /// This thread must hold the object's lock beforehand (otherwise `IllegalMonitorStateException` will be thrown).
     pub fn notify_all(self, jvm: &Jvm) -> JvmResult<()> {
-        let m = self.into_inner(jvm.id).monitor();
-        if monitor::notify_all(m).is_err() {
-            error(jvm, "IllegalMonitorStateException", "");
-        }
-        Ok(())
+        self.into_inner(jvm.id)
+            .monitor()
+            .notify_all()
+            .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
     }
 
     /// Creates a debug representation of the object. For a full object tree, use `Debug`.
