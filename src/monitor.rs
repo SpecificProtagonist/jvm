@@ -6,23 +6,10 @@ use std::{
     },
 };
 
-#[cfg(all(miri, feature = "miri_monitor_debug_print"))]
-extern "Rust" {
-    fn miri_write_to_stdout(bytes: &[u8]);
-}
-
-macro_rules! miri_println {
-    ($fmt:literal $(, $exprs:expr)*) => {
-        #[cfg(all(miri, feature = "miri_monitor_debug_print"))]
-        unsafe {
-            let message = format!($fmt, $($exprs),*) + "\n";
-            miri_write_to_stdout(message.as_bytes());
-        }
-    };
-}
+use crate::miri_println;
 
 /// Reëntrant futex embedded in every object.
-/// Overflowing the lock count permanently locks the object.
+/// Overflowing the lock count (entering 2³¹-1 times without exit) permanently locks the object.
 ///
 /// Zeroed memory can represent an unlocked monitor.
 #[repr(C)]
@@ -36,9 +23,19 @@ pub(crate) struct Monitor {
     count: AtomicU32,
 }
 
-const INCREMENT: u32 = 1;
+const CONTENDED: u32 = 1;
+const INCREMENT: u32 = 2;
 
 const NO_THREAD: u32 = 0;
+
+// Never NO_THREAD after `init_thread_id` was called
+struct SmallThreadId(Cell<u32>);
+
+thread_local!(static THREAD_ID: SmallThreadId = const { SmallThreadId(Cell::new(NO_THREAD)) });
+
+fn thread_id() -> u32 {
+    THREAD_ID.with(|id| id.0.get())
+}
 
 struct ThreadIdAlloc {
     previous: u32,
@@ -50,11 +47,6 @@ static THREAD_ID_ALLOC: Mutex<ThreadIdAlloc> = Mutex::new(ThreadIdAlloc {
     freelist: Vec::new(),
 });
 
-thread_local!(static THREAD_ID: SmallThreadId = const { SmallThreadId(Cell::new(NO_THREAD)) });
-
-// Never NO_THREAD after `init_thread_id` was called
-struct SmallThreadId(Cell<u32>);
-
 impl Drop for SmallThreadId {
     fn drop(&mut self) {
         let id = self.0.get();
@@ -62,10 +54,6 @@ impl Drop for SmallThreadId {
             THREAD_ID_ALLOC.lock().unwrap().freelist.push(id);
         }
     }
-}
-
-fn thread_id() -> u32 {
-    THREAD_ID.with(|id| id.0.get())
 }
 
 pub(crate) fn ensure_thread_id_initialized() {
@@ -110,17 +98,33 @@ impl Monitor {
         if self.locked_by.load(Acquire) == thread_id() {
             // If we reach u32::MAX, we never unlock the object again.
             let new_count = loaded.saturating_add(INCREMENT);
-            self.count.store(new_count, Relaxed);
+            // Try to increase count, but don't overwrite contended flag
+            if self.count.swap(new_count, Relaxed) & CONTENDED != 0 {
+                self.count.store(new_count | CONTENDED, Relaxed);
+            }
             miri_println!("[{}] {:p} locked recursive", thread_id(), self as *const _);
             return;
         }
         loop {
-            // Only sleep if contended flag got set and lock didn't get released
-            atomic_wait::wait(&self.count, loaded);
+            if (loaded & CONTENDED == 0)
+                && self
+                    .count
+                    .compare_exchange_weak(loaded, loaded | CONTENDED, Release, Relaxed)
+                    .is_ok()
+            {
+                miri_println!("[{}] {} set contended flag", thread_id(), monitor);
+            }
 
+            // Only sleep if contended flag got set and lock didn't get released
+            atomic_wait::wait(&self.count, loaded | CONTENDED);
+
+            // Do a load first so we don't need to acquire ownership of the cache line every time
             loaded = self.count.load(Relaxed);
-            if loaded == 0 {
-                match self.count.compare_exchange(0, INCREMENT, Acquire, Relaxed) {
+            if loaded & !CONTENDED == 0 {
+                match self
+                    .count
+                    .compare_exchange(loaded, INCREMENT | CONTENDED, Acquire, Relaxed)
+                {
                     Ok(_) => {
                         miri_println!("[{}] {:p} locked contended", thread_id(), self as *const _);
                         self.locked_by.store(thread_id(), Release);
@@ -135,6 +139,7 @@ impl Monitor {
     }
 
     pub fn exit(&self) -> Result<(), LockNotHeld> {
+        ensure_thread_id_initialized();
         if self.locked_by.load(Relaxed) != thread_id() {
             return Err(LockNotHeld);
         }
@@ -144,18 +149,21 @@ impl Monitor {
             return Ok(());
         }
 
-        if current > INCREMENT {
+        if current > INCREMENT | CONTENDED {
             miri_println!(
                 "[{}] {:p} decrease count to {}",
                 thread_id(),
                 self as *const _,
                 current - INCREMENT
             );
-            self.count.store(current - INCREMENT, Release);
+            let loaded = self.count.swap(current - INCREMENT, AcqRel);
+            if (current & CONTENDED == 0) & (loaded & CONTENDED == CONTENDED) {
+                self.count.store((current - INCREMENT) | CONTENDED, Relaxed);
+            }
         } else {
             miri_println!("[{}] {:p} release lock", thread_id(), self as *const _);
             self.locked_by.store(NO_THREAD, Release);
-            if self.count.swap(0, AcqRel) == INCREMENT {
+            if self.count.swap(0, AcqRel) == INCREMENT | CONTENDED {
                 miri_println!("[{}] {:p} wake one", thread_id(), self as *const _);
                 atomic_wait::wake_one(&self.count);
             }
@@ -164,6 +172,7 @@ impl Monitor {
     }
 
     pub fn wait(&self) -> Result<(), LockNotHeld> {
+        ensure_thread_id_initialized();
         if self.locked_by.load(Relaxed) != thread_id() {
             return Err(LockNotHeld);
         }
@@ -171,20 +180,27 @@ impl Monitor {
         // First we need to release the lock. This differs from exit() in that we release the lock
         // no matter how high the lock count is, and in that we don't clear the thread id.
         let count = self.count.swap(0, AcqRel);
-        atomic_wait::wake_one(&self.count);
+        if (count & CONTENDED) == CONTENDED {
+            atomic_wait::wake_one(&self.count);
+        }
 
         // Wait, but only if the lock hasn't been taken since
         // (which would be required for sending notifications).
         // If the lock is contended and another thread aquires the lock before the wait call,
         // this will lead to a spurious wakeup (or rather, the sleep won't happen in the first case).
         // That's… not great, but it's semantically correct and I don't think `Object::wait` is all that common.
+        //
+        // TODO: Reserve a bit in the thread id and set it when sending a notification. If the wait fails and the bit isn't set, try to sleep again; if it is, clear it and continue. Do not clear the bit in `enter`/`exit`.
         atomic_wait::wait(&self.locked_by, thread_id());
 
         // Now take the lock again, but set the count to whatever it was before.
         loop {
             let mut loaded = self.count.load(Relaxed);
-            if loaded == 0 {
-                match self.count.compare_exchange(0, count, Acquire, Relaxed) {
+            if loaded & !CONTENDED == 0 {
+                match self
+                    .count
+                    .compare_exchange(loaded, count | CONTENDED, Acquire, Relaxed)
+                {
                     Ok(_) => {
                         // Locked; contention flag set because it got cleared during the previous unlock
                         self.locked_by.store(thread_id(), Release);
@@ -195,12 +211,17 @@ impl Monitor {
                     }
                 }
             }
-
-            atomic_wait::wait(&self.count, loaded);
+            if loaded & CONTENDED == 0 {
+                let _ = self
+                    .count
+                    .compare_exchange(loaded, loaded | CONTENDED, Release, Relaxed);
+            }
+            atomic_wait::wait(&self.count, loaded | CONTENDED);
         }
     }
 
     pub fn notify_one(&self) -> Result<(), LockNotHeld> {
+        ensure_thread_id_initialized();
         if self.locked_by.load(Relaxed) != thread_id() {
             return Err(LockNotHeld);
         }
@@ -209,9 +230,11 @@ impl Monitor {
     }
 
     pub fn notify_all(&self) -> Result<(), LockNotHeld> {
+        ensure_thread_id_initialized();
         if self.locked_by.load(Relaxed) != thread_id() {
             return Err(LockNotHeld);
         }
+        // TODO: Instead of waking all waiting threads, wake one and requeue the rest on the lock.
         atomic_wait::wake_all(&self.locked_by);
         Ok(())
     }
@@ -281,8 +304,6 @@ mod test {
                 monitor.notify_one().unwrap();
                 monitor.exit().unwrap();
             });
-
-            thread::sleep(Duration::from_millis(100));
 
             monitor.enter();
             while !value.load(SeqCst) {

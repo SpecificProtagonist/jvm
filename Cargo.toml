@@ -9,7 +9,7 @@ bench = false
 
 [features]
 # Internal
-miri_monitor_debug_print = []
+miri_debug_print = []
 
 [dependencies]
 # AccessFlags

@@ -11,6 +11,7 @@ mod hot_reloading;
 mod interpreter;
 mod jvm;
 mod method;
+mod miri;
 mod monitor;
 mod object;
 mod opcodes;
@@ -247,6 +248,7 @@ impl Object {
     }
 
     /// Exists this object's monitor.
+    /// After 2³¹-1 more calls to `enter_monitor` on the same thread than to `exit_monitor`, this will fail to release the lock.
     ///
     /// Throws `IllegalMonitorStateException` is the object is not locked by this thread.
     pub fn exit_monitor(self, jvm: &Jvm) -> JvmResult<()> {
