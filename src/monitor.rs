@@ -234,8 +234,29 @@ impl Monitor {
         if self.locked_by.load(Relaxed) != thread_id() {
             return Err(LockNotHeld);
         }
-        // TODO: Instead of waking all waiting threads, wake one and requeue the rest on the lock.
-        atomic_wait::wake_all(&self.locked_by);
+
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            unsafe {
+                libc::syscall(
+                    libc::SYS_futex,
+                    // uaddr: Wait queue to wake threads up from
+                    &self.locked_by,
+                    // futex_op
+                    libc::FUTEX_REQUEUE | libc::FUTEX_PRIVATE_FLAG,
+                    // val: Number of threads to wake
+                    1,
+                    // val2: Max number of threads to requeue
+                    i32::MAX,
+                    // uaddr2: Wait queue to move threads to
+                    &self.count,
+                );
+            };
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            atomic_wait::wake_all(&self.locked_by);
+        }
         Ok(())
     }
 }
@@ -315,5 +336,24 @@ mod test {
         // Check that the main thread actually did wait (not busy-loop),
         // while still allowing for a few spurious wake ups.
         assert!(wakeups < 10);
+    }
+
+    #[test]
+    fn monitor_condvar_wakeup_all() {
+        let monitor = new();
+        thread::scope(|s| {
+            for _ in 0..10 {
+                s.spawn(|| {
+                    monitor.enter();
+                    monitor.wait().unwrap();
+                    monitor.exit().unwrap();
+                });
+            }
+
+            thread::sleep(Duration::from_secs(1));
+            monitor.enter();
+            monitor.notify_all().unwrap();
+            monitor.exit().unwrap();
+        });
     }
 }

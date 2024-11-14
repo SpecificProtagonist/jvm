@@ -1,9 +1,4 @@
-A toy embeddable JVM writen in Rust. It is very much WIP and aims to implement most of the Java 8 JVM specification,
-bar the loading of classes with version <50.0 and the Java SE class libraries.
-As this is intended as a toy / a learning experience, the choice of which features to implement is
-not determined by practicality but by how interested I'm in doing so. It also uses copious amounts of *unsafe*
-(the safety boundary essentially being the entire crate), is badly tested, doesn't have any benchmarks, and doesn't do any garbage collection.
-So if you're new to Rust, just know this isn't a representative example.
+A toy embeddable JVM writen in Rust. It is very much WIP and aims to implement most of the Java 8 JVM specification, bar the loading of classes with version <50.0 and the Java SE class libraries. As this is intended as a toy / a learning experience, the choice of which features to implement is not determined by practicality but by how interested I'm in doing so. It also uses copious amounts of *unsafe* (the safety boundary essentially being the entire crate), is badly tested, doesn't have any benchmarks, and doesn't do any garbage collection.
 
 ```rust,ignore
 // Create a new JVM that loads classes from a folder called `classes`
@@ -20,7 +15,7 @@ let field = class.field(&jvm, "baz", Typ::Boolean).unwrap();
 let value = field.static_get(&jvm);
 // Bind a native method
 class.method(&jvm, "add", [Typ::Float, Typ::Float], Some(Typ::Float))?
-  .bind_native_code(|a: f32, b: f32| Ok(a + b)).unwrap();
+  .bind_native_code(&jvm, |a: f32, b: f32| Ok(a + b)).unwrap();
 ```
 (TODO: Make interface pleasant)
 
@@ -30,7 +25,6 @@ Currently implemented:
 - lazy loading
 - exceptions
 - synchronized methods
-- compressed pointers on x86-64 Linux
 - hot method body reloading
 
 Some mayor missing features:
@@ -40,10 +34,4 @@ Some mayor missing features:
 - string interning
 - reliable protection from stack & memory exhaustion
 
-This is only a JVM, not including a proper class library. The problem is that the JVM
-specification and class library depend on each other. For example, each `CONSTANT_String` entry of a constant pool points
-to an instance of the class `String` that contains the codepoints. Leaving aside the fact
-that the correct class is `java.lang.String`, how does the JVM pass the data to the string /
-read it back? As a result, JVMs and class libraries are tied together. There's a stub in the `java`
-directory but it's deliberately kept minimal to the point of uselessness, serving only to describe
-the API this JVM depends on. Violating said API may cause exceptions, panics or infinite loops.
+This is only a JVM, not including a proper class library. The JVM specification and class library depend on each other. For example, each `CONSTANT_String` entry of a constant pool points to an instance of the class `String` that contains the codepoints. Leaving aside the fact that the correct class is `java.lang.String`, how does the JVM pass the data to the string / read it back? As a result, JVMs and class libraries are tied together. There's a stub in the `java` directory but it's deliberately kept minimal to the point of uselessness, serving only to describe the API this JVM depends on. Violating said API may cause exceptions, panics or infinite loops.
