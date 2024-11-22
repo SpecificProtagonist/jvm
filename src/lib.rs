@@ -363,6 +363,11 @@ impl Class {
         self.into_inner(jvm.id).access_flags
     }
 
+    /// Name of the source file this class was compiled from. Not an absolute path.
+    pub fn source_file_name(self, jvm: &Jvm) -> Option<&str> {
+        self.into_inner(jvm.id).source_file_name.as_deref()
+    }
+
     /// Look up a field in this class by its name and type.
     /// Does not search the inheritance hierarchy.
     /// There may be multiple fields of the same name.

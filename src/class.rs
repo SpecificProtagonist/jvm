@@ -29,6 +29,8 @@ pub(crate) struct Class {
     /// Otherwise only read access is required.
     pub(crate) const_pool: RwLock<ConstPool>,
     pub(crate) access_flags: AccessFlags,
+    /// Name of the source file this class was compiled from
+    pub(crate) source_file_name: Option<Arc<str>>,
     pub(crate) interfaces: Vec<ClassRef>,
     /// Does not contain inherited fields.
     /// Note: JVM supports field overloading.

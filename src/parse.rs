@@ -8,12 +8,32 @@ use crate::{
     default,
     field::{Field, FieldNaT},
     jvm::{error, Jvm, JvmResult},
-    method::{Bytecode, Code, ExceptionHandler, Method, MethodDescriptor, MethodNaT},
-    object::Object,
+    method::{
+        Bytecode, Code, ExceptionHandler, LocalVariable, LocalVariableType, Method,
+        MethodDescriptor, MethodNaT,
+    },
     typ::Type,
     verification::{StackMapFrame, VerificationType},
     AccessFlags,
 };
+
+macro_rules! error {
+    ($jvm:expr) => {
+        error(
+            $jvm,
+            "ClassFormatError",
+            &format!("class format error {}", line!()),
+        )
+    };
+}
+
+macro_rules! enforce {
+    ($jvm:expr, $expr:expr) => {
+        if !$expr {
+            return Err(error!($jvm));
+        }
+    };
+}
 
 #[inline]
 fn read_u8(jvm: &Jvm, input: &mut &[u8]) -> JvmResult<u8> {
@@ -21,7 +41,7 @@ fn read_u8(jvm: &Jvm, input: &mut &[u8]) -> JvmResult<u8> {
         *input = &input[1..];
         Ok(*u8)
     } else {
-        Err(cfe(jvm, "EOF"))
+        Err(error!(jvm))
     }
 }
 
@@ -44,11 +64,8 @@ fn read_u64(jvm: &Jvm, input: &mut &[u8]) -> JvmResult<u64> {
 }
 
 fn read_magic(jvm: &Jvm, input: &mut &[u8]) -> JvmResult<()> {
-    if 0xCAFEBABE == read_u32(jvm, input)? {
-        Ok(())
-    } else {
-        Err(cfe(jvm, "wrong magic number"))
-    }
+    enforce!(jvm, read_u32(jvm, input)? == 0xCAFEBABE);
+    Ok(())
 }
 
 fn read_const_pool_item(input: &mut &[u8], jvm: &Jvm) -> JvmResult<ConstPoolItem> {
@@ -60,7 +77,7 @@ fn read_const_pool_item(input: &mut &[u8], jvm: &Jvm) -> JvmResult<ConstPoolItem
             for _ in 0..length {
                 bytes.push(read_u8(jvm, input)?);
             }
-            let string = cesu8::from_java_cesu8(&bytes).map_err(|_| cfe(jvm, "invalid utf8"))?;
+            let string = cesu8::from_java_cesu8(&bytes).map_err(|_| error!(jvm))?;
             Ok(Utf8(string.into()))
         }
         3 => Ok(Integer(read_u32(jvm, input)? as i32)),
@@ -85,7 +102,7 @@ fn read_const_pool_item(input: &mut &[u8], jvm: &Jvm) -> JvmResult<ConstPoolItem
             name: read_u16(jvm, input)?,
             descriptor: read_u16(jvm, input)?,
         }),
-        _ => Err(cfe(jvm, "Unknown constant pool item")),
+        _ => Err(error!(jvm)),
     }
 }
 
@@ -104,30 +121,31 @@ fn read_const_pool(input: &mut &[u8], jvm: &Jvm) -> JvmResult<ConstPool> {
     }
     // Const pool validity is part of format checking
     for item in items.iter() {
-        if !match item {
-            ConstPoolItem::RawClass(index) => {
-                matches!(items.get(*index as usize), Some(ConstPoolItem::Utf8(..)))
+        enforce!(
+            jvm,
+            match item {
+                ConstPoolItem::RawClass(index) => {
+                    matches!(items.get(*index as usize), Some(ConstPoolItem::Utf8(..)))
+                }
+                ConstPoolItem::FieldRef { class, nat }
+                | ConstPoolItem::MethodRef { class, nat }
+                | ConstPoolItem::InterfaceMethodRef { class, nat } => matches!(
+                    (items.get(*class as usize), items.get(*nat as usize)),
+                    (
+                        Some(ConstPoolItem::RawClass(..)),
+                        Some(ConstPoolItem::NameAndType { .. })
+                    )
+                ),
+                ConstPoolItem::NameAndType { name, descriptor } => matches!(
+                    (items.get(*name as usize), items.get(*descriptor as usize)),
+                    (Some(ConstPoolItem::Utf8(..)), Some(ConstPoolItem::Utf8(..)))
+                ),
+                ConstPoolItem::RawString(index) => {
+                    matches!(items.get(*index as usize), Some(ConstPoolItem::Utf8(..)))
+                }
+                _ => true,
             }
-            ConstPoolItem::FieldRef { class, nat }
-            | ConstPoolItem::MethodRef { class, nat }
-            | ConstPoolItem::InterfaceMethodRef { class, nat } => matches!(
-                (items.get(*class as usize), items.get(*nat as usize)),
-                (
-                    Some(ConstPoolItem::RawClass(..)),
-                    Some(ConstPoolItem::NameAndType { .. })
-                )
-            ),
-            ConstPoolItem::NameAndType { name, descriptor } => matches!(
-                (items.get(*name as usize), items.get(*descriptor as usize)),
-                (Some(ConstPoolItem::Utf8(..)), Some(ConstPoolItem::Utf8(..)))
-            ),
-            ConstPoolItem::RawString(index) => {
-                matches!(items.get(*index as usize), Some(ConstPoolItem::Utf8(..)))
-            }
-            _ => true,
-        } {
-            return Err(cfe(jvm, "Invalid constant pool item"));
-        }
+        )
     }
 
     Ok(ConstPool { items })
@@ -149,9 +167,7 @@ fn read_attribute<'a>(
 ) -> JvmResult<(Arc<str>, &'a [u8])> {
     let name = const_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
     let attr_length = read_u32(jvm, input)?;
-    if attr_length as usize > input.len() {
-        return Err(cfe(jvm, "EOF reading attribute"));
-    }
+    enforce!(jvm, attr_length as usize <= input.len());
     let attr_bytes = &input[0..attr_length as usize];
     *input = &input[attr_length as usize..];
     Ok((name, attr_bytes))
@@ -179,7 +195,7 @@ pub(crate) fn parse_typ_descriptor(
     } else if let Some(stripped) = str.strip_prefix('L') {
         // Class
         let Some((class_name, _)) = stripped.split_once(';') else {
-            return Err(cfe(jvm, "invalid field descriptor"));
+            return Err(error!(jvm));
         };
         let class_name = class_name.replace('/', ".");
         let start = start + 1 + class_name.len() + 1;
@@ -191,42 +207,36 @@ pub(crate) fn parse_typ_descriptor(
         while descriptor[start + dimensions..].starts_with('[') {
             dimensions += 1
         }
-        if dimensions > 255 {
-            return Err(cfe(jvm, "too many array dimensions"));
-        }
+        enforce!(jvm, dimensions <= 255);
         let (component, end) = parse_typ_descriptor(jvm, descriptor, start + dimensions)?;
         let name = format!("{component}{}", "[]".repeat(dimensions));
         let typ = Type::Ref(name.into());
         Ok((typ, end))
     } else {
-        Err(cfe(jvm, "invalid field descriptor"))
+        Err(error!(jvm))
     }
 }
 
 fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmResult<Field> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
-    if access_flags.contains(AccessFlags::FINAL | AccessFlags::VOLATILE) {
-        return Err(cfe(jvm, "Field may not be final and volatile"));
-    }
+    enforce!(
+        jvm,
+        !access_flags.contains(AccessFlags::FINAL | AccessFlags::VOLATILE)
+    );
 
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
 
     let descriptor = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
     let (typ, end) = parse_typ_descriptor(jvm, &descriptor, 0)?;
-    if end < descriptor.len() {
-        return Err(cfe(jvm, "Invalid type descriptor"));
-    }
+    enforce!(jvm, end >= descriptor.len());
 
     let mut const_value_index = None;
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
         let (name, data) = read_attribute(jvm, input, constant_pool)?;
         if access_flags.contains(AccessFlags::STATIC) && (name.as_ref() == "ConstantValue") {
-            if const_value_index.is_none() & (data.len() == 2) {
-                const_value_index = Some(((data[0] as u16) << 8) + data[1] as u16)
-            } else {
-                return Err(cfe(jvm, "Invalid ConstantValue attribute"));
-            }
+            enforce!(jvm, const_value_index.is_none() & (data.len() == 2));
+            const_value_index = Some(((data[0] as u16) << 8) + data[1] as u16)
         }
     }
 
@@ -268,7 +278,7 @@ fn read_verification_type(
         8 => VerificationType::UninitializedVariable {
             offset: read_u16(jvm, input)?,
         },
-        _ => return Err(cfe(jvm, "Invalid verification type")),
+        _ => return Err(error!(jvm)),
     })
 }
 
@@ -327,14 +337,11 @@ pub(crate) fn read_stack_map_table(
         } else if (frame_type > 247) & (frame_type < 251) {
             // Chop
             let k = 251 - frame_type;
+            enforce!(jvm, prev_frame.locals.len() >= k as usize);
             (
                 read_u16(jvm, input)?,
                 StackMapFrame {
-                    locals: if prev_frame.locals.len() < k as usize {
-                        return Err(cfe(jvm, "invalid stack frame"));
-                    } else {
-                        prev_frame.locals[0..prev_frame.locals.len() - k as usize].into()
-                    },
+                    locals: prev_frame.locals[0..prev_frame.locals.len() - k as usize].into(),
                     stack: [].into(),
                 },
             )
@@ -380,16 +387,14 @@ pub(crate) fn read_stack_map_table(
             }
             (offset_delta, StackMapFrame { locals, stack })
         } else {
-            return Err(cfe(jvm, "invalid stack map frame type"));
+            return Err(error!(jvm));
         };
         pc += offset;
         frames.insert(pc, current_frame);
         // This is not applied if the previous frame was the initial (implicit) frame
         pc += 1;
     }
-    if !input.is_empty() {
-        return Err(cfe(jvm, "invalid stack map table"));
-    }
+    enforce!(jvm, input.is_empty());
     Ok(frames)
 }
 
@@ -417,21 +422,62 @@ fn read_code(jvm: &Jvm, mut input: &[u8], constant_pool: &ConstPool) -> JvmResul
 
     let attributes_count = read_u16(jvm, input)?;
     let mut stack_map_table = None;
+    let mut line_number_table = BTreeMap::new();
+    let mut local_variables = Vec::new();
+    let mut local_variable_types = Vec::new();
     for _ in 0..attributes_count {
-        // Ignore attributes for now
-        let (name, bytes) = read_attribute(jvm, input, constant_pool)?;
-        if name.as_ref() == "StackMapTable" {
-            if stack_map_table.is_none() {
-                stack_map_table = Some(bytes.into());
-            } else {
-                return Err(cfe(jvm, "Duplicate StackMapTable"));
+        let (name, mut bytes) = read_attribute(jvm, input, constant_pool)?;
+        if &*name == "StackMapTable" {
+            enforce!(jvm, stack_map_table.is_none());
+            stack_map_table = Some(bytes.into());
+        }
+        if &*name == "LineNumberTable" {
+            for _ in 0..read_u16(jvm, &mut bytes)? {
+                let start_pc = read_u16(jvm, &mut bytes)?;
+                enforce!(jvm, (start_pc as u32) < code_length);
+                let line_number = read_u16(jvm, &mut bytes)?;
+                line_number_table.insert(start_pc, line_number);
+            }
+        }
+        if &*name == "LocalVariableTable" {
+            for _ in 0..read_u16(jvm, &mut bytes)? {
+                let start_pc = read_u16(jvm, &mut bytes)?;
+                let len = read_u16(jvm, &mut bytes)?;
+                enforce!(jvm, (start_pc as u32) + (len as u32) < code_length);
+                let name_index = read_u16(jvm, &mut bytes)?;
+                let type_index = read_u16(jvm, &mut bytes)?;
+                let locals_index = read_u16(jvm, &mut bytes)?;
+
+                local_variables.push(LocalVariable {
+                    start_pc,
+                    end_pc: start_pc + len,
+                    name_index,
+                    type_index,
+                    locals_index,
+                });
+            }
+        }
+        if &*name == "LocalVariableTypeTable" {
+            for _ in 0..read_u16(jvm, &mut bytes)? {
+                let start_pc = read_u16(jvm, &mut bytes)?;
+                let len = read_u16(jvm, &mut bytes)?;
+                enforce!(jvm, (start_pc as u32) + (len as u32) < code_length);
+                let name_index = read_u16(jvm, &mut bytes)?;
+                let signature_index = read_u16(jvm, &mut bytes)?;
+                let locals_index = read_u16(jvm, &mut bytes)?;
+
+                local_variable_types.push(LocalVariableType {
+                    start_pc,
+                    end_pc: start_pc + len,
+                    name_index,
+                    signature_index,
+                    locals_index,
+                });
             }
         }
     }
 
-    if !input.is_empty() {
-        return Err(cfe(jvm, "End of code attribute not reached"));
-    }
+    enforce!(jvm, input.is_empty());
 
     Ok(Bytecode {
         max_stack,
@@ -439,13 +485,14 @@ fn read_code(jvm: &Jvm, mut input: &[u8], constant_pool: &ConstPool) -> JvmResul
         bytes,
         stack_map_table,
         exception_table,
+        line_number_table,
+        local_variables,
+        local_variable_types,
     })
 }
 
 pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JvmResult<MethodDescriptor> {
-    if !descriptor.starts_with('(') {
-        return Err(cfe(jvm, "Invalid method descriptor"));
-    }
+    enforce!(jvm, descriptor.starts_with('('));
     let mut start = 1;
     let mut args = Vec::new();
     while !descriptor[start..].starts_with(')') {
@@ -461,9 +508,7 @@ pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JvmResult<
         })
     } else {
         let (return_type, start) = parse_typ_descriptor(jvm, descriptor, start)?;
-        if start < descriptor.len() {
-            return Err(cfe(jvm, "Invalid method descriptor"));
-        }
+        enforce!(jvm, start >= descriptor.len());
         Ok(MethodDescriptor {
             args,
             returns: Some(return_type),
@@ -487,30 +532,29 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
             if let Code::None = code {
                 code = Code::Bytecode(read_code(jvm, bytes, constant_pool)?);
             } else {
-                return Err(cfe(jvm, "Multiple code attributes on same method"));
+                return Err(error!(jvm));
             }
         }
     }
 
     if let Code::None = &code {
-        if !access_flags.contains(AccessFlags::ABSTRACT)
-            & !access_flags.contains(AccessFlags::NATIVE)
-        {
-            return Err(cfe(jvm, "Method missing code attribute"));
-        }
+        enforce!(
+            jvm,
+            access_flags.intersects(AccessFlags::ABSTRACT | AccessFlags::NATIVE)
+        );
     }
-    if access_flags.contains(AccessFlags::ABSTRACT)
-        && access_flags.intersects(
-            AccessFlags::PRIVATE
-                | AccessFlags::STATIC
-                | AccessFlags::FINAL
-                | AccessFlags::SYNCHRONIZED
-                | AccessFlags::NATIVE
-                | AccessFlags::STRICT,
-        )
-    {
-        return Err(cfe(jvm, "Invalid access flags"));
-    }
+    enforce!(
+        jvm,
+        !access_flags.contains(AccessFlags::ABSTRACT)
+            || !access_flags.intersects(
+                AccessFlags::PRIVATE
+                    | AccessFlags::STATIC
+                    | AccessFlags::FINAL
+                    | AccessFlags::SYNCHRONIZED
+                    | AccessFlags::NATIVE
+                    | AccessFlags::STRICT,
+            )
+    );
 
     Ok(Method {
         nat: MethodNaT {
@@ -533,9 +577,7 @@ fn read_methods(
     for _ in 0..length {
         let method = read_method(input, constant_pool, jvm)?;
         for existing_nat in methods.keys() {
-            if existing_nat == &method.nat {
-                return Err(cfe(jvm, "Duplicate method in same class"));
-            }
+            enforce!(jvm, existing_nat != &method.nat);
         }
         methods.insert(method.nat.clone(), method);
     }
@@ -561,14 +603,18 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
 
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
 
-    if if access_flags.contains(AccessFlags::INTERFACE) {
-        access_flags.intersects(AccessFlags::FINAL | AccessFlags::ENUM)
-            | !access_flags.contains(AccessFlags::ABSTRACT)
+    if access_flags.contains(AccessFlags::INTERFACE) {
+        enforce!(
+            jvm,
+            !access_flags.intersects(AccessFlags::FINAL | AccessFlags::ENUM)
+        );
+        enforce!(jvm, access_flags.contains(AccessFlags::ABSTRACT));
     } else {
-        access_flags.contains(AccessFlags::ANNOTATION)
-            | access_flags.contains(AccessFlags::FINAL | AccessFlags::ABSTRACT)
-    } {
-        return Err(cfe(jvm, "Invalid access flags"));
+        enforce!(jvm, !access_flags.contains(AccessFlags::ANNOTATION));
+        enforce!(
+            jvm,
+            !access_flags.contains(AccessFlags::FINAL | AccessFlags::ABSTRACT)
+        );
     }
 
     let this_class = const_pool
@@ -584,53 +630,62 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
     };
 
     let interfaces = read_interfaces(jvm, input, &const_pool)?;
+
     let fields = read_fields(input, &const_pool, jvm)?;
-    if access_flags.contains(AccessFlags::INTERFACE)
-        && fields.iter().any(|field| {
-            !field
-                .access_flags
-                .contains(AccessFlags::FINAL | AccessFlags::STATIC)
-                | field.access_flags.intersects(
-                    AccessFlags::PUBLIC
-                        | AccessFlags::PRIVATE
-                        | AccessFlags::PROTECTED
-                        | AccessFlags::VOLATILE
-                        | AccessFlags::TRANSIENT
-                        | AccessFlags::ENUM,
-                )
-        })
-    {
-        return Err(cfe(jvm, "Invalid access flags"));
+    if access_flags.contains(AccessFlags::INTERFACE) {
+        for field in &fields {
+            enforce!(
+                jvm,
+                field
+                    .access_flags
+                    .contains(AccessFlags::FINAL | AccessFlags::STATIC)
+                    | field.access_flags.intersects(
+                        AccessFlags::PUBLIC
+                            | AccessFlags::PRIVATE
+                            | AccessFlags::PROTECTED
+                            | AccessFlags::VOLATILE
+                            | AccessFlags::TRANSIENT
+                            | AccessFlags::ENUM,
+                    )
+            );
+        }
     }
 
     let methods = read_methods(input, &const_pool, jvm)?;
-    if access_flags.contains(AccessFlags::INTERFACE)
-        && methods.values().any(|m| {
-            m.access_flags.intersects(
-                AccessFlags::PROTECTED
-                    | AccessFlags::FINAL
-                    | AccessFlags::SYNCHRONIZED
-                    | AccessFlags::NATIVE,
-            )
-        })
-    {
-        return Err(cfe(jvm, "Invalid access flags"));
+    if access_flags.contains(AccessFlags::INTERFACE) {
+        for method in methods.values() {
+            enforce!(
+                jvm,
+                method.access_flags.intersects(
+                    AccessFlags::PROTECTED
+                        | AccessFlags::FINAL
+                        | AccessFlags::SYNCHRONIZED
+                        | AccessFlags::NATIVE,
+                )
+            );
+        }
     }
 
+    let mut source_file_name = None;
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
-        read_attribute(jvm, input, &const_pool)?;
+        let (attr_name, attr_data) = read_attribute(jvm, input, &const_pool)?;
+        if &*attr_name == "SourceFile" {
+            enforce!(jvm, source_file_name.is_none());
+            enforce!(jvm, attr_data.len() == 2);
+            let index = u16::from_be_bytes([attr_data[0], attr_data[1]]);
+            source_file_name = Some(const_pool.get_utf8(jvm, index)?);
+        }
     }
 
-    if !input.is_empty() {
-        return Err(cfe(jvm, "expected EOF"));
-    }
+    enforce!(jvm, input.is_empty());
 
     Ok(ClassDescriptor {
         const_pool,
         access_flags,
         name: this_class,
         super_class,
+        source_file_name,
         interfaces,
         fields,
         methods,
@@ -643,11 +698,8 @@ pub(crate) struct ClassDescriptor {
     pub(crate) access_flags: AccessFlags,
     pub(crate) name: Arc<str>,
     pub(crate) super_class: Option<Arc<str>>,
+    pub(crate) source_file_name: Option<Arc<str>>,
     pub(crate) interfaces: Vec<String>,
     pub(crate) fields: Vec<Field>,
     pub(crate) methods: HashMap<MethodNaT, Method>,
-}
-
-fn cfe(jvm: &Jvm, message: &str) -> Object {
-    error(jvm, "ClassFormatError", message)
 }

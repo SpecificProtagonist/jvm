@@ -145,6 +145,7 @@ impl Jvm {
             element_type: Some(component.clone()),
             const_pool: default(),
             access_flags: AccessFlags::PUBLIC | AccessFlags::FINAL | AccessFlags::SYNTHETIC,
+            source_file_name: None,
             interfaces: vec![
                 self.resolve_class_internal("java.lang.Cloneable")?,
                 self.resolve_class_internal("java.io.Serializable")?,
@@ -282,6 +283,7 @@ impl Jvm {
                 element_type: None,
                 const_pool: RwLock::new(class_desc.const_pool),
                 access_flags: class_desc.access_flags,
+                source_file_name: class_desc.source_file_name,
                 interfaces,
                 fields,
                 methods,

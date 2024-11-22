@@ -1,6 +1,9 @@
-use std::sync::{
-    atomic::{AtomicPtr, Ordering},
-    Arc, RwLock,
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicPtr, Ordering},
+        Arc, RwLock,
+    },
 };
 
 use hashbrown::Equivalent;
@@ -82,6 +85,13 @@ pub(crate) struct Bytecode {
     pub bytes: Vec<u8>,
     pub stack_map_table: Option<Vec<u8>>,
     pub exception_table: Vec<ExceptionHandler>,
+    /// Map from pc to source code line number. May be empty.
+    #[allow(dead_code)]
+    pub line_number_table: BTreeMap<u16, u16>,
+    #[allow(dead_code)]
+    pub local_variables: Vec<LocalVariable>,
+    #[allow(dead_code)]
+    pub local_variable_types: Vec<LocalVariableType>,
 }
 
 pub(crate) struct ExceptionHandler {
@@ -89,6 +99,32 @@ pub(crate) struct ExceptionHandler {
     pub end_pc: u16,
     pub handler_pc: u16,
     pub catch_type: u16,
+}
+
+pub(crate) struct LocalVariable {
+    #[allow(dead_code)]
+    pub start_pc: u16,
+    #[allow(dead_code)]
+    pub end_pc: u16,
+    #[allow(dead_code)]
+    pub name_index: u16,
+    #[allow(dead_code)]
+    pub type_index: u16,
+    #[allow(dead_code)]
+    pub locals_index: u16,
+}
+
+pub(crate) struct LocalVariableType {
+    #[allow(dead_code)]
+    pub start_pc: u16,
+    #[allow(dead_code)]
+    pub end_pc: u16,
+    #[allow(dead_code)]
+    pub name_index: u16,
+    #[allow(dead_code)]
+    pub signature_index: u16,
+    #[allow(dead_code)]
+    pub locals_index: u16,
 }
 
 pub(crate) type MethodRef = &'static Method;
