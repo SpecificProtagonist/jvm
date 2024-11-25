@@ -235,7 +235,7 @@ impl Monitor {
             return Err(LockNotHeld);
         }
 
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[cfg(all(not(miri), any(target_os = "linux", target_os = "android")))]
         {
             unsafe {
                 libc::syscall(
@@ -253,7 +253,7 @@ impl Monitor {
                 );
             };
         }
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        #[cfg(any(miri, not(any(target_os = "linux", target_os = "android"))))]
         {
             atomic_wait::wake_all(&self.locked_by);
         }

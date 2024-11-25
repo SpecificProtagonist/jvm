@@ -848,12 +848,14 @@ fn run_until_exception_or_return(
             GETSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field_verified(index);
+                // TODO: Only do this the first time
                 field.class().ensure_init(jvm)?;
                 get_field(frame, field, field.class().static_storage);
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field_verified(index);
+                // TODO: Only do this the first time
                 field.class().ensure_init(jvm)?;
                 put_field(frame, field, field.class().static_storage);
             }
@@ -934,6 +936,7 @@ fn run_until_exception_or_return(
             INVOKESTATIC => {
                 let index = frame.read_code_u16();
                 let invoke_method = const_pool.get_static_method_verified(index);
+                // TODO: Only do this the first time
                 invoke_method.class().ensure_init(jvm)?;
                 execute_invoke_instr(jvm, frame, invoke_method)?;
             }
@@ -990,6 +993,7 @@ fn run_until_exception_or_return(
             NEW => {
                 let index = frame.read_code_u16();
                 let class = const_pool.get_class_verified(index);
+                // TODO: Only do this the first time
                 class.ensure_init(jvm)?;
                 frame
                     .stack

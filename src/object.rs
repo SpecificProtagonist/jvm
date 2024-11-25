@@ -19,8 +19,9 @@ use crate::{
 };
 
 // 64 bit arch:
-// +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————
-// |     Class     |    Monitor    |  Len  | Items…
+// +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————
+// |               |               |  Len  | (gap) | Items… (items of align >4)
+// |     Class     |    Monitor    |  Len  | Items… (items of align <=4)
 // |               |               |  Fields…
 // +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————————————
 //
@@ -33,7 +34,12 @@ const OFFSET_CLASS: usize = 0;
 const OFFSET_MONITOR: usize = size_of::<JvmPtr>();
 pub const OFFSET_FIELDS: usize = OFFSET_MONITOR + size_of::<Monitor>();
 const OFFSET_ARRAY_LENGTH: usize = OFFSET_FIELDS;
-const OFFSET_ARRAY_ITEMS: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
+const OFFSET_ARRAY_ITEMS_SMALL: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
+const OFFSET_ARRAY_ITEMS_LARGE: usize = if OFFSET_ARRAY_ITEMS_SMALL % 8 == 0 {
+    OFFSET_ARRAY_ITEMS_SMALL
+} else {
+    OFFSET_ARRAY_ITEMS_SMALL + 4
+};
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
@@ -53,8 +59,12 @@ impl Object {
 
     pub(crate) fn new_array(heap: &Heap, class: ClassRef, length: i32) -> Self {
         unsafe {
-            let size =
-                OFFSET_ARRAY_ITEMS + length as usize * class.element_type.as_ref().unwrap().size();
+            let item_size = class.element_type.as_ref().unwrap().size();
+            let size = if item_size > 4 {
+                OFFSET_ARRAY_ITEMS_LARGE
+            } else {
+                OFFSET_ARRAY_ITEMS_SMALL
+            } + length as usize * item_size;
             let ptr = heap.alloc(Layout::from_size_align_unchecked(size, 8));
             let class_ptr = heap::ptr_encode(class as *const Class as *mut u8);
             ((ptr + OFFSET_CLASS) as *const AtomicJvmPtr)
@@ -106,10 +116,13 @@ impl Object {
             None
         } else {
             Some(
-                (self
-                    .deref()
-                    .wrapping_byte_add(OFFSET_ARRAY_ITEMS + index as usize * size_of::<T>()))
-                    as *const T,
+                (self.deref().wrapping_byte_add(
+                    if size_of::<T>() > 4 {
+                        OFFSET_ARRAY_ITEMS_LARGE
+                    } else {
+                        OFFSET_ARRAY_ITEMS_SMALL
+                    } + index as usize * size_of::<T>(),
+                )) as *const T,
             )
         }
     }
