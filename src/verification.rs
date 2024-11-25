@@ -272,7 +272,12 @@ pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) 
 
     match &*method.code.read().unwrap() {
         Code::None => {
-            verify!(jvm, method.access_flags.intersects(AccessFlags::ABSTRACT))
+            verify!(
+                jvm,
+                method
+                    .access_flags
+                    .intersects(AccessFlags::ABSTRACT | AccessFlags::NATIVE)
+            )
         }
         Code::Bytecode(code) => {
             verify_bytecode(jvm, const_pool, method, code).inspect_err(|err| {

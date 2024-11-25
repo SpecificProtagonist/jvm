@@ -43,7 +43,7 @@ const OFFSET_ARRAY_ITEMS_LARGE: usize = if OFFSET_ARRAY_ITEMS_SMALL % 8 == 0 {
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub(crate) struct Object(JvmPtrNonNull);
+pub(crate) struct Object(pub JvmPtrNonNull);
 
 impl Object {
     pub(crate) fn new_uninitialized(heap: &Heap, class: ClassRef) -> Self {

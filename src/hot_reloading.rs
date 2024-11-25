@@ -54,11 +54,11 @@ pub(crate) fn reload_method_bytecodes_for_class(jvm: &Jvm, name: &str) -> Result
             .filter(|m| m.class() == class)
             .count()
             != new_class.methods.len())
-        || class.methods.values().any(|m| {
-            !new_class
+        || new_class.methods.values().any(|m| {
+            !class
                 .methods
                 .values()
-                .any(|new| (m.nat == new.nat) & (m.access_flags == new.access_flags))
+                .any(|old| (m.nat == old.nat) & (m.access_flags == old.access_flags))
         })
     {
         return Err(ReloadErr::ClassStructureChanged);
@@ -109,9 +109,9 @@ pub(crate) fn reload_method_bytecodes_for_class(jvm: &Jvm, name: &str) -> Result
 
     // Alright, swap out code
     *class.const_pool.write().unwrap() = new_class.const_pool;
-    for (nat, method) in &class.methods {
-        let mut old = method.code.write().unwrap();
-        let mut new = new_class.methods.get(nat).unwrap().code.write().unwrap();
+    for (nat, method) in &new_class.methods {
+        let mut new = method.code.write().unwrap();
+        let mut old = class.methods.get(nat).unwrap().code.write().unwrap();
         if let (Code::Bytecode(old), Code::Bytecode(new)) = (&mut *old, &mut *new) {
             std::mem::swap(old, new);
         }

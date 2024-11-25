@@ -1,5 +1,7 @@
 use crate::heap::Heap;
 use crate::hot_reloading::{reload_method_bytecodes_for_class, ReloadErr};
+use crate::identity_hash::IdentityHashes;
+use crate::provided_native_methods::get_provided_methods;
 use crate::{class_loader::ClassLoader, AccessFlags};
 use fixed_typed_arena::ManuallyDropArena;
 use std::alloc::Layout;
@@ -42,6 +44,7 @@ pub struct Jvm {
     // TODO: alloc on heap
     pub(crate) method_storage: Mutex<ManuallyDropArena<Method, 128>>,
     pub(crate) classes: RwLock<HashMap<Arc<str>, ClassRef>>,
+    pub(crate) identity_hashes: IdentityHashes,
 }
 
 impl Jvm {
@@ -58,6 +61,7 @@ impl Jvm {
             heap: default(),
             method_storage: default(),
             classes: default(),
+            identity_hashes: default(),
         };
         if let Err(err) = jvm
             .resolve_class("java.lang.StackOverflowError")
@@ -66,6 +70,18 @@ impl Jvm {
             panic!("{err:?}");
         }
         jvm
+    }
+
+    /// This crate provides some native methods useful for implementing the Java class library.
+    /// This method binds them. You may want to only bind some
+    /// (see [`get_provided_methods`](crate::provided_native_methods::get_provided_methods))
+    /// or none of them if you're doing your own library.
+    ///
+    /// This panics if any of the methods don't match.
+    pub fn bind_provided_native_methods(&self) {
+        for native in get_provided_methods() {
+            native.bind(self);
+        }
     }
 
     /// Returns the class, loading it if it wasn't already loaded.

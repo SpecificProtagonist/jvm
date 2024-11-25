@@ -7,7 +7,9 @@ use std::{
 use jvm::*;
 
 fn make_jvm() -> Jvm {
-    Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]))
+    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    jvm.bind_provided_native_methods();
+    jvm
 }
 
 #[test]
@@ -383,4 +385,18 @@ fn sync() {
             .instance_get(&jvm, instance),
         threads * per_thread
     );
+}
+
+#[test]
+fn identity_hash_code() {
+    let jvm = make_jvm();
+    let class = jvm.resolve_class("java.lang.Object").unwrap();
+    let hash = class.method(&jvm, "hashCode", [], Some(Type::Int)).unwrap();
+
+    let obj_1 = class.create_object_uninitialized(&jvm);
+    let obj_2 = class.create_object_uninitialized(&jvm);
+    let hash_1 = hash.invoke(&jvm, &[obj_1.into()]).unwrap();
+    let hash_2 = hash.invoke(&jvm, &[obj_2.into()]).unwrap();
+
+    assert_ne!(hash_1, hash_2);
 }

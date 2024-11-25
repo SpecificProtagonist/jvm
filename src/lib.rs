@@ -8,6 +8,7 @@ mod fake_variadics;
 mod field;
 mod heap;
 mod hot_reloading;
+mod identity_hash;
 mod interpreter;
 mod jvm;
 mod method;
@@ -16,6 +17,7 @@ mod monitor;
 mod object;
 mod opcodes;
 mod parse;
+pub mod provided_native_methods;
 mod typ;
 mod value;
 mod verification;
@@ -304,6 +306,11 @@ impl Object {
     /// Creates a debug representation of the object. If the object is a string, this prints the string.
     pub fn to_string(self, jvm: &Jvm) -> String {
         format!("{:?}", self.format(jvm))
+    }
+
+    pub fn identity_hash(self, jvm: &Jvm) -> i32 {
+        jvm.identity_hashes
+            .get_identity_hash(self.into_inner(jvm.id).0)
     }
 }
 

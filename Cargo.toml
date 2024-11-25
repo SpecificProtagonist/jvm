@@ -21,7 +21,7 @@ hashbrown = "0.14"
 # Stack exhaustion check
 stacker = "0.1"
 cesu8 = "1.1"
-atomic-wait = "1.1.0"
+atomic-wait = "1.1"
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies.libc]
 version = "0.2"
