@@ -42,25 +42,6 @@ fn default<T: Default>() -> T {
     Default::default()
 }
 
-// Rough overview:
-// - a `Jvm` contains classes and objects
-// - internally, a lot of static references are used that only live as long as the `Jvm` exists,
-//   which Rust can't express. These are never directly made available to the library consumer.
-// - instead proxies which also contain a reference to the VM are provided
-// - errors returned by fallible operations are Exception objects
-// - classes are resolved lazily by `Jvm::resolve_class` and parsed in `parse.rs`
-// - before a method is executed, it's class will be verified (once) in verification.rs
-// - methods are executed using a simple interpreter loop in `interp.rs`
-// - each class compactly stores the static fields values
-// - objects contain a pointer to their class, the object's monitor and either fields or array length and items
-// - objects are currently not garbage collected
-
-// This uses copious amounts of unsafe, such as
-// - to manage the lifecycle of classes, objects, …
-// - when casting type-erased local/stack values to objects
-// - when accessing fields (in `fields_storage.rs` and when dereferencing pointers to objects)
-// Unfortunately, for most of this the safety boundary is at the crate level.
-
 /// Guard types ensure values can't be used without the vm they belong to / be used with the wrong vm.
 // TODO: Either split guard object into id and lifetimed object, or use Arc/Weak everywhere.
 // If using lifetimes, also add a module that reexports everything with a static lifetime.

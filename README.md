@@ -1,37 +1,106 @@
-A toy embeddable JVM writen in Rust. It is very much WIP and aims to implement most of the Java 8 JVM specification, bar the loading of classes with version <50.0 and the Java SE class libraries. As this is intended as a toy / a learning experience, the choice of which features to implement is not determined by practicality but by how interested I'm in doing so. It also uses copious amounts of *unsafe* (the safety boundary essentially being the entire crate), is badly tested, doesn't have any benchmarks, and doesn't do any garbage collection.
+# A toy JVM written in Rust.
+
+Goals:
+- embeddable (e.g. sandboxing; multiple JVMs in the same process)
+- non-terrible performance
+- multithreading-support
+- most importantly: having fun developing this
+
+Non-goals:
+- providing a standard library
+- loading pre-Java 8 classes
+- performance on par with HotSpot
+
+Aside from still missing features, this JVM is unsuitable for serious use because it is severely undertested. It also uses large amounts of unsafe scoped to the entire crate (though the interface it provides is safe) – for example, operating on an object pointer requires that it points to a valid object, but the object pointer may come from runtime-typed memory depending on the loaded classes, which get verified in a seperate verification step. Oh, and it also lacks comments.
 
 ```rust,ignore
 // Create a new JVM that loads classes from a folder called `classes`
 let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes"]));
 // Load class `Foo`
-let class = jvm.resolve_class("Foo").unwrap();
+let class = jvm.resolve_class("Foo")?;
 // Resolve its method `void bar(int, String)`
 let method = class.method(&jvm, "bar", [Typ::Int, "java.lang.String".into()], None)?;
 // And call it: `Foo.bar(0, null)`
 method.invoke(&jvm, &[Value::Int(0), Value::Ref(None)])?;
 // Resolve field `Foo.baz` of type bool
-let field = class.field(&jvm, "baz", Typ::Boolean).unwrap();
+let field = class.field(&jvm, "baz", Typ::Boolean)?;
 // And read its value (panicking if it's not a static field)
 let value = field.static_get(&jvm);
 // Bind a native method
 class.method(&jvm, "add", [Typ::Float, Typ::Float], Some(Typ::Float))?
   .bind_native_code(&jvm, |a: f32, b: f32| Ok(a + b)).unwrap();
 ```
-(TODO: Make interface pleasant)
 
-Currently implemented:
-- classes, arrays, interfaces
+Some current features:
 - verification by type checking
-- lazy loading
 - exceptions
-- synchronized methods
-- hot method body reloading
+- lazy loading of classes
+- monitors
+- native methods (`Method::bind_native_code`)
+- hot method body reloading (`Jvm::reload_method_bytecodes_for_class`)
 
-Some mayor missing features:
+Some missing features:
 - garbage collection
-- method references
+- jit-compilation
+- method references (`invokedynamic`)
 - private/protected
 - string interning
-- reliable protection from stack & memory exhaustion
+- jar class loader
+- reliable protection from stackoverflow, memory exhaustion and deadlocking
+- wasm support
+- debug adapter protocol support
 
-This is only a JVM, not including a proper class library. The JVM specification and class library depend on each other. For example, each `CONSTANT_String` entry of a constant pool points to an instance of the class `String` that contains the codepoints. Leaving aside the fact that the correct class is `java.lang.String`, how does the JVM pass the data to the string / read it back? As a result, JVMs and class libraries are tied together. There's a stub in the `java` directory but it's deliberately kept minimal to the point of uselessness, serving only to describe the API this JVM depends on. Violating said API may cause exceptions, panics or infinite loops.
+## Class Library
+This JVM doesn't come with a class library, so you will have to provide your own suitable for your usecase – e.g. you might provide a library that does not include I/O functionality. Unfortunately the Java Virtual Machine Specification does not define what the JVM and the class library require of each other. Part of the class library provided by HotSpot will work, but a lot of functionality such as reflection will be missing.
+
+At minimum, the JVM requires the following classes and interfaces to exist:
+```
+java
+├── io
+│   └── Serializable
+└── lang
+    ├── AbstractMethodError
+    ├── ArithmeticException
+    ├── ArrayIndexOutOfBoundsException
+    ├── ArrayStoreException
+    ├── ClassCastException
+    ├── ClassCircularityError
+    ├── ClassFormatError
+    ├── Cloneable
+    ├── IllegalMonitorStateException
+    ├── IncompatibleClassChangeError
+    ├── NegativeArraySizeException
+    ├── NoClassDefFoundError
+    ├── NoSuchFieldError
+    ├── NoSuchMethodError
+    ├── NullPointerException
+    ├── Object
+    ├── StackOverflowError
+    ├── String
+    │   with field: char[] chars
+    ├── Throwable
+    ├── UnsatisfiedLinkError
+    ├── UnsupportedClassVersionError
+    └── VerifyError
+```
+
+Optional implementations for some native methods are provided. You can bind all of them via `Jvm::bind_provided_native_methods`, or get a list via `provided_native_methods::get_provided_methods`.
+
+## Architecture
+The core type is the `Jvm` struct, which contains all data relevant to the VM, such as the heap and the list of loaded classes. Internally handles to this data are not lifetimed, however these handles are not obtainable by users of this crate directly but are wrapped in guard types that require a reference to the JVM in order to access data. The design of these handles will change when garbage collection is implemented.
+
+To invoke a method on a fresh JVM, the following process takes place:
+- the user-provided classloader loads the bytes representing the method's class
+- the class and its superclasses/-interfaces get parsed and loaded into the JVM
+- they have their constant pool resolved to make accessing const pool items faster, which includes resolving any references to classes
+- they get intialized, which includes running class initialization methods
+- they get verified, which includes type checking the bytecode of its methods
+- the method is invoked by interpreting its bytecode or calling its native code
+
+If any errors are encountered during this, an object representing a Java `Throwable` is returned.
+
+On the heap, each object contains a pointer to its class, followed by its monitor, followed by its fields or array length and items.
+
+Multiple threads may access the JVM simultaneously; locks are used to protect the class and method lifecycle and access to fields/array items is atomic.
+
+Also check out [Futexes at Home](https://specificprotagonist.net/jvm-futex.html) for a blog post about how this crate's monitors work :)

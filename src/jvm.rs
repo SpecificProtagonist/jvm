@@ -35,12 +35,12 @@ pub(crate) struct JvmId(u32);
 /// class library needs to be provided by the class loader. Those classes missing
 /// or being invalid classes may cause the thread to hang or crash.
 pub struct Jvm {
-    /// Uniquely identifies the Jvm to prevent mixing of objects between Jvms
+    /// Uniquely identifies the Jvm to prevent mixing of objects between Jvms.
     pub(crate) id: JvmId,
     /// Currently there's a single class loader per Jvm.
     pub bootstrap_class_loader: Box<dyn ClassLoader>,
     pub(crate) heap: Heap,
-    // Classes (including arrays), methods, method descriptors and interned strings live as long as the JVM
+    // Classes (including arrays), methods, method descriptors and interned strings live as long as the JVM.
     // TODO: alloc on heap
     pub(crate) method_storage: Mutex<ManuallyDropArena<Method, 128>>,
     pub(crate) classes: RwLock<HashMap<Arc<str>, ClassRef>>,
