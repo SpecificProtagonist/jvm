@@ -47,6 +47,12 @@ macro_rules! provide {
     };
 }
 
+macro_rules! throw {
+    ($jvm:expr, $class:expr) => {
+        return Err(Object::new($jvm.id, throwable($jvm, $class)));
+    };
+}
+
 pub fn get_provided_methods() -> Vec<ProvidedMethod> {
     vec![
         provide!(
@@ -76,6 +82,13 @@ pub fn get_provided_methods() -> Vec<ProvidedMethod> {
             [],
             None,
             |jvm: &Jvm, this: Object| this.notify_all(jvm)
+        ),
+        provide!(
+            "java.lang.System",
+            "identityHashCode",
+            ["java.lang.Object".into()],
+            Some(Type::Int),
+            |jvm: &Jvm, x: Option<Object>| Ok(x.map(|x| x.identity_hash(jvm)).unwrap_or(0))
         ),
     ]
 }

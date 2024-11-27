@@ -4,7 +4,7 @@ Goals:
 - embeddable (e.g. sandboxing; multiple JVMs in the same process)
 - non-terrible performance
 - multithreading-support
-- most importantly: having fun developing this
+- most importantly: Having fun developing this
 
 Non-goals:
 - providing a standard library
@@ -33,7 +33,6 @@ class.method(&jvm, "add", [Typ::Float, Typ::Float], Some(Typ::Float))?
 
 Some current features:
 - verification by type checking
-- exceptions
 - lazy loading of classes
 - monitors
 - native methods (`Method::bind_native_code`)
@@ -43,6 +42,7 @@ Some missing features:
 - garbage collection
 - jit-compilation
 - method references (`invokedynamic`)
+- stack traces
 - private/protected
 - string interning
 - jar class loader
@@ -54,7 +54,7 @@ Some missing features:
 This JVM doesn't come with a class library, so you will have to provide your own suitable for your usecase – e.g. you might provide a library that does not include I/O functionality. Unfortunately the Java Virtual Machine Specification does not define what the JVM and the class library require of each other. Part of the class library provided by HotSpot will work, but a lot of functionality such as reflection will be missing.
 
 At minimum, the JVM requires the following classes and interfaces to exist:
-```
+```ignore
 java
 ├── io
 │   └── Serializable

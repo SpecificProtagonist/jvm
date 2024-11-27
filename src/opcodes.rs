@@ -201,3 +201,8 @@ pub const IFNULL: u8 = 198;
 pub const IFNONNULL: u8 = 199;
 pub const GOTO_W: u8 = 200;
 // pub const JSR_W: u8 = 201; (forbidden since class version >= 50.0)
+// Custom optimized versions of instructions
+pub const GETSTATIC_INITIALIZED: u8 = 201;
+pub const PUTSTATIC_INITIALIZED: u8 = 202;
+pub const INVOKESTATIC_INITIALIZED: u8 = 203;
+pub const NEW_INITIALIZED: u8 = 204;

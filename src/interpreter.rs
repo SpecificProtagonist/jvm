@@ -1,4 +1,7 @@
-use std::ops::Deref;
+use std::{
+    ops::Deref,
+    sync::atomic::{AtomicU8, Ordering::Relaxed},
+};
 
 use crate::{
     class::{ClassRef, ClassState},
@@ -284,7 +287,7 @@ fn run_until_exception_or_return(
     frame: &mut Frame,
 ) -> JvmResult<Option<Value>> {
     loop {
-        match frame.read_code_u8() {
+        match frame.read_opcode() {
             NOP => {}
             ACONST_NULL => frame.stack.push(IVal(0)),
             ICONST_M1 => frame.stack.push((-1).into()),
@@ -848,15 +851,25 @@ fn run_until_exception_or_return(
             GETSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field_verified(index);
-                // TODO: Only do this the first time
                 field.class().ensure_init(jvm)?;
+                frame.pc -= 3;
+                frame.set_opcode(GETSTATIC_INITIALIZED);
+            }
+            GETSTATIC_INITIALIZED => {
+                let index = frame.read_code_u16();
+                let field = const_pool.get_field_verified(index);
                 get_field(frame, field, field.class().static_storage);
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field_verified(index);
-                // TODO: Only do this the first time
                 field.class().ensure_init(jvm)?;
+                frame.pc -= 3;
+                frame.set_opcode(PUTSTATIC_INITIALIZED);
+            }
+            PUTSTATIC_INITIALIZED => {
+                let index = frame.read_code_u16();
+                let field = const_pool.get_field_verified(index);
                 put_field(frame, field, field.class().static_storage);
             }
             GETFIELD => {
@@ -872,7 +885,7 @@ fn run_until_exception_or_return(
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field_verified(index);
                 // Stack has object ref first, then value on top
-                // This is ugly
+                // So maybe inline `put_field`?
                 let object = if matches!(field.nat.typ, Type::Long | Type::Double) {
                     let high = frame.pop();
                     let low = frame.pop();
@@ -936,8 +949,13 @@ fn run_until_exception_or_return(
             INVOKESTATIC => {
                 let index = frame.read_code_u16();
                 let invoke_method = const_pool.get_static_method_verified(index);
-                // TODO: Only do this the first time
                 invoke_method.class().ensure_init(jvm)?;
+                frame.pc -= 3;
+                frame.set_opcode(INVOKESTATIC_INITIALIZED);
+            }
+            INVOKESTATIC_INITIALIZED => {
+                let index = frame.read_code_u16();
+                let invoke_method = const_pool.get_static_method_verified(index);
                 execute_invoke_instr(jvm, frame, invoke_method)?;
             }
             INVOKEINTERFACE => {
@@ -993,8 +1011,13 @@ fn run_until_exception_or_return(
             NEW => {
                 let index = frame.read_code_u16();
                 let class = const_pool.get_class_verified(index);
-                // TODO: Only do this the first time
                 class.ensure_init(jvm)?;
+                frame.pc -= 3;
+                frame.set_opcode(NEW_INITIALIZED);
+            }
+            NEW_INITIALIZED => {
+                let index = frame.read_code_u16();
+                let class = const_pool.get_class_verified(index);
                 frame
                     .stack
                     .push(jvm.create_object_uninitialized(class).into())
@@ -1355,16 +1378,39 @@ impl Frame<'_> {
         self.stack.push(self.local(index + 1));
     }
 
+    #[inline(always)]
     fn local(&self, index: usize) -> IVal {
         debug_assert!(index < self.locals.len());
         unsafe { *self.locals.get_unchecked(index) }
     }
 
+    #[inline(always)]
     fn set_local(&mut self, index: usize, value: IVal) {
         debug_assert!(index < self.locals.len());
         unsafe { *self.locals.get_unchecked_mut(index) = value }
     }
 
+    #[inline(always)]
+    fn read_opcode(&mut self) -> u8 {
+        debug_assert!(self.code_bytes.len() >= self.pc as usize);
+        let byte = unsafe {
+            (self.code_bytes.get_unchecked(self.pc as usize) as *const _ as *const AtomicU8)
+                .as_ref_unchecked()
+        }
+        .load(Relaxed);
+        self.pc += 1;
+        byte
+    }
+
+    fn set_opcode(&mut self, new: u8) {
+        unsafe {
+            (self.code_bytes.get_unchecked(self.pc as usize) as *const _ as *const AtomicU8)
+                .as_ref_unchecked()
+        }
+        .store(new, Relaxed);
+    }
+
+    #[inline(always)]
     fn read_code_u8(&mut self) -> u8 {
         debug_assert!(self.code_bytes.len() >= self.pc as usize);
         let byte = unsafe { *self.code_bytes.get_unchecked(self.pc as usize) };
@@ -1372,6 +1418,7 @@ impl Frame<'_> {
         byte
     }
 
+    #[inline(always)]
     fn read_code_u16(&mut self) -> u16 {
         ((self.read_code_u8() as u16) << 8) + self.read_code_u8() as u16
     }
