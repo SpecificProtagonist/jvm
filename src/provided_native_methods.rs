@@ -47,6 +47,7 @@ macro_rules! provide {
     };
 }
 
+#[allow(unused)]
 macro_rules! throw {
     ($jvm:expr, $class:expr) => {
         return Err(Object::new($jvm.id, throwable($jvm, $class)));

@@ -157,6 +157,7 @@ impl Jvm {
 
         let array = Class {
             name: name.clone(),
+            package: "java.lang".into(),
             super_class: Some(super_class),
             element_type: Some(component.clone()),
             const_pool: default(),
@@ -188,14 +189,14 @@ impl Jvm {
     /// Does not initialize this class nor load any other class referenced.
     /// `name` must be fully qualified and may describe an array.
     pub(crate) fn resolve_class_internal(&self, name: &str) -> JvmResult<ClassRef> {
-        self.resolve_class_impl(name, Vec::new())
+        self.resolve_class_impl(name, &mut Vec::new())
     }
 
     /// This is only to be called by `resolve_class` and errors out on loops in the class hierarchy
     fn resolve_class_impl(
         &self,
         name: &str,
-        mut check_circular: Vec<String>,
+        check_circular: &mut Vec<String>,
     ) -> JvmResult<ClassRef> {
         if let Some(class) = self.classes.read().unwrap().get(name) {
             return Ok(*class);
@@ -205,6 +206,8 @@ impl Jvm {
         if let Some(component) = name.strip_suffix("[]") {
             return self.resolve_array_of(&component.into());
         }
+
+        let package = name.rsplit_once('.').map(|(p, _)| p).unwrap_or_default();
 
         if check_circular.iter().any(|c| c == name) {
             return Err(error(self, "ClassCircularityError", name));
@@ -235,16 +238,6 @@ impl Jvm {
 
         let new_methods = methods.clone();
 
-        // Interface resolution
-        let mut interfaces = Vec::new();
-        for interface in class_desc.interfaces {
-            let interface = self.resolve_class_impl(&interface, check_circular.clone())?;
-            if !interface.is_interface() {
-                return Err(error(self, "IncompatibleClassChangeError", name));
-            }
-            interfaces.push(interface);
-        }
-
         // Superclasses resolution
         let super_class = if let Some(super_class_name) = class_desc.super_class {
             let super_class = self.resolve_class_impl(&super_class_name, check_circular)?;
@@ -259,21 +252,37 @@ impl Jvm {
 
             // Method resolution
             for (nat, method) in &super_class.methods {
-                match methods.entry(nat.clone()) {
-                    hashbrown::hash_map::Entry::Occupied(_) => {
-                        if method.access_flags.contains(AccessFlags::FINAL) {
-                            return Err(error(self, "IncompatibleClassChangeError", name));
-                        }
-                    }
-                    hashbrown::hash_map::Entry::Vacant(entry) => {
-                        entry.insert(*method);
-                    }
+                methods.entry(nat.clone()).or_insert(*method);
+            }
+            for (nat, method) in &super_class.methods {
+                if !method.access_flags.contains(AccessFlags::PRIVATE) {
+                    methods.entry(nat.clone()).or_insert(*method);
                 }
             }
             Some(super_class)
         } else {
             None
         };
+
+        // Interface resolution
+        let mut interfaces = Vec::new();
+        for interface in class_desc.interfaces {
+            let interface = self.resolve_class_impl(&interface, check_circular)?;
+            if !interface.is_interface() {
+                return Err(error(self, "IncompatibleClassChangeError", name));
+            }
+            interfaces.push(interface);
+
+            // Method resolution
+            for (nat, method) in &interface.methods {
+                if !method
+                    .access_flags
+                    .intersects(AccessFlags::PRIVATE | AccessFlags::STATIC)
+                {
+                    methods.entry(nat.clone()).or_insert(*method);
+                }
+            }
+        }
 
         // Interfaces must directly inherit from object (5.3.5)
         if class_desc.access_flags.contains(AccessFlags::INTERFACE)
@@ -295,6 +304,7 @@ impl Jvm {
         let ref_type = unsafe {
             self.heap.alloc_typed(Class {
                 name: class_desc.name,
+                package: package.into(),
                 super_class,
                 element_type: None,
                 const_pool: RwLock::new(class_desc.const_pool),
@@ -331,6 +341,7 @@ impl Jvm {
                 .store(*class as *const Class as *mut Class, Ordering::SeqCst);
         }
 
+        check_circular.pop();
         Ok(ref_type)
     }
 

@@ -221,6 +221,14 @@ fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRes
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
     enforce!(
         jvm,
+        access_flags
+            .intersection(AccessFlags::PUBLIC | AccessFlags::PRIVATE | AccessFlags::PROTECTED)
+            .bits
+            .count_ones()
+            <= 1
+    );
+    enforce!(
+        jvm,
         !access_flags.contains(AccessFlags::FINAL | AccessFlags::VOLATILE)
     );
 
@@ -518,8 +526,43 @@ pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JvmResult<
 
 fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmResult<Method> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
+    enforce!(
+        jvm,
+        access_flags
+            .intersection(AccessFlags::PUBLIC | AccessFlags::PRIVATE | AccessFlags::PROTECTED)
+            .bits
+            .count_ones()
+            <= 1
+    );
+    if access_flags.contains(AccessFlags::ABSTRACT) {
+        enforce!(
+            jvm,
+            !access_flags.intersects(
+                AccessFlags::PRIVATE
+                    | AccessFlags::STATIC
+                    | AccessFlags::FINAL
+                    | AccessFlags::SYNCHRONIZED
+                    | AccessFlags::NATIVE
+                    | AccessFlags::STRICT,
+            )
+        );
+    }
 
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
+    if *name == *"<init>" {
+        enforce!(
+            jvm,
+            !access_flags.intersects(
+                AccessFlags::STATIC
+                    | AccessFlags::FINAL
+                    | AccessFlags::NATIVE
+                    | AccessFlags::BRIDGE
+                    | AccessFlags::SYNTHETIC
+                    | AccessFlags::SYNCHRONIZED
+                    | AccessFlags::ABSTRACT
+            )
+        );
+    }
 
     let descriptor = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
     let descriptor = parse_method_descriptor(jvm, &descriptor)?;
@@ -543,18 +586,6 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
             access_flags.intersects(AccessFlags::ABSTRACT | AccessFlags::NATIVE)
         );
     }
-    enforce!(
-        jvm,
-        !access_flags.contains(AccessFlags::ABSTRACT)
-            || !access_flags.intersects(
-                AccessFlags::PRIVATE
-                    | AccessFlags::STATIC
-                    | AccessFlags::FINAL
-                    | AccessFlags::SYNCHRONIZED
-                    | AccessFlags::NATIVE
-                    | AccessFlags::STRICT,
-            )
-    );
 
     Ok(Method {
         nat: MethodNaT {
@@ -656,7 +687,7 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
         for method in methods.values() {
             enforce!(
                 jvm,
-                method.access_flags.intersects(
+                !method.access_flags.intersects(
                     AccessFlags::PROTECTED
                         | AccessFlags::FINAL
                         | AccessFlags::SYNCHRONIZED

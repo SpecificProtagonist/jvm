@@ -22,6 +22,7 @@ use crate::{
 pub(crate) struct Class {
     /// Fully qualified name, e.g. "java.lang.Object[]"
     pub(crate) name: Arc<str>,
+    pub(crate) package: Arc<str>,
     pub(crate) super_class: Option<ClassRef>,
     /// For array classes, this is the type of the array elements; None for normal classes
     pub(crate) element_type: Option<Type>,
@@ -35,7 +36,7 @@ pub(crate) struct Class {
     /// Does not contain inherited fields.
     /// Note: JVM supports field overloading.
     pub(crate) fields: HashMap<FieldNaT, Field>,
-    /// At the moment, this includes any inherited methods. Change this?
+    /// Includes inherited methods.
     pub(crate) methods: HashMap<MethodNaT, MethodRef>,
     pub(crate) static_storage: FieldStorage,
     /// Combined size of instance fields in normal class, 0 if array
@@ -198,6 +199,14 @@ impl Class {
     // TODO: provide fields() and methods()
     // figure out how to present distinguished between inherited and not
 
+    fn subclass_of(&'static self, other: ClassRef) -> bool {
+        (self == other)
+            || self
+                .super_class
+                .map(|sc| sc.subclass_of(other))
+                .unwrap_or(false)
+    }
+
     pub fn true_subclass_of(&self, other: &str) -> bool {
         self.super_class
             .map(|sc| sc.assignable_to(other))
@@ -336,7 +345,7 @@ impl Class {
         }
 
         // Resolution
-        const_pool.resolve(jvm)?;
+        const_pool.resolve(jvm, self)?;
         drop(const_pool);
 
         // Verification
@@ -353,6 +362,23 @@ impl Class {
         }
 
         Ok(())
+    }
+
+    pub fn is_accessible_from(&self, source: ClassRef) -> bool {
+        self.access_flags.contains(AccessFlags::PUBLIC) || (*self.package == *source.package)
+    }
+
+    pub fn is_member_accessible_from(
+        &'static self,
+        member_flags: AccessFlags,
+        source: ClassRef,
+    ) -> bool {
+        member_flags.contains(AccessFlags::PUBLIC)
+            || member_flags.contains(AccessFlags::PROTECTED) & source.subclass_of(self) // TODO full check (5.4.4)
+            || (member_flags.contains(AccessFlags::PROTECTED)
+                | !member_flags.intersects(AccessFlags::PUBLIC | AccessFlags::PRIVATE))
+                & (*self.package == *source.package)
+            || (self == source)
     }
 }
 

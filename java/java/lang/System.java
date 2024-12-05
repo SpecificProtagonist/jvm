@@ -1,5 +1,5 @@
 package java.lang;
 
-class System {
+public class System {
   static native int identityHashCode(Object x);
 }

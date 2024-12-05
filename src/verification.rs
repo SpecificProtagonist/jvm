@@ -261,12 +261,24 @@ pub(crate) fn verify<'a: 'b, 'b>(jvm: &'b Jvm, class: ClassRef) -> JvmResult<()>
 }
 
 pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) -> JvmResult<()> {
-    if let (false, Some(super_class)) = (
-        method.access_flags.contains(AccessFlags::STATIC),
-        method.class().super_class,
-    ) {
-        if let Some(super_method) = super_class.methods.get(&method.nat) {
-            verify!(jvm, !super_method.access_flags.contains(AccessFlags::FINAL));
+    if !method
+        .access_flags
+        .intersects(AccessFlags::STATIC | AccessFlags::PRIVATE)
+    {
+        let mut class = method.class();
+        while let Some(super_class) = class.super_class {
+            class = super_class;
+            if let Some(super_method) = super_class.methods.get(&method.nat) {
+                if !super_method.access_flags.contains(AccessFlags::FINAL)
+                    | method
+                        .access_flags
+                        .intersects(AccessFlags::STATIC | AccessFlags::PRIVATE)
+                {
+                    break;
+                } else {
+                    verify_failed!(jvm);
+                }
+            }
         }
     }
 

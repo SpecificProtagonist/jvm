@@ -11,7 +11,7 @@ Non-goals:
 - loading pre-Java 8 classes
 - performance on par with HotSpot
 
-Aside from still missing features, this JVM is unsuitable for serious use because it is severely undertested. It also uses large amounts of unsafe scoped to the entire crate (though the interface it provides is safe) – for example, operating on an object pointer requires that it points to a valid object, but the object pointer may come from runtime-typed memory depending on the loaded classes, which get verified in a seperate verification step. Oh, and it also lacks comments.
+This JVM is unsuitable for serious use because, aside from still missing features, it is severely undertested! It also uses large amounts of unsafe scoped to the entire crate (though the interface it provides is safe) – for example, operating on an object pointer requires that it points to a valid object, but the object pointer may come from runtime-typed memory depending on the loaded classes, which get verified in a seperate verification step. Oh, and it also lacks comments.
 
 ```rust,ignore
 // Create a new JVM that loads classes from a folder called `classes`
@@ -41,9 +41,8 @@ Some current features:
 Some missing features:
 - garbage collection
 - jit-compilation
-- method references (`invokedynamic`)
+- `invokedynamic`
 - stack traces
-- private/protected
 - string interning
 - jar class loader
 - reliable protection from stackoverflow, memory exhaustion and deadlocking
@@ -67,6 +66,7 @@ java
     ├── ClassCircularityError
     ├── ClassFormatError
     ├── Cloneable
+    ├── IllegalAccessError
     ├── IllegalMonitorStateException
     ├── IncompatibleClassChangeError
     ├── NegativeArraySizeException

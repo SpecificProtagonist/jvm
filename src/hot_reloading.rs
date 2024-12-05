@@ -92,7 +92,7 @@ pub(crate) fn reload_method_bytecodes_for_class(jvm: &Jvm, name: &str) -> Result
                 // Verification needed
                 if let Err(e) = || -> JvmResult<()> {
                     // Resolution
-                    new_class.const_pool.resolve(jvm)?;
+                    new_class.const_pool.resolve(jvm, class)?;
                     // Verification – only bytecode has changed
                     for method in new_class.methods.values() {
                         verify_method(jvm, &new_class.const_pool, method)?
@@ -108,6 +108,7 @@ pub(crate) fn reload_method_bytecodes_for_class(jvm: &Jvm, name: &str) -> Result
     }
 
     // Alright, swap out code
+    // TODO: Attributes. Let's just swap entire class.
     *class.const_pool.write().unwrap() = new_class.const_pool;
     for (nat, method) in &new_class.methods {
         let mut new = method.code.write().unwrap();

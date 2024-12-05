@@ -52,11 +52,19 @@ fn cfe(jvm: &Jvm) -> Object {
 
 impl ConstPool {
     /// Must be called prior to initialization
-    pub fn resolve(&mut self, jvm: &Jvm) -> JvmResult<()> {
+    pub fn resolve(&mut self, jvm: &Jvm, this_class: ClassRef) -> JvmResult<()> {
         for i in 0..self.items.len() {
             if let ConstPoolItem::RawClass(_) = self.items[i] {
                 let name = self.get_unresolved_class(jvm, i as u16)?;
-                self.items[i] = ConstPoolItem::Class(jvm.resolve_class_internal(&name)?);
+                let resolved = jvm.resolve_class_internal(&name)?;
+                if !resolved.is_accessible_from(this_class) {
+                    return Err(error(
+                        jvm,
+                        "IllegalAccessError",
+                        &format!("can't access {name} from {this_class}"),
+                    ));
+                }
+                self.items[i] = ConstPoolItem::Class(resolved);
             }
         }
         for i in 0..self.items.len() {
@@ -65,7 +73,7 @@ impl ConstPool {
                     // Arrays inherit methods from Object
                     let class = self.get_class(jvm, class)?;
                     if class.is_interface() {
-                        return Err(cfe(jvm));
+                        return Err(error(jvm, "IncompatibleClassChangeError", ""));
                     }
                     let (name, descriptor) = self.get_raw_nat(jvm, nat)?;
                     let typ = parse::parse_method_descriptor(jvm, &descriptor)?;
@@ -80,6 +88,9 @@ impl ConstPool {
                             typ: &nat.typ,
                         })
                         .ok_or_else(|| error(jvm, "NoSuchMethodError", &format!("{nat:?}")))?;
+                    if !class.is_member_accessible_from(method.access_flags, this_class) {
+                        return Err(error(jvm, "IllegalAccessError", ""));
+                    }
                     if method.access_flags.contains(AccessFlags::STATIC) {
                         self.items[i] = ConstPoolItem::StaticMethod(method);
                     } else {
@@ -88,10 +99,10 @@ impl ConstPool {
                     }
                 }
                 ConstPoolItem::InterfaceMethodRef { class, nat } => {
-                    // Arrays inherit methods from Object
+                    // TODO: Do full resolution now (5.4.3.4)
                     let class = self.get_class(jvm, class)?;
                     if !class.is_interface() {
-                        return Err(cfe(jvm));
+                        return Err(error(jvm, "IncompatibleClassChangeError", ""));
                     }
                     let (name, descriptor) = self.get_raw_nat(jvm, nat)?;
                     let typ = parse::parse_method_descriptor(jvm, &descriptor)?;
@@ -103,6 +114,9 @@ impl ConstPool {
                     let (typ, _) = parse::parse_typ_descriptor(jvm, &typ, 0)?;
                     let nat = FieldNaT { name, typ };
                     if let Some(field) = class.fields.get(&nat) {
+                        if !class.is_member_accessible_from(field.access_flags, this_class) {
+                            return Err(error(jvm, "IllegalAccessError", ""));
+                        }
                         self.items[i] = ConstPoolItem::Field(field);
                     } else {
                         return Err(error(jvm, "NoSuchFieldError", &format!("{nat:?}")));

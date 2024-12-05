@@ -1,5 +1,5 @@
 package java.lang;
 
-class Throwable {
+public class Throwable {
     String message;
 }
