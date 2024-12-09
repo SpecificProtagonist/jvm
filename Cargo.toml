@@ -8,8 +8,7 @@ edition = "2021"
 bench = false
 
 [features]
-# Internal
-miri_debug_print = []
+no_compressed_pointers = []
 
 [dependencies]
 # AccessFlags
@@ -32,3 +31,6 @@ criterion = "0.3"
 [[bench]]
 name = "monitor"
 harness = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(miri_debug_print)'] }

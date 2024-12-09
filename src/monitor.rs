@@ -112,7 +112,7 @@ impl Monitor {
                     .compare_exchange_weak(loaded, loaded | CONTENDED, Release, Relaxed)
                     .is_ok()
             {
-                miri_println!("[{}] {} set contended flag", thread_id(), monitor);
+                miri_println!("[{}] set contended flag", thread_id());
             }
 
             // Only sleep if contended flag got set and lock didn't get released

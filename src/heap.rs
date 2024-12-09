@@ -33,7 +33,7 @@ struct Block {
     len: usize,
 }
 
-// TODO: maybe keep a thread-local buffer to reduce locking
+// TODO: keep a thread-local buffer to reduce locking
 #[derive(Default)]
 pub struct Heap {
     ptrs: PtrsBackend,
