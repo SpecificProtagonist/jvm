@@ -7,12 +7,9 @@ use std::sync::{RwLock, RwLockWriteGuard};
 
 use hashbrown::HashMap;
 
-use crate::{
-    default,
-    heap::{self, JvmPtrNonNull},
-};
+use crate::{default, object::Object};
 
-type Map = HashMap<JvmPtrNonNull, i32>;
+type Map = HashMap<Object, i32>;
 
 /// Stores hash codes by address. TODO: ake this more parallelizable in the future.
 #[derive(Default)]
@@ -23,13 +20,13 @@ pub struct IdentityHashes {
 impl IdentityHashes {
     /// TODO: Don't lookup if the object hasn't been moved since the first time the
     /// identity hash code has been read.
-    pub fn get_identity_hash(&self, obj: JvmPtrNonNull) -> i32 {
+    pub fn get_identity_hash(&self, obj: Object) -> i32 {
         let map = self.map.read().unwrap();
         if let Some(&hash) = map.get(&obj) {
             hash
         } else {
             drop(map);
-            let hash = (heap::ptr_decode(obj.into()) as usize >> 3) as u32 as i32;
+            let hash = (obj.0.get() >> 3) as i32;
             self.map.write().unwrap().insert(obj, hash);
             hash
         }
@@ -51,7 +48,7 @@ pub struct IdentityHashesGcLock<'a> {
 
 impl IdentityHashesGcLock<'_> {
     #[allow(unused)]
-    pub fn move_object(&mut self, old: JvmPtrNonNull, new: JvmPtrNonNull) {
+    pub fn move_object(&mut self, old: Object, new: Object) {
         if let Some(&hash) = self.lock.get(&old) {
             self.new.insert(new, hash);
         }

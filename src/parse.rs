@@ -1,4 +1,5 @@
 use std::{
+    cell::SyncUnsafeCell,
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
@@ -490,7 +491,7 @@ fn read_code(jvm: &Jvm, mut input: &[u8], constant_pool: &ConstPool) -> JvmResul
     Ok(Bytecode {
         max_stack,
         max_locals,
-        bytes,
+        bytes: bytes.into_iter().map(SyncUnsafeCell::new).collect(),
         stack_map_table,
         exception_table,
         line_number_table,

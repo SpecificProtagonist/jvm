@@ -13,12 +13,12 @@ use crate::{
 
 // Differentiating runtime- and on-disk const pool shouldn't be neccessary
 // although it would allow a speedup
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct ConstPool {
     pub items: Vec<ConstPoolItem>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) enum ConstPoolItem {
     Utf8(Arc<str>),
     Integer(i32),
@@ -135,7 +135,7 @@ impl ConstPool {
                     let obj = jvm.create_object_uninitialized(string_class);
                     let field =
                         string_class.field("chars", Type::Ref("char[]".into())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
-                    field.instance_set(obj, Some(backing_array).into());
+                    field.instance_set(jvm.heap.ptrs(), obj, Some(backing_array).into());
                     self.items[i] = ConstPoolItem::String(obj)
                 }
                 _ => (),

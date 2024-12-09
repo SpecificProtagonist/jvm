@@ -1,4 +1,5 @@
 use std::{
+    cell::SyncUnsafeCell,
     ops::Deref,
     sync::atomic::{AtomicU8, Ordering::Relaxed},
 };
@@ -7,7 +8,7 @@ use crate::{
     class::{ClassRef, ClassState},
     const_pool::{ConstPool, ConstPoolItem},
     field::Field,
-    heap::{JvmPtr, NULL_PTR},
+    heap::Ptrs,
     jvm::{error, throwable, Jvm, JvmResult},
     method::{Bytecode, Code, Method, MethodNaT, NativeCode},
     object::{FieldStorage, Object},
@@ -24,11 +25,14 @@ pub(crate) fn invoke(
     args: impl IntoIterator<Item = Value>,
 ) -> JvmResult<Option<Value>> {
     method.class().ensure_init(jvm)?;
+    let ptrs = jvm.heap.ptrs();
     let mut args = args.into_iter();
     let mut arg_values = Vec::new();
     if !method.access_flags.contains(AccessFlags::STATIC) {
         match args.next() {
-            Some(Value::Ref(Some(this))) if this.class().assignable_to(&method.class().name) => {
+            Some(Value::Ref(Some(this)))
+                if this.class(ptrs).assignable_to(&method.class().name) =>
+            {
                 arg_values.push(this.into())
             }
             _ => panic!("Invoked {method} with values of wrong type"),
@@ -38,7 +42,7 @@ pub(crate) fn invoke(
         match (declared, value) {
             (Type::Ref(declared), Value::Ref(object))
                 if object
-                    .map(|o| o.class().assignable_to(declared))
+                    .map(|o| o.class(ptrs).assignable_to(declared))
                     .unwrap_or(true) =>
             {
                 arg_values.push(object.into())
@@ -69,17 +73,12 @@ pub(crate) fn invoke_initializer(jvm: &Jvm, initializer: &Method) -> JvmResult<(
     invoke_initialized(jvm, initializer, &[]).map(|_| ())
 }
 
-// So, this is a bit of a mess maybe.
-// TODO: Look into either rewriting references as two slots on 64bit (difficult, as that can change bytecodes)
-// or rewriting long/double as one slot (bad in 32bit like wasm32, would make quite some code simpler)
-
 /// Stack or local entry.
 /// Doesn't store type information as it was already checked during verification.
-/// Ideally we don't want to use 64 bits if we can avoid this, so
-/// use the size of a possibly compressed pointer.
+// TODO: On 64bit targets, rewrite long/double to only take one slot
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(transparent)]
-struct IVal(JvmPtr);
+struct IVal(usize);
 
 /// Requires that the class is already initialized, or method is the initializer
 fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Option<Value>> {
@@ -206,7 +205,7 @@ fn native(
         Ok(ret) => {
             let returned = ret.map(|v| v.into_inner(jvm.id));
             if match (returned, &method.nat.typ.returns) {
-                (Some(returned), Some(typ)) => !returned.assignable_to(typ),
+                (Some(returned), Some(typ)) => !returned.assignable_to(jvm.heap.ptrs(), typ),
                 (None, None) => false,
                 _ => true,
             } {
@@ -263,7 +262,7 @@ fn interpret(
                     let in_range = (handler.start_pc..=handler.end_pc).contains(&frame.pc);
                     if in_range
                         && (handler.catch_type == 0
-                            || thrown.class().assignable_to(
+                            || thrown.class(jvm.heap.ptrs()).assignable_to(
                                 &const_pool.get_class_verified(handler.catch_type).name,
                             ))
                     {
@@ -286,6 +285,7 @@ fn run_until_exception_or_return(
     const_pool: &ConstPool,
     frame: &mut Frame,
 ) -> JvmResult<Option<Value>> {
+    let ptrs = jvm.heap.ptrs();
     loop {
         match frame.read_opcode() {
             NOP => {}
@@ -358,9 +358,7 @@ fn run_until_exception_or_return(
                     .pop()
                     .as_obj()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                frame
-                    .stack
-                    .push(IVal(obj.array_read::<JvmPtr>(jvm, index)?));
+                frame.stack.push(IVal(obj.array_read::<usize>(jvm, index)?));
             }
             BALOAD => {
                 let index = frame.pop().as_int();
@@ -448,14 +446,14 @@ fn run_until_exception_or_return(
                     .pop()
                     .as_obj()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                let Some(Type::Ref(component)) = &obj.class().element_type else {
+                let Some(Type::Ref(component)) = &obj.class(ptrs).element_type else {
                     unreachable_verified()
                 };
                 // Yay for covariant arrays, another consequence of Java launching without generics…
-                if !obj.class().assignable_to(component) {
+                if !obj.class(ptrs).assignable_to(component) {
                     return Err(throwable(jvm, "ArrayStoreException"));
                 }
-                obj.array_write::<JvmPtr>(jvm, index, value.0)?
+                obj.array_write::<usize>(jvm, index, value.0)?
             }
             BASTORE => {
                 let value = frame.pop().as_int();
@@ -858,7 +856,7 @@ fn run_until_exception_or_return(
             GETSTATIC_INITIALIZED => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field_verified(index);
-                get_field(frame, field, field.class().static_storage);
+                get_field(ptrs, frame, field, field.class().static_storage);
             }
             PUTSTATIC => {
                 let index = frame.read_code_u16();
@@ -870,7 +868,7 @@ fn run_until_exception_or_return(
             PUTSTATIC_INITIALIZED => {
                 let index = frame.read_code_u16();
                 let field = const_pool.get_field_verified(index);
-                put_field(frame, field, field.class().static_storage);
+                put_field(ptrs, frame, field, field.class().static_storage);
             }
             GETFIELD => {
                 let index = frame.read_code_u16();
@@ -879,7 +877,7 @@ fn run_until_exception_or_return(
                     .pop()
                     .as_obj()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                get_field(frame, field, object.fields());
+                get_field(ptrs, frame, field, object.fields());
             }
             PUTFIELD => {
                 let index = frame.read_code_u16();
@@ -900,7 +898,7 @@ fn run_until_exception_or_return(
                     obj
                 }
                 .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                put_field(frame, field, object.fields());
+                put_field(ptrs, frame, field, object.fields());
             }
             INVOKEVIRTUAL => {
                 let index = frame.read_code_u16();
@@ -911,7 +909,7 @@ fn run_until_exception_or_return(
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
                 // TODO: move method linking (incl NoSuchMethodError and IncompatibleClassChangeError) to class init
                 let invoke_method = obj
-                    .class()
+                    .class(ptrs)
                     .methods
                     .get(nat)
                     .ok_or_else(|| throwable(jvm, "NoSuchMethodError"))?;
@@ -965,10 +963,10 @@ fn run_until_exception_or_return(
                 let obj = frame.stack[obj_index]
                     .as_obj()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                if !obj.class().interfaces.contains(&interface) {
+                if !obj.class(ptrs).interfaces.contains(&interface) {
                     return Err(throwable(jvm, "IncompatibleClassChangeError"));
                 }
-                if let Some(invoke_method) = obj.class().methods.get(nat) {
+                if let Some(invoke_method) = obj.class(ptrs).methods.get(nat) {
                     execute_invoke_instr(jvm, frame, invoke_method)?;
                 }
                 // TODO: Do this search at load time
@@ -997,7 +995,7 @@ fn run_until_exception_or_return(
                         }
                     }
                 }
-                iter_interfaces(obj.class(), nat, &mut default, &mut multiple_found);
+                iter_interfaces(obj.class(ptrs), nat, &mut default, &mut multiple_found);
                 match default {
                     Some(default) if !multiple_found => {
                         execute_invoke_instr(jvm, frame, default)?;
@@ -1072,7 +1070,7 @@ fn run_until_exception_or_return(
                 let index = frame.read_code_u16();
                 let check_class = const_pool.get_class_verified(index);
                 if let Some(object) = unsafe { frame.stack.last().unwrap_unchecked().as_obj() } {
-                    if !object.class().assignable_to(&check_class.name) {
+                    if !object.class(ptrs).assignable_to(&check_class.name) {
                         frame.pop();
                         return Err(throwable(jvm, "ClassCastException"));
                     }
@@ -1082,7 +1080,7 @@ fn run_until_exception_or_return(
                 let index = frame.read_code_u16();
                 let check_class = const_pool.get_class_verified(index);
                 if let Some(object) = frame.pop().as_obj() {
-                    if object.class().assignable_to(&check_class.name) {
+                    if object.class(ptrs).assignable_to(&check_class.name) {
                         frame.stack.push(IVal(1));
                     } else {
                         frame.stack.push(IVal(0));
@@ -1149,10 +1147,10 @@ fn run_until_exception_or_return(
                     if let Some(Type::Ref(element_type)) = &class.element_type {
                         let class = jvm.resolve_class_internal(element_type).unwrap();
                         for i in 0..len {
-                            let _ = array.array_write::<JvmPtr>(
+                            let _ = array.array_write::<usize>(
                                 jvm,
                                 i,
-                                create_array(jvm, &dimensions[1..], class).ptr().into(),
+                                create_array(jvm, &dimensions[1..], class).0.get(),
                             );
                         }
                     }
@@ -1201,43 +1199,57 @@ fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) {
     }
 }
 
-fn get_field(frame: &mut Frame, field: &Field, storage: FieldStorage) {
+fn get_field(ptrs: Ptrs, frame: &mut Frame, field: &Field, storage: FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
     match field.nat.typ {
         Type::Boolean | Type::Byte => frame
             .stack
-            .push((storage.read::<i8>(field.byte_offset, volatile) as i32).into()),
+            .push((storage.read::<i8>(ptrs, field.byte_offset, volatile) as i32).into()),
         Type::Short | Type::Char => frame
             .stack
-            .push((storage.read::<i16>(field.byte_offset, volatile) as i32).into()),
-        Type::Int => frame
-            .stack
-            .push(storage.read::<i32>(field.byte_offset, volatile).into()),
-        Type::Float => frame
-            .stack
-            .push(storage.read::<f32>(field.byte_offset, volatile).into()),
-        Type::Long => frame.push_long(storage.read::<i64>(field.byte_offset, volatile)),
-        Type::Double => frame.push_double(storage.read::<f64>(field.byte_offset, volatile)),
-        Type::Ref(..) => frame
-            .stack
-            .push(IVal(storage.read::<JvmPtr>(field.byte_offset, volatile))),
+            .push((storage.read::<i16>(ptrs, field.byte_offset, volatile) as i32).into()),
+        Type::Int => frame.stack.push(
+            storage
+                .read::<i32>(ptrs, field.byte_offset, volatile)
+                .into(),
+        ),
+        Type::Float => frame.stack.push(
+            storage
+                .read::<f32>(ptrs, field.byte_offset, volatile)
+                .into(),
+        ),
+        Type::Long => frame.push_long(storage.read::<i64>(ptrs, field.byte_offset, volatile)),
+        Type::Double => frame.push_double(storage.read::<f64>(ptrs, field.byte_offset, volatile)),
+        Type::Ref(..) => frame.stack.push(IVal(storage.read::<usize>(
+            ptrs,
+            field.byte_offset,
+            volatile,
+        ))),
     }
 }
 
-fn put_field(frame: &mut Frame, field: &Field, storage: FieldStorage) {
+fn put_field(ptrs: Ptrs, frame: &mut Frame, field: &Field, storage: FieldStorage) {
     let volatile = field.access_flags.contains(AccessFlags::VOLATILE);
     match field.nat.typ {
-        Type::Boolean | Type::Byte => {
-            storage.write::<i8>(field.byte_offset, frame.pop().as_int() as i8, volatile)
+        Type::Boolean | Type::Byte => storage.write::<i8>(
+            ptrs,
+            field.byte_offset,
+            frame.pop().as_int() as i8,
+            volatile,
+        ),
+        Type::Short | Type::Char => storage.write::<i16>(
+            ptrs,
+            field.byte_offset,
+            frame.pop().as_int() as i16,
+            volatile,
+        ),
+        Type::Int => storage.write::<i32>(ptrs, field.byte_offset, frame.pop().as_int(), volatile),
+        Type::Float => {
+            storage.write::<f32>(ptrs, field.byte_offset, frame.pop().as_float(), volatile)
         }
-        Type::Short | Type::Char => {
-            storage.write::<i16>(field.byte_offset, frame.pop().as_int() as i16, volatile)
-        }
-        Type::Int => storage.write::<i32>(field.byte_offset, frame.pop().as_int(), volatile),
-        Type::Float => storage.write::<f32>(field.byte_offset, frame.pop().as_float(), volatile),
-        Type::Long => storage.write::<i64>(field.byte_offset, frame.pop_long(), volatile),
-        Type::Double => storage.write::<f64>(field.byte_offset, frame.pop_double(), volatile),
-        Type::Ref(..) => storage.write::<JvmPtr>(field.byte_offset, frame.pop().0, volatile),
+        Type::Long => storage.write::<i64>(ptrs, field.byte_offset, frame.pop_long(), volatile),
+        Type::Double => storage.write::<f64>(ptrs, field.byte_offset, frame.pop_double(), volatile),
+        Type::Ref(..) => storage.write::<usize>(ptrs, field.byte_offset, frame.pop().0, volatile),
     }
 }
 
@@ -1265,27 +1277,27 @@ fn execute_invoke_instr(jvm: &Jvm, frame: &mut Frame, method: &Method) -> JvmRes
 
 impl From<i32> for IVal {
     fn from(value: i32) -> Self {
-        Self(value as u32 as JvmPtr)
+        Self(value as u32 as usize)
     }
 }
 
 impl From<f32> for IVal {
     fn from(value: f32) -> Self {
-        Self(value.to_bits() as JvmPtr)
+        Self(value.to_bits() as usize)
     }
 }
 
 impl From<Object> for IVal {
     fn from(value: Object) -> Self {
-        Self(value.ptr().into())
+        Self(value.0.get())
     }
 }
 
 impl From<Option<Object>> for IVal {
     fn from(value: Option<Object>) -> Self {
         Self(match value {
-            None => NULL_PTR,
-            Some(object) => object.ptr().into(),
+            None => 0,
+            Some(object) => object.0.get(),
         })
     }
 }
@@ -1294,8 +1306,8 @@ impl IVal {
     /// Returns (low half, high half)
     fn from_long(value: i64) -> (Self, Self) {
         (
-            Self((value as u64 & 0xFFFFFFFF) as JvmPtr),
-            Self((value as u64 >> 32) as JvmPtr),
+            Self((value as u64 & 0xFFFFFFFF) as usize),
+            Self((value as u64 >> 32) as usize),
         )
     }
 
@@ -1322,12 +1334,12 @@ impl IVal {
     }
 
     fn as_obj(self) -> Option<Object> {
-        Object::from_ptr(self.0)
+        Object::from_addr(self.0)
     }
 }
 
 struct Frame<'a> {
-    code_bytes: &'a [u8],
+    code_bytes: &'a [SyncUnsafeCell<u8>],
     locals: Vec<IVal>,
     stack: Vec<IVal>,
     pc: u16,
@@ -1394,7 +1406,7 @@ impl Frame<'_> {
     fn read_opcode(&mut self) -> u8 {
         debug_assert!(self.code_bytes.len() >= self.pc as usize);
         let byte = unsafe {
-            (self.code_bytes.get_unchecked(self.pc as usize) as *const _ as *const AtomicU8)
+            (self.code_bytes.as_ptr().wrapping_byte_add(self.pc as usize) as *const AtomicU8)
                 .as_ref_unchecked()
         }
         .load(Relaxed);
@@ -1413,7 +1425,7 @@ impl Frame<'_> {
     #[inline(always)]
     fn read_code_u8(&mut self) -> u8 {
         debug_assert!(self.code_bytes.len() >= self.pc as usize);
-        let byte = unsafe { *self.code_bytes.get_unchecked(self.pc as usize) };
+        let byte = unsafe { *self.code_bytes.get_unchecked(self.pc as usize).get() };
         self.pc += 1;
         byte
     }
@@ -1428,6 +1440,6 @@ impl Frame<'_> {
     }
 
     fn read_previous_byte(&mut self) -> u8 {
-        unsafe { *self.code_bytes.get_unchecked(self.pc as usize - 1) }
+        unsafe { *self.code_bytes.get_unchecked(self.pc as usize - 1).get() }
     }
 }

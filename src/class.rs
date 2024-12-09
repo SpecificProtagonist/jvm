@@ -7,7 +7,6 @@ use std::{
 use crate::{
     const_pool::ConstPool,
     field::{Field, FieldNaT, FieldNaTBorrow},
-    heap::JvmPtr,
     jvm::{error, JvmResult},
     method::{MethodDescriptor, MethodNaT, MethodNaTBorrow, MethodRef},
     monitor::Monitor,
@@ -45,7 +44,6 @@ pub(crate) struct Class {
     pub(crate) init_waiter: Condvar,
 }
 
-#[derive(Debug)]
 pub(crate) enum ClassState {
     Unverified,
     Verified,
@@ -291,45 +289,53 @@ impl Class {
 
     pub(crate) fn verify_impl(&'static self, jvm: &Jvm) -> JvmResult<()> {
         let mut const_pool = self.const_pool.write().unwrap();
+        let ptrs = jvm.heap.ptrs();
         // Preparation
         for field in self.fields.values() {
             if let Some(index) = field.const_value_index {
                 match &field.nat.typ {
                     Type::Boolean | Type::Byte => self.static_storage.write::<i8>(
+                        ptrs,
                         field.byte_offset,
                         const_pool.get_int(jvm, index)? as i8,
                         true,
                     ),
                     Type::Short | Type::Char => self.static_storage.write::<i16>(
+                        ptrs,
                         field.byte_offset,
                         const_pool.get_int(jvm, index)? as i16,
                         true,
                     ),
                     Type::Int => self.static_storage.write::<i32>(
+                        ptrs,
                         field.byte_offset,
                         const_pool.get_int(jvm, index)?,
                         true,
                     ),
                     Type::Float => self.static_storage.write::<f32>(
+                        ptrs,
                         field.byte_offset,
                         const_pool.get_float(jvm, index)?,
                         true,
                     ),
                     Type::Double => self.static_storage.write::<f64>(
+                        ptrs,
                         field.byte_offset,
                         const_pool.get_double(jvm, index)?,
                         true,
                     ),
                     Type::Long => self.static_storage.write::<i64>(
+                        ptrs,
                         field.byte_offset,
                         const_pool.get_long(jvm, index)?,
                         true,
                     ),
                     Type::Ref(name) => {
                         if name.as_ref() == "java.lang.String" {
-                            self.static_storage.write::<JvmPtr>(
+                            self.static_storage.write::<usize>(
+                                ptrs,
                                 field.byte_offset,
-                                const_pool.get_string(jvm, index)?.ptr().into(),
+                                const_pool.get_string(jvm, index)?.0.get(),
                                 true,
                             )
                         } else {

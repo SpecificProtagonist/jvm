@@ -3,7 +3,7 @@ use std::sync::{
     Arc,
 };
 
-use crate::heap::AtomicJvmPtr;
+use crate::heap::AtomicCompressedPtr;
 
 /// A Java type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -30,7 +30,7 @@ impl Type {
             Short | Char => size_of::<AtomicU16>(),
             Int | Float => size_of::<AtomicU32>(),
             Long | Double => size_of::<AtomicU64>(),
-            Ref(..) => size_of::<AtomicJvmPtr>(),
+            Ref(..) => size_of::<AtomicCompressedPtr>(),
         }
     }
 

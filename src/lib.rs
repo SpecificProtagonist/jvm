@@ -1,4 +1,5 @@
 #![feature(ptr_as_ref_unchecked)]
+#![feature(sync_unsafe_cell)]
 #![doc = include_str!("../README.md")]
 
 mod class;
@@ -30,7 +31,7 @@ use std::{
 
 pub use class_loader::{ClassLoader, FolderClassLoader};
 use fake_variadics::{NativeBindError, NativeFn};
-use heap::JvmPtr;
+use heap::Ptrs;
 pub use jvm::Jvm;
 use jvm::{error, JvmId};
 pub use method::MethodDescriptor;
@@ -120,7 +121,7 @@ impl PartialEq for Object {
 
 impl Debug for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:x}", self.value.ptr())
+        write!(f, "{:x}", self.value.0)
     }
 }
 
@@ -140,7 +141,7 @@ impl Object {
 
     /// The class this is an instance of.
     pub fn class(self, jvm: &Jvm) -> Class {
-        Class::new(self.jvm, self.into_inner(jvm.id).class())
+        Class::new(self.jvm, self.into_inner(jvm.id).class(jvm.heap.ptrs()))
     }
 
     /// Get the value of an object's field.
@@ -156,7 +157,9 @@ impl Object {
         };
         Value::new(
             self.jvm,
-            field.into_inner(self.jvm).instance_get(self.value),
+            field
+                .into_inner(self.jvm)
+                .instance_get(jvm.heap.ptrs(), self.value),
             &field.into_inner(self.jvm).nat.typ,
         )
     }
@@ -174,14 +177,16 @@ impl Object {
                 self.class(jvm).into_inner(self.jvm)
             )
         };
-        field
-            .into_inner(self.jvm)
-            .instance_set(self.value, value.into().into_inner(self.jvm))
+        field.into_inner(self.jvm).instance_set(
+            jvm.heap.ptrs(),
+            self.value,
+            value.into().into_inner(self.jvm),
+        )
     }
 
     /// Returns whether this is an array.
     pub fn is_array(self, jvm: &Jvm) -> bool {
-        self.into_inner(jvm.id).is_array()
+        self.into_inner(jvm.id).is_array(jvm.heap.ptrs())
     }
 
     /// Returns the number of items in this array.
@@ -191,7 +196,7 @@ impl Object {
     #[track_caller]
     pub fn array_length(self, jvm: &Jvm) -> i32 {
         let obj = self.into_inner(jvm.id);
-        if obj.class().element_type.is_none() {
+        if obj.class(jvm.heap.ptrs()).element_type.is_none() {
             panic!("not an array");
         }
         obj.array_length()
@@ -205,7 +210,7 @@ impl Object {
     pub fn array_read(self, jvm: &Jvm, index: i32) -> Value {
         Value::new(
             self.jvm,
-            self.value.array_read_value(index),
+            self.value.array_read_value(jvm.heap.ptrs(), index),
             self.class(jvm).element_type(jvm).as_ref().unwrap(),
         )
     }
@@ -217,9 +222,9 @@ impl Object {
     /// Panics if object is not an array, the element type mismatches, `index` is out of bounds
     /// or the value is an object created by another JVM.
     #[track_caller]
-    pub fn array_write(self, index: i32, value: Value) {
-        self.value
-            .array_write_value(index, value.into_inner(self.jvm))
+    pub fn array_write(self, jvm: &Jvm, index: i32, value: Value) {
+        self.into_inner(jvm.id)
+            .array_write_value(jvm.heap.ptrs(), index, value.into_inner(jvm.id))
     }
 
     /// Enters this object's monitor, blocking if it is already locked by another thread.
@@ -276,12 +281,12 @@ impl Object {
 
     /// Creates a debug representation of the object. For a full object tree, use `Debug`.
     pub fn format_short(self, jvm: &Jvm) -> String {
-        self.into_inner(jvm.id).format_short()
+        self.into_inner(jvm.id).format_short(jvm.heap.ptrs())
     }
 
     /// Creates a debug representation of the object. If the object is a string, this prints the string.
     pub fn format(self, jvm: &Jvm) -> impl Debug {
-        ObjectFmt(self.into_inner(jvm.id), PhantomData)
+        ObjectFmt(self.into_inner(jvm.id), Ptrs, PhantomData)
     }
 
     /// Creates a debug representation of the object. If the object is a string, this prints the string.
@@ -291,7 +296,7 @@ impl Object {
 
     pub fn identity_hash(self, jvm: &Jvm) -> i32 {
         jvm.identity_hashes
-            .get_identity_hash(self.into_inner(jvm.id).0)
+            .get_identity_hash(self.into_inner(jvm.id))
     }
 }
 
@@ -301,11 +306,11 @@ impl std::fmt::Pointer for Object {
     }
 }
 
-struct ObjectFmt<'a>(object::Object, PhantomData<&'a Jvm>);
+struct ObjectFmt<'a>(object::Object, Ptrs, PhantomData<&'a Jvm>);
 
 impl Debug for ObjectFmt<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.0)
+        object::fmt_object(self.1, self.0, f, true)
     }
 }
 
@@ -488,7 +493,7 @@ impl Field {
     pub fn static_get(&self, jvm: &Jvm) -> Value {
         Value::new(
             self.jvm,
-            self.into_inner(jvm.id).static_get(),
+            self.into_inner(jvm.id).static_get(jvm.heap.ptrs()),
             self.typ(jvm),
         )
     }
@@ -502,7 +507,7 @@ impl Field {
         Value::new(
             self.jvm,
             self.into_inner(jvm.id)
-                .instance_get(object.into_inner(self.jvm)),
+                .instance_get(jvm.heap.ptrs(), object.into_inner(self.jvm)),
             self.typ(jvm),
         )
     }
@@ -515,7 +520,7 @@ impl Field {
     #[track_caller]
     pub fn static_set(&self, jvm: &Jvm, value: impl Into<Value>) {
         self.into_inner(jvm.id)
-            .static_set(value.into().into_inner(self.jvm))
+            .static_set(jvm.heap.ptrs(), value.into().into_inner(self.jvm))
     }
 
     /// Set the value of an object's field.
@@ -528,6 +533,7 @@ impl Field {
     #[track_caller]
     pub fn instance_set(&self, jvm: &Jvm, object: Object, value: impl Into<Value>) {
         self.into_inner(jvm.id).instance_set(
+            jvm.heap.ptrs(),
             object.into_inner(self.jvm),
             value.into().into_inner(self.jvm),
         )
@@ -655,7 +661,7 @@ impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Ref(None) => write!(f, "null"),
-            Self::Ref(Some(obj)) => write!(f, "@{:x}", obj.value.ptr()),
+            Self::Ref(Some(obj)) => write!(f, "@{:?}", obj.value),
             Self::Boolean(v) => write!(f, "{}", v),
             Self::Byte(v) => write!(f, "{}", v),
             Self::Char(v) => write!(f, "{}", v),
@@ -744,13 +750,6 @@ impl PartialEq<Value> for Object {
         *other == Value::Ref(Some(*self))
     }
 }
-
-// Value should be 16 byte when using 4 byte pointers;
-// for 8 byte pointers this isn't possible because the alignment creates padding that can't be reused
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!((std::mem::size_of::<JvmPtr>() == 4) & (std::mem::size_of::<Value>() == 12));
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!((std::mem::size_of::<JvmPtr>() == 8) | (std::mem::size_of::<Value>() == 16));
 
 /// Err is an object that extends Throwable.
 /// Currently no call stack is provided.

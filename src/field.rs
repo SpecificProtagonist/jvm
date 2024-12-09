@@ -7,7 +7,7 @@ use hashbrown::Equivalent;
 
 use crate::{
     class::{Class, ClassRef},
-    heap::{JvmPtr, NULL_PTR},
+    heap::Ptrs,
     object::{FieldStorage, Object},
     typ::Type,
     value::Value,
@@ -60,11 +60,11 @@ impl Field {
     /// # Panics
     /// Panics if the field is not static.
     #[track_caller]
-    pub(crate) fn static_get(&self) -> Value {
+    pub(crate) fn static_get(&self, ptrs: Ptrs) -> Value {
         if !self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is not static", self.nat.name)
         }
-        self.read(self.class().static_storage)
+        self.read(ptrs, self.class().static_storage)
     }
 
     /// Get the value of an object's field.
@@ -72,35 +72,35 @@ impl Field {
     /// # Panics
     /// Panics if the field is static or the object is not an instance of the class corresponding to this field.
     #[track_caller]
-    pub(crate) fn instance_get(&self, object: Object) -> Value {
+    pub(crate) fn instance_get(&self, ptrs: Ptrs, object: Object) -> Value {
         if self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is static", self.nat.name)
         }
-        if !object.class().assignable_to(&self.class().name) {
+        if !object.class(ptrs).assignable_to(&self.class().name) {
             panic!(
                 "object of class {} not instance of {}",
-                object.class().name,
+                object.class(ptrs).name,
                 self.class().name
             )
         }
-        self.read(object.fields())
+        self.read(ptrs, object.fields())
     }
 
-    fn read(&self, storage: FieldStorage) -> Value {
+    fn read(&self, ptrs: Ptrs, storage: FieldStorage) -> Value {
         let volatile = self.access_flags.contains(AccessFlags::VOLATILE);
         match self.nat.typ {
             Type::Boolean | Type::Byte => {
-                Value::Int(storage.read::<i8>(self.byte_offset, volatile) as i32)
+                Value::Int(storage.read::<i8>(ptrs, self.byte_offset, volatile) as i32)
             }
             Type::Short | Type::Char => {
-                Value::Int(storage.read::<i16>(self.byte_offset, volatile) as i32)
+                Value::Int(storage.read::<i16>(ptrs, self.byte_offset, volatile) as i32)
             }
-            Type::Int => storage.read::<i32>(self.byte_offset, volatile).into(),
-            Type::Float => storage.read::<f32>(self.byte_offset, volatile).into(),
-            Type::Long => storage.read::<i64>(self.byte_offset, volatile).into(),
-            Type::Double => storage.read::<f64>(self.byte_offset, volatile).into(),
+            Type::Int => storage.read::<i32>(ptrs, self.byte_offset, volatile).into(),
+            Type::Float => storage.read::<f32>(ptrs, self.byte_offset, volatile).into(),
+            Type::Long => storage.read::<i64>(ptrs, self.byte_offset, volatile).into(),
+            Type::Double => storage.read::<f64>(ptrs, self.byte_offset, volatile).into(),
             Type::Ref(..) => {
-                Object::from_ptr(storage.read::<JvmPtr>(self.byte_offset, volatile)).into()
+                Object::from_addr(storage.read::<usize>(ptrs, self.byte_offset, volatile)).into()
             }
         }
     }
@@ -110,11 +110,11 @@ impl Field {
     /// # Panics
     /// Panics if the field is not static or the value is not assignable to the field's type
     #[track_caller]
-    pub(crate) fn static_set(&self, value: Value) {
+    pub(crate) fn static_set(&self, ptrs: Ptrs, value: Value) {
         if !self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is not static", self.nat.name)
         }
-        self.write(self.class().static_storage, value)
+        self.write(ptrs, self.class().static_storage, value)
     }
 
     /// Get the value of an object's field.
@@ -124,21 +124,21 @@ impl Field {
     /// the object is not an instance of the class corresponding to this field
     /// or the value is not assignable to the field's type
     #[track_caller]
-    pub(crate) fn instance_set(&self, object: Object, value: Value) {
+    pub(crate) fn instance_set(&self, ptrs: Ptrs, object: Object, value: Value) {
         if self.access_flags.contains(AccessFlags::STATIC) {
             panic!("field {} is static", self.nat.name)
         }
-        if !object.class().assignable_to(&self.class().name) {
+        if !object.class(ptrs).assignable_to(&self.class().name) {
             panic!(
                 "object of class {} not instance of {}",
-                object.class().name,
+                object.class(ptrs).name,
                 self.class().name
             )
         }
-        self.write(object.fields(), value)
+        self.write(ptrs, object.fields(), value)
     }
 
-    fn write(&self, storage: FieldStorage, value: Value) {
+    fn write(&self, ptrs: Ptrs, storage: FieldStorage, value: Value) {
         let volatile = self.access_flags.contains(AccessFlags::VOLATILE);
 
         // This is to avoid the need to take a ref to JVM for resolution
@@ -148,29 +148,30 @@ impl Field {
 
         match (&self.nat.typ, value) {
             (Type::Boolean | Type::Byte, Value::Int(value)) => {
-                storage.write::<i8>(self.byte_offset, value as i8, volatile)
+                storage.write::<i8>(ptrs, self.byte_offset, value as i8, volatile)
             }
             (Type::Short | Type::Char, Value::Int(value)) => {
-                storage.write::<i16>(self.byte_offset, value as i16, volatile)
+                storage.write::<i16>(ptrs, self.byte_offset, value as i16, volatile)
             }
             (Type::Int, Value::Int(value)) => {
-                storage.write::<i32>(self.byte_offset, value, volatile)
+                storage.write::<i32>(ptrs, self.byte_offset, value, volatile)
             }
             (Type::Float, Value::Float(value)) => {
-                storage.write::<f32>(self.byte_offset, value, volatile)
+                storage.write::<f32>(ptrs, self.byte_offset, value, volatile)
             }
             (Type::Long, Value::Long(value)) => {
-                storage.write::<i64>(self.byte_offset, value, volatile)
+                storage.write::<i64>(ptrs, self.byte_offset, value, volatile)
             }
             (Type::Double, Value::Double(value)) => {
-                storage.write::<f64>(self.byte_offset, value, volatile)
+                storage.write::<f64>(ptrs, self.byte_offset, value, volatile)
             }
             (Type::Ref(name), Value::Ref(obj))
-                if obj.map(|o| assignable(o.class(), name)).unwrap_or(true) =>
+                if obj.map(|o| assignable(o.class(ptrs), name)).unwrap_or(true) =>
             {
-                storage.write::<JvmPtr>(
+                storage.write::<usize>(
+                    ptrs,
                     self.byte_offset,
-                    obj.map(|o| o.ptr().into()).unwrap_or(NULL_PTR),
+                    obj.map(|o| o.0.get()).unwrap_or(0),
                     volatile,
                 )
             }

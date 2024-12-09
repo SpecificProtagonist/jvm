@@ -1,6 +1,7 @@
 use std::{
     alloc::Layout,
     mem::size_of,
+    num::NonZeroUsize,
     ops::Deref,
     sync::atomic::{
         AtomicI16, AtomicI32, AtomicI64, AtomicI8,
@@ -10,7 +11,7 @@ use std::{
 
 use crate::{
     class::{Class, ClassRef},
-    heap::{self, AtomicJvmPtr, Heap, JvmPtr, JvmPtrNonNull},
+    heap::{AtomicCompressedPtr, CompressedPtr, Heap, Ptrs},
     jvm::{throwable, JvmResult},
     monitor::Monitor,
     typ::Type,
@@ -31,7 +32,7 @@ use crate::{
 // |       |               |  Fields…
 // +—+—+—+—+—+—+—+—+—+—+—+—+———————————————
 const OFFSET_CLASS: usize = 0;
-const OFFSET_MONITOR: usize = size_of::<JvmPtr>();
+const OFFSET_MONITOR: usize = size_of::<CompressedPtr>();
 pub const OFFSET_FIELDS: usize = OFFSET_MONITOR + size_of::<Monitor>();
 const OFFSET_ARRAY_LENGTH: usize = OFFSET_FIELDS;
 const OFFSET_ARRAY_ITEMS_SMALL: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
@@ -41,19 +42,19 @@ const OFFSET_ARRAY_ITEMS_LARGE: usize = if OFFSET_ARRAY_ITEMS_SMALL % 8 == 0 {
     OFFSET_ARRAY_ITEMS_SMALL + 4
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
 #[repr(transparent)]
-pub(crate) struct Object(pub JvmPtrNonNull);
+pub(crate) struct Object(pub NonZeroUsize);
 
 impl Object {
     pub(crate) fn new_uninitialized(heap: &Heap, class: ClassRef) -> Self {
         unsafe {
             let ptr = heap.alloc(Layout::from_size_align_unchecked(class.object_size, 8));
-            let class_ptr = heap::ptr_encode(class as *const Class as *mut u8);
-            ((ptr + OFFSET_CLASS) as *const AtomicJvmPtr)
+            let class_ptr = heap.ptrs().encode(class as *const _ as usize);
+            ((ptr.get() + OFFSET_CLASS) as *const AtomicCompressedPtr)
                 .as_ref_unchecked()
                 .store(class_ptr, Relaxed);
-            Self(heap::ptr_encode(ptr as *mut u8).try_into().unwrap())
+            Self(ptr)
         }
     }
 
@@ -66,45 +67,34 @@ impl Object {
                 OFFSET_ARRAY_ITEMS_SMALL
             } + length as usize * item_size;
             let ptr = heap.alloc(Layout::from_size_align_unchecked(size, 8));
-            let class_ptr = heap::ptr_encode(class as *const Class as *mut u8);
-            ((ptr + OFFSET_CLASS) as *const AtomicJvmPtr)
+            let class_ptr = heap.ptrs().encode(class as *const _ as usize);
+            ((ptr.get() + OFFSET_CLASS) as *const AtomicCompressedPtr)
                 .as_ref_unchecked()
                 .store(class_ptr, Relaxed);
-            ((ptr + OFFSET_ARRAY_LENGTH) as *const AtomicI32)
+            ((ptr.get() + OFFSET_ARRAY_LENGTH) as *const AtomicI32)
                 .as_ref_unchecked()
                 .store(length, Relaxed);
-            Self(heap::ptr_encode(ptr as *mut u8).try_into().unwrap())
+            Self(ptr)
         }
     }
 
-    pub(crate) fn from_ptr(addr: JvmPtr) -> Option<Self> {
-        JvmPtrNonNull::new(addr).map(Self)
+    pub fn from_addr(addr: usize) -> Option<Self> {
+        NonZeroUsize::new(addr).map(Self)
     }
 
     #[inline]
-    fn deref(self) -> *const u8 {
-        heap::ptr_decode(self.0.into())
-    }
-
-    #[inline]
-    pub(crate) fn class(self) -> ClassRef {
-        unsafe {
-            &*(heap::ptr_decode(*(self.deref().byte_add(OFFSET_CLASS) as *const JvmPtr))
-                as *const Class)
-        }
-    }
-
-    pub(crate) fn ptr(self) -> JvmPtrNonNull {
-        self.0
+    pub(crate) fn class(self, ptrs: Ptrs) -> ClassRef {
+        let ptr = (self.0.get() + OFFSET_CLASS) as *const CompressedPtr;
+        unsafe { (ptrs.decode(ptr.read()) as *const Class).as_ref_unchecked() }
     }
 
     pub fn fields(self) -> FieldStorage {
-        FieldStorage(self.deref() as usize)
+        FieldStorage(self.0.get())
     }
 
     pub(crate) fn array_length(self) -> i32 {
         unsafe {
-            (self.deref().byte_add(OFFSET_ARRAY_LENGTH) as *const AtomicI32)
+            ((self.0.get() + OFFSET_ARRAY_LENGTH) as *const AtomicI32)
                 .as_ref_unchecked()
                 .load(Relaxed)
         }
@@ -116,20 +106,20 @@ impl Object {
             None
         } else {
             Some(
-                (self.deref().wrapping_byte_add(
-                    if size_of::<T>() > 4 {
+                (self.0.get()
+                    + if size_of::<T>() > 4 {
                         OFFSET_ARRAY_ITEMS_LARGE
                     } else {
                         OFFSET_ARRAY_ITEMS_SMALL
-                    } + index as usize * size_of::<T>(),
-                )) as *const T,
+                    }
+                    + index as usize * size_of::<T>()) as *const T,
             )
         }
     }
 
     pub fn array_read<T: Data>(self, jvm: &Jvm, index: i32) -> JvmResult<T> {
         if let Some(item) = self.array_item::<T>(index) {
-            Ok(T::read(item, Relaxed))
+            Ok(T::read(jvm.heap.ptrs(), item, Relaxed))
         } else {
             Err(throwable(jvm, "ArrayIndexOutOfBoundsException"))
         }
@@ -137,7 +127,7 @@ impl Object {
 
     pub fn array_write<T: Data>(self, jvm: &Jvm, index: i32, value: T) -> JvmResult<()> {
         if let Some(item) = self.array_item::<T>(index) {
-            T::write(item, value, Relaxed);
+            T::write(jvm.heap.ptrs(), item, value, Relaxed);
             Ok(())
         } else {
             Err(throwable(jvm, "ArrayIndexOutOfBoundsException"))
@@ -145,72 +135,73 @@ impl Object {
     }
 
     #[inline]
-    pub fn is_array(self) -> bool {
-        self.class().element_type.is_some()
+    pub fn is_array(self, ptrs: Ptrs) -> bool {
+        self.class(ptrs).element_type.is_some()
     }
 
     #[track_caller]
-    fn array_read_panic<T: Data>(self, index: i32) -> T {
+    fn array_read_panic<T: Data>(self, ptrs: Ptrs, index: i32) -> T {
         if let Some(item) = self.array_item::<T>(index) {
-            T::read(item, Relaxed)
+            T::read(ptrs, item, Relaxed)
         } else {
             panic!("Array index out of bounds")
         }
     }
 
     /// Returns either the value at index
+    ///
     /// # Panics
     /// if the object is not an array or the index is out of bounds
     #[track_caller]
-    pub fn array_read_value(self, index: i32) -> Value {
-        let Some(elem_type) = self.class().element_type.as_ref() else {
+    pub fn array_read_value(self, ptrs: Ptrs, index: i32) -> Value {
+        let Some(elem_type) = self.class(ptrs).element_type.as_ref() else {
             panic!("Tried to read array item of non-array object");
         };
         match elem_type {
-            Type::Boolean | Type::Byte => (self.array_read_panic::<i8>(index) as u8 as i32).into(),
-            Type::Short | Type::Char => (self.array_read_panic::<i16>(index) as u16 as i32).into(),
-            Type::Int => self.array_read_panic::<i32>(index).into(),
-            Type::Long => self.array_read_panic::<i64>(index).into(),
-            Type::Float => self.array_read_panic::<f32>(index).into(),
-            Type::Double => self.array_read_panic::<f64>(index).into(),
-            Type::Ref(_) => Object::from_ptr(self.array_read_panic::<JvmPtr>(index)).into(),
+            Type::Boolean | Type::Byte => {
+                (self.array_read_panic::<i8>(ptrs, index) as u8 as i32).into()
+            }
+            Type::Short | Type::Char => {
+                (self.array_read_panic::<i16>(ptrs, index) as u16 as i32).into()
+            }
+            Type::Int => self.array_read_panic::<i32>(ptrs, index).into(),
+            Type::Long => self.array_read_panic::<i64>(ptrs, index).into(),
+            Type::Float => self.array_read_panic::<f32>(ptrs, index).into(),
+            Type::Double => self.array_read_panic::<f64>(ptrs, index).into(),
+            Type::Ref(_) => Object::from_addr(self.array_read_panic::<usize>(ptrs, index)).into(),
         }
     }
 
     /// Sets an array element. If the element type is boolean, byte, short or char, the `JVMValue::Int` is truncated
     /// Panics if object is not an array, the element type mismatches or the index is out of bounds
-    pub fn array_write_value(self, index: i32, value: Value) {
+    pub fn array_write_value(self, ptrs: Ptrs, index: i32, value: Value) {
         #[track_caller]
-        fn write<T: Data>(obj: Object, index: i32, value: T) {
+        fn write<T: Data>(ptrs: Ptrs, obj: Object, index: i32, value: T) {
             if let Some(item) = obj.array_item::<T>(index) {
-                T::write(item, value, Relaxed)
+                T::write(ptrs, item, value, Relaxed)
             } else {
                 panic!("Array index out of bounds")
             }
         }
-        if let Some(element_type) = &self.class().element_type {
+        if let Some(element_type) = &self.class(ptrs).element_type {
             match (element_type, value) {
                 (Type::Boolean | Type::Byte, Value::Int(value)) => {
-                    write::<i8>(self, index, value as u8 as i8)
+                    write::<i8>(ptrs, self, index, value as u8 as i8)
                 }
                 (Type::Short | Type::Char, Value::Int(value)) => {
-                    write::<i16>(self, index, value as u16 as i16)
+                    write::<i16>(ptrs, self, index, value as u16 as i16)
                 }
-                (Type::Int, Value::Int(value)) => write::<i32>(self, index, value),
-                (Type::Long, Value::Long(value)) => write::<i64>(self, index, value),
-                (Type::Float, Value::Float(value)) => write::<f32>(self, index, value),
-                (Type::Float, Value::Double(value)) => write::<f64>(self, index, value),
+                (Type::Int, Value::Int(value)) => write::<i32>(ptrs, self, index, value),
+                (Type::Long, Value::Long(value)) => write::<i64>(ptrs, self, index, value),
+                (Type::Float, Value::Float(value)) => write::<f32>(ptrs, self, index, value),
+                (Type::Float, Value::Double(value)) => write::<f64>(ptrs, self, index, value),
                 (Type::Ref(typ), Value::Ref(value)) => {
                     if let Some(obj) = value {
-                        if !obj.class().assignable_to(typ) {
+                        if !obj.class(ptrs).assignable_to(typ) {
                             panic!("element type mismatch")
                         }
                     }
-                    write::<JvmPtr>(
-                        self,
-                        index,
-                        value.map(|o| o.ptr().into()).unwrap_or(heap::NULL_PTR),
-                    )
+                    write::<usize>(ptrs, self, index, value.map(|o| o.0.get()).unwrap_or(0))
                 }
                 _ => panic!("element type mismatch"),
             }
@@ -220,56 +211,49 @@ impl Object {
     }
 
     pub(crate) fn monitor(self) -> &'static Monitor {
-        unsafe {
-            (self.deref().wrapping_byte_add(OFFSET_MONITOR) as *const Monitor).as_ref_unchecked()
-        }
+        unsafe { ((self.0.get() + OFFSET_MONITOR) as *const Monitor).as_ref_unchecked() }
     }
 
-    pub(crate) fn format_short(self) -> String {
-        struct Fmt(Object);
+    pub(crate) fn format_short(self, ptrs: Ptrs) -> String {
+        struct Fmt(Object, Ptrs);
         impl std::fmt::Debug for Fmt {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                fmt_object(self.0, f, false)
+                fmt_object(self.1, self.0, f, false)
             }
         }
-        format!("{:?}", Fmt(self))
+        format!("{:?}", Fmt(self, ptrs))
     }
 }
 
-impl Eq for Object {
-    fn assert_receiver_is_total_eq(&self) {}
-}
-
-impl PartialEq for Object {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+impl std::fmt::Debug for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "@{:x}", self.0)
     }
 }
 
-impl std::hash::Hash for Object {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&self.ptr(), state)
-    }
-}
-
-fn fmt_object(object: Object, f: &mut std::fmt::Formatter<'_>, full: bool) -> std::fmt::Result {
-    let class = object.class();
+pub(crate) fn fmt_object(
+    ptrs: Ptrs,
+    object: Object,
+    f: &mut std::fmt::Formatter<'_>,
+    full: bool,
+) -> std::fmt::Result {
+    let class = object.class(ptrs);
 
     // Prettier printing for strings
     if class.name.deref() == "java.lang.String" {
         let Value::Ref(chars) = class
             .field("chars", Type::Ref("char[]".into()))
             .expect("java.lang.String missing field char[] chars")
-            .instance_get(object)
+            .instance_get(ptrs, object)
         else {
             unreachable!()
         };
         if let Some(chars) = chars {
             write!(f, "\"")?;
             let length = chars.array_length();
-            for char in
-                char::decode_utf16((0..length).map(|i| chars.array_read_panic::<i16>(i) as u16))
-            {
+            for char in char::decode_utf16(
+                (0..length).map(|i| chars.array_read_panic::<i16>(ptrs, i) as u16),
+            ) {
                 write!(f, "{}", char.unwrap_or(char::REPLACEMENT_CHARACTER))?
             }
             return write!(f, "\"");
@@ -283,7 +267,7 @@ fn fmt_object(object: Object, f: &mut std::fmt::Formatter<'_>, full: bool) -> st
         let length = object.array_length();
         write!(f, "{}[", base)?;
         for i in 0..length {
-            write!(f, "{}, ", object.array_read_value(i))?
+            write!(f, "{}, ", object.array_read_value(ptrs, i))?
         }
         return write!(f, "]");
     }
@@ -301,21 +285,29 @@ fn fmt_object(object: Object, f: &mut std::fmt::Formatter<'_>, full: bool) -> st
             let data = object.fields();
             match field.nat.typ {
                 Type::Boolean | Type::Byte => {
-                    write!(f, "{}", data.read::<i8>(field.byte_offset, false))?
+                    write!(f, "{}", data.read::<i8>(ptrs, field.byte_offset, false))?
                 }
-                Type::Short => write!(f, "{}", data.read::<i16>(field.byte_offset, false))?,
-                Type::Char => write!(f, "u+{:x}", data.read::<i16>(field.byte_offset, false))?,
-                Type::Int => write!(f, "{}", data.read::<i32>(field.byte_offset, false))?,
-                Type::Long => write!(f, "{}", data.read::<i64>(field.byte_offset, false))?,
-                Type::Float => write!(f, "{}", data.read::<f32>(field.byte_offset, false))?,
-                Type::Double => write!(f, "{}", data.read::<f64>(field.byte_offset, false))?,
+                Type::Short => write!(f, "{}", data.read::<i16>(ptrs, field.byte_offset, false))?,
+                Type::Char => write!(
+                    f,
+                    "u+{:x}",
+                    data.read::<i16>(ptrs, field.byte_offset, false)
+                )?,
+                Type::Int => write!(f, "{}", data.read::<i32>(ptrs, field.byte_offset, false))?,
+                Type::Long => write!(f, "{}", data.read::<i64>(ptrs, field.byte_offset, false))?,
+                Type::Float => write!(f, "{}", data.read::<f32>(ptrs, field.byte_offset, false))?,
+                Type::Double => write!(f, "{}", data.read::<f64>(ptrs, field.byte_offset, false))?,
                 Type::Ref(_) => {
-                    let ptr = data.read::<JvmPtr>(field.byte_offset, false);
-                    if let Some(obj) = Object::from_ptr(ptr) {
+                    let addr = data.read::<usize>(ptrs, field.byte_offset, false);
+                    if let Some(obj) = Object::from_addr(addr) {
                         if full {
-                            fmt_object(obj, f, true)?
+                            fmt_object(ptrs, obj, f, true)?
                         } else {
-                            write!(f, "@{:x}", data.read::<JvmPtr>(field.byte_offset, false))?
+                            write!(
+                                f,
+                                "@{:x}",
+                                data.read::<usize>(ptrs, field.byte_offset, false)
+                            )?
                         }
                     } else {
                         write!(f, "null")?
@@ -328,33 +320,27 @@ fn fmt_object(object: Object, f: &mut std::fmt::Formatter<'_>, full: bool) -> st
     Ok(())
 }
 
-impl std::fmt::Debug for Object {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_object(*self, f, true)
-    }
-}
-
 impl std::fmt::Pointer for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "@{:x}", self.ptr())
+        write!(f, "@{:x}", self.0)
     }
 }
 
 const _: () = assert!(std::mem::size_of::<Object>() == std::mem::size_of::<Option<Object>>());
 
 pub trait Data {
-    fn read(ptr: *const Self, ordering: Ordering) -> Self;
-    fn write(ptr: *const Self, value: Self, ordering: Ordering);
+    fn read(ptrs: Ptrs, ptr: *const Self, ordering: Ordering) -> Self;
+    fn write(ptrs: Ptrs, ptr: *const Self, value: Self, ordering: Ordering);
 }
 
 impl Data for i8 {
     #[inline]
-    fn read(ptr: *const Self, ordering: Ordering) -> Self {
+    fn read(_: Ptrs, ptr: *const Self, ordering: Ordering) -> Self {
         unsafe { (ptr as *const AtomicI8).as_ref_unchecked().load(ordering) }
     }
 
     #[inline]
-    fn write(ptr: *const Self, value: Self, ordering: Ordering) {
+    fn write(_: Ptrs, ptr: *const Self, value: Self, ordering: Ordering) {
         unsafe {
             (ptr as *const AtomicI8)
                 .as_ref_unchecked()
@@ -365,12 +351,12 @@ impl Data for i8 {
 
 impl Data for i16 {
     #[inline]
-    fn read(ptr: *const Self, ordering: Ordering) -> Self {
+    fn read(_: Ptrs, ptr: *const Self, ordering: Ordering) -> Self {
         unsafe { (ptr as *const AtomicI16).as_ref_unchecked().load(ordering) }
     }
 
     #[inline]
-    fn write(ptr: *const Self, value: Self, ordering: Ordering) {
+    fn write(_: Ptrs, ptr: *const Self, value: Self, ordering: Ordering) {
         unsafe {
             (ptr as *const AtomicI16)
                 .as_ref_unchecked()
@@ -381,12 +367,12 @@ impl Data for i16 {
 
 impl Data for i32 {
     #[inline]
-    fn read(ptr: *const Self, ordering: Ordering) -> Self {
+    fn read(_: Ptrs, ptr: *const Self, ordering: Ordering) -> Self {
         unsafe { (ptr as *const AtomicI32).as_ref_unchecked().load(ordering) }
     }
 
     #[inline]
-    fn write(ptr: *const Self, value: Self, ordering: Ordering) {
+    fn write(_: Ptrs, ptr: *const Self, value: Self, ordering: Ordering) {
         unsafe {
             (ptr as *const AtomicI32)
                 .as_ref_unchecked()
@@ -397,12 +383,12 @@ impl Data for i32 {
 
 impl Data for i64 {
     #[inline]
-    fn read(ptr: *const Self, ordering: Ordering) -> Self {
+    fn read(_: Ptrs, ptr: *const Self, ordering: Ordering) -> Self {
         unsafe { (ptr as *const AtomicI64).as_ref_unchecked().load(ordering) }
     }
 
     #[inline]
-    fn write(ptr: *const Self, value: Self, ordering: Ordering) {
+    fn write(_: Ptrs, ptr: *const Self, value: Self, ordering: Ordering) {
         unsafe {
             (ptr as *const AtomicI64)
                 .as_ref_unchecked()
@@ -411,47 +397,48 @@ impl Data for i64 {
     }
 }
 
-impl Data for JvmPtr {
+impl Data for usize {
     #[inline]
-    fn read(ptr: *const Self, ordering: Ordering) -> Self {
-        unsafe {
-            (ptr as *const AtomicJvmPtr)
+    fn read(ptrs: Ptrs, ptr: *const Self, ordering: Ordering) -> Self {
+        let compressed = unsafe {
+            (ptr as *const AtomicCompressedPtr)
                 .as_ref_unchecked()
                 .load(ordering)
-        }
+        };
+        ptrs.decode(compressed)
     }
 
     #[inline]
-    fn write(ptr: *const Self, value: Self, ordering: Ordering) {
+    fn write(ptrs: Ptrs, ptr: *const Self, value: Self, ordering: Ordering) {
         unsafe {
-            (ptr as *const AtomicJvmPtr)
+            (ptr as *const AtomicCompressedPtr)
                 .as_ref_unchecked()
-                .store(value, ordering)
+                .store(ptrs.encode(value), ordering)
         }
     }
 }
 
 impl Data for f32 {
     #[inline]
-    fn read(ptr: *const Self, ordering: Ordering) -> Self {
-        f32::from_bits(i32::read(ptr as *const i32, ordering) as u32)
+    fn read(ptrs: Ptrs, ptr: *const Self, ordering: Ordering) -> Self {
+        f32::from_bits(i32::read(ptrs, ptr as *const i32, ordering) as u32)
     }
 
     #[inline]
-    fn write(ptr: *const Self, value: Self, ordering: Ordering) {
-        i32::write(ptr as *const i32, value.to_bits() as i32, ordering);
+    fn write(ptrs: Ptrs, ptr: *const Self, value: Self, ordering: Ordering) {
+        i32::write(ptrs, ptr as *const i32, value.to_bits() as i32, ordering);
     }
 }
 
 impl Data for f64 {
     #[inline]
-    fn read(ptr: *const Self, ordering: Ordering) -> Self {
-        f64::from_bits(i64::read(ptr as *const i64, ordering) as u64)
+    fn read(ptrs: Ptrs, ptr: *const Self, ordering: Ordering) -> Self {
+        f64::from_bits(i64::read(ptrs, ptr as *const i64, ordering) as u64)
     }
 
     #[inline]
-    fn write(ptr: *const Self, value: Self, ordering: Ordering) {
-        i64::write(ptr as *const i64, value.to_bits() as i64, ordering);
+    fn write(ptrs: Ptrs, ptr: *const Self, value: Self, ordering: Ordering) {
+        i64::write(ptrs, ptr as *const i64, value.to_bits() as i64, ordering);
     }
 }
 
@@ -462,16 +449,18 @@ impl FieldStorage {
     pub const EMPTY: FieldStorage = Self(0);
 
     #[inline]
-    pub(crate) fn read<T: Data>(self, offset: usize, volatile: bool) -> T {
+    pub(crate) fn read<T: Data>(self, ptrs: Ptrs, offset: usize, volatile: bool) -> T {
         T::read(
+            ptrs,
             (self.0 as *const T).wrapping_byte_add(offset),
             if volatile { Acquire } else { Relaxed },
         )
     }
 
     #[inline]
-    pub(crate) fn write<T: Data>(self, offset: usize, value: T, volatile: bool) {
+    pub(crate) fn write<T: Data>(self, ptrs: Ptrs, offset: usize, value: T, volatile: bool) {
         T::write(
+            ptrs,
             (self.0 as *const T).wrapping_byte_add(offset),
             value,
             if volatile { Release } else { Relaxed },

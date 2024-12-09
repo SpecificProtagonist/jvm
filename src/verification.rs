@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, ops::Deref};
+use std::{cell::SyncUnsafeCell, collections::BTreeMap, ops::Deref};
 
 use crate::{
     class::{Class, ClassRef},
@@ -211,7 +211,7 @@ impl StackMapFrame {
         &mut self,
         jvm: &Jvm,
         stack_map_table: &BTreeMap<u16, StackMapFrame>,
-        bytes: &[u8],
+        bytes: &[SyncUnsafeCell<u8>],
         pc: &mut u16,
         wide: bool,
     ) -> JvmResult<()> {
@@ -282,6 +282,7 @@ pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) 
         }
     }
 
+    let ptrs = jvm.heap.ptrs();
     match &*method.code.read().unwrap() {
         Code::None => {
             verify!(
@@ -294,16 +295,16 @@ pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) 
         Code::Bytecode(code) => {
             verify_bytecode(jvm, const_pool, method, code).inspect_err(|err| {
                 // Include method in error
-                if err.class().name.deref() == "java.lang.VerifyError" {
+                if err.class(ptrs).name.deref() == "java.lang.VerifyError" {
                     let field = err
-                        .class()
+                        .class(ptrs)
                         .field("message", Type::Ref("java.lang.String".into()))
                         .unwrap();
-                    let Value::Ref(Some(message)) = field.instance_get(*err) else {
+                    let Value::Ref(Some(message)) = field.instance_get(ptrs, *err) else {
                         panic!()
                     };
                     let message = format!("{method}: {message:?}");
-                    field.instance_set(*err, Value::Ref(Some(str_to_java(jvm, &message))));
+                    field.instance_set(ptrs, *err, Value::Ref(Some(str_to_java(jvm, &message))));
                 }
             })?
         }
@@ -1137,7 +1138,13 @@ fn verify_bytecode(
                             VerificationType::ObjectVariable(method.class())
                         }
                         VerificationType::UninitializedVariable { offset } => {
-                            verify!(jvm, code.bytes[offset as usize] == NEW);
+                            verify!(
+                                jvm,
+                                unsafe {
+                                    // SAFETY: Code does not get modified during verification
+                                    *code.bytes[offset as usize].get()
+                                } == NEW
+                            );
                             VerificationType::ObjectVariable(invoke_class)
                         }
                         _ => verify_failed!(jvm),
@@ -1398,18 +1405,21 @@ fn small_array_type(typ: VerificationType) -> bool {
     }
 }
 
-fn read_code_u8(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JvmResult<u8> {
+fn read_code_u8(jvm: &Jvm, bytes: &[SyncUnsafeCell<u8>], pc: &mut u16) -> JvmResult<u8> {
     *pc += 1;
     bytes
         .get(*pc as usize - 1)
-        .copied()
+        .map(|b| unsafe {
+            // SAFETY: Code does not get modified during verification
+            *b.get()
+        })
         .ok_or_else(|| error!(jvm))
 }
 
-fn read_code_u16(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JvmResult<u16> {
+fn read_code_u16(jvm: &Jvm, bytes: &[SyncUnsafeCell<u8>], pc: &mut u16) -> JvmResult<u16> {
     Ok(((read_code_u8(jvm, bytes, pc)? as u16) << 8) + read_code_u8(jvm, bytes, pc)? as u16)
 }
 
-fn read_code_u32(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JvmResult<u32> {
+fn read_code_u32(jvm: &Jvm, bytes: &[SyncUnsafeCell<u8>], pc: &mut u16) -> JvmResult<u32> {
     Ok(((read_code_u16(jvm, bytes, pc)? as u32) << 8) + read_code_u16(jvm, bytes, pc)? as u32)
 }

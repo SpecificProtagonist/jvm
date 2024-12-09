@@ -1,4 +1,5 @@
 use std::{
+    cell::SyncUnsafeCell,
     collections::BTreeMap,
     sync::{
         atomic::{AtomicPtr, Ordering},
@@ -82,7 +83,8 @@ pub type NativeCode =
 pub(crate) struct Bytecode {
     pub max_stack: u16,
     pub max_locals: u16,
-    pub bytes: Vec<u8>,
+    /// !Freeze to allow replacing instructions with optimized ones during interpretation.
+    pub bytes: Vec<SyncUnsafeCell<u8>>,
     pub stack_map_table: Option<Vec<u8>>,
     pub exception_table: Vec<ExceptionHandler>,
     /// Map from pc to source code line number. May be empty.

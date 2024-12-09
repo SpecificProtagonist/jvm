@@ -174,7 +174,7 @@ impl Jvm {
             init: ClassState::Unverified.into(),
             init_waiter: default(),
         };
-        let array = unsafe { self.heap.alloc_typed(array) };
+        let array = self.heap.alloc_typed(array);
         let mut guard = self.classes.write().unwrap();
         // Check if loaded by another thread in the meantime
         if let Some(array) = guard.get(&name) {
@@ -297,28 +297,27 @@ impl Jvm {
         } else {
             FieldStorage(
                 self.heap
-                    .alloc(Layout::from_size_align(static_size, 8).unwrap()),
+                    .alloc(Layout::from_size_align(static_size, 8).unwrap())
+                    .get(),
             )
         };
 
-        let ref_type = unsafe {
-            self.heap.alloc_typed(Class {
-                name: class_desc.name,
-                package: package.into(),
-                super_class,
-                element_type: None,
-                const_pool: RwLock::new(class_desc.const_pool),
-                access_flags: class_desc.access_flags,
-                source_file_name: class_desc.source_file_name,
-                interfaces,
-                fields,
-                methods,
-                static_storage,
-                object_size,
-                init: ClassState::Unverified.into(),
-                init_waiter: default(),
-            })
-        };
+        let ref_type = self.heap.alloc_typed(Class {
+            name: class_desc.name,
+            package: package.into(),
+            super_class,
+            element_type: None,
+            const_pool: RwLock::new(class_desc.const_pool),
+            access_flags: class_desc.access_flags,
+            source_file_name: class_desc.source_file_name,
+            interfaces,
+            fields,
+            methods,
+            static_storage,
+            object_size,
+            init: ClassState::Unverified.into(),
+            init_waiter: default(),
+        });
 
         let mut guard = self.classes.write().unwrap();
         // Check if loaded by another thread in the meantime
@@ -440,10 +439,14 @@ pub(crate) fn error(jvm: &Jvm, name: &str, message: &str) -> Object {
     };
     let object = throwable(jvm, name);
     let field = object
-        .class()
+        .class(jvm.heap.ptrs())
         .field("message", Type::Ref("java.lang.String".into()))
         .expect("java.lang.Throwable missing field java.lang.String message");
-    field.instance_set(object, Value::Ref(Some(str_to_java(jvm, &message))));
+    field.instance_set(
+        jvm.heap.ptrs(),
+        object,
+        Value::Ref(Some(str_to_java(jvm, &message))),
+    );
     object
 }
 
@@ -466,7 +469,7 @@ pub(crate) fn str_to_java(jvm: &Jvm, utf8: &str) -> Object {
     let chars: Vec<u16> = utf8.encode_utf16().collect();
     let chars_object = jvm.create_array_of(&Type::Char, chars.len() as i32);
     for (i, char) in chars.iter().enumerate() {
-        chars_object.array_write_value(i as i32, Value::Int(*char as i32));
+        chars_object.array_write_value(jvm.heap.ptrs(), i as i32, Value::Int(*char as i32));
     }
     let string_class = jvm
         .resolve_class_internal("java.lang.String")
@@ -475,7 +478,7 @@ pub(crate) fn str_to_java(jvm: &Jvm, utf8: &str) -> Object {
     let field = string_class
         .field("chars", Type::Ref("char[]".into()))
         .expect("java.lang.String missing field char[] chars");
-    field.instance_set(object, Value::Ref(Some(chars_object)));
+    field.instance_set(jvm.heap.ptrs(), object, Value::Ref(Some(chars_object)));
     object
 }
 

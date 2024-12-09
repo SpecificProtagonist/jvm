@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::{object::Object, Type};
+use crate::{heap::Ptrs, object::Object, Type};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Value {
@@ -12,16 +12,18 @@ pub(crate) enum Value {
 }
 
 impl Value {
-    pub fn assignable_to(self, typ: &Type) -> bool {
+    pub fn assignable_to(self, ptrs: Ptrs, typ: &Type) -> bool {
         match (typ, self) {
             (Type::Ref(declared), Value::Ref(object))
                 if object
-                    .map(|o| o.class().assignable_to(declared))
+                    .map(|o| o.class(ptrs).assignable_to(declared))
                     .unwrap_or(true) =>
             {
                 true
             }
-            (Type::Boolean | Type::Byte | Type::Short | Type::Char | Type::Int, Value::Int(_)) => true,
+            (Type::Boolean | Type::Byte | Type::Short | Type::Char | Type::Int, Value::Int(_)) => {
+                true
+            }
             (Type::Long, Value::Long(_)) => true,
             (Type::Float, Value::Float(_)) => true,
             (Type::Double, Value::Double(_)) => true,
@@ -34,7 +36,7 @@ impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Ref(None) => write!(f, "null"),
-            Self::Ref(Some(obj)) => write!(f, "@{:x}", obj.ptr()),
+            Self::Ref(Some(obj)) => write!(f, "@{obj:?}"),
             Self::Int(v) => write!(f, "{}", v),
             Self::Long(v) => write!(f, "{}", v),
             Self::Float(v) => write!(f, "{}", v),
