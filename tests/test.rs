@@ -7,7 +7,10 @@ use std::{
 use jvm::*;
 
 fn make_jvm() -> Jvm {
-    let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes", "tests/classes"]));
+    let jvm = Jvm::new(
+        FolderClassLoader::new_boxed(["classes", "tests/classes"]),
+        2_000_000,
+    );
     jvm.bind_provided_native_methods();
     jvm
 }
@@ -301,7 +304,7 @@ fn hot_reloading() {
             loader.load(name)
         }
     }
-    let jvm = Jvm::new(Box::new(TestClassloader));
+    let jvm = Jvm::new(Box::new(TestClassloader), 1_000_000);
 
     let class = jvm.resolve_class("HotReloading").unwrap();
     let field = class.field(&jvm, "static_field", Type::Int).unwrap();

@@ -13,7 +13,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 }
 
 fn make_jvm() -> Jvm {
-    Jvm::new(FolderClassLoader::new_boxed(["classes", "benches/classes"]))
+    Jvm::new(
+        FolderClassLoader::new_boxed(["classes", "benches/classes"]),
+        20_000,
+    )
 }
 
 fn bench(b: &mut Bencher, threads: i32) {

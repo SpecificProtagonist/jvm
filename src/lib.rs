@@ -286,7 +286,7 @@ impl Object {
 
     /// Creates a debug representation of the object. If the object is a string, this prints the string.
     pub fn format(self, jvm: &Jvm) -> impl Debug {
-        ObjectFmt(self.into_inner(jvm.id), Ptrs, PhantomData)
+        ObjectFmt(self.into_inner(jvm.id), jvm.heap.ptrs(), PhantomData)
     }
 
     /// Creates a debug representation of the object. If the object is a string, this prints the string.

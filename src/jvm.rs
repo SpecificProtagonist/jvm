@@ -49,7 +49,10 @@ pub struct Jvm {
 
 impl Jvm {
     /// Construct a new JVM.
-    pub fn new(base_class_loader: Box<dyn ClassLoader>) -> Self {
+    ///
+    /// NOTE: The Jvm will preallocate `max_heap` bytes, relying on memory overcommit.
+    /// On 64bit systems, `max_heap` is limited to 2³⁵ bytes (32Gb).
+    pub fn new(base_class_loader: Box<dyn ClassLoader>, max_heap: usize) -> Self {
         static NEXT_ID: AtomicU32 = AtomicU32::new(0);
         let id = JvmId(NEXT_ID.fetch_add(1, Ordering::SeqCst));
         if id.0 == u32::MAX {
@@ -58,7 +61,7 @@ impl Jvm {
         let jvm = Self {
             id,
             bootstrap_class_loader: base_class_loader,
-            heap: default(),
+            heap: Heap::new(max_heap),
             method_storage: default(),
             classes: default(),
             identity_hashes: default(),
@@ -174,7 +177,7 @@ impl Jvm {
             init: ClassState::Unverified.into(),
             init_waiter: default(),
         };
-        let array = self.heap.alloc_typed(array);
+        let array = self.heap.alloc_permanent_typed(array);
         let mut guard = self.classes.write().unwrap();
         // Check if loaded by another thread in the meantime
         if let Some(array) = guard.get(&name) {
@@ -302,7 +305,7 @@ impl Jvm {
             )
         };
 
-        let ref_type = self.heap.alloc_typed(Class {
+        let ref_type = self.heap.alloc_permanent_typed(Class {
             name: class_desc.name,
             package: package.into(),
             super_class,

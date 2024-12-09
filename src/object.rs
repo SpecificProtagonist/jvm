@@ -19,28 +19,21 @@ use crate::{
     AccessFlags, Jvm,
 };
 
-// 64 bit arch:
-// +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————
-// |               |               |  Len  | (gap) | Items… (items of align >4)
-// |     Class     |    Monitor    |  Len  | Items… (items of align <=4)
-// |               |               |  Fields…
-// +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————————————
-//
-// 32 bit arch or compressed pointers:
-// +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———————
+// Object layout:
+// +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———
 // | Class |    Monitor    |  Len  | Items…
 // |       |               |  Fields…
-// +—+—+—+—+—+—+—+—+—+—+—+—+———————————————
+// +—+—+—+—+—+—+—+—+—+—+—+—+———————————————————
 const OFFSET_CLASS: usize = 0;
 const OFFSET_MONITOR: usize = size_of::<CompressedPtr>();
 pub const OFFSET_FIELDS: usize = OFFSET_MONITOR + size_of::<Monitor>();
 const OFFSET_ARRAY_LENGTH: usize = OFFSET_FIELDS;
-const OFFSET_ARRAY_ITEMS_SMALL: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
-const OFFSET_ARRAY_ITEMS_LARGE: usize = if OFFSET_ARRAY_ITEMS_SMALL % 8 == 0 {
-    OFFSET_ARRAY_ITEMS_SMALL
-} else {
-    OFFSET_ARRAY_ITEMS_SMALL + 4
-};
+const OFFSET_ARRAY_ITEMS: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
+// TODO: Allocate monitor on-demand, only store 2 bit in object.
+// Store hash code status in another bit or two in the same byte.
+// Allocate classese with higher alignment to free up bits in the class ptr for this.
+
+const _: () = assert!(OFFSET_ARRAY_ITEMS % 8 == 0);
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
 #[repr(transparent)]
@@ -61,11 +54,7 @@ impl Object {
     pub(crate) fn new_array(heap: &Heap, class: ClassRef, length: i32) -> Self {
         unsafe {
             let item_size = class.element_type.as_ref().unwrap().size();
-            let size = if item_size > 4 {
-                OFFSET_ARRAY_ITEMS_LARGE
-            } else {
-                OFFSET_ARRAY_ITEMS_SMALL
-            } + length as usize * item_size;
+            let size = OFFSET_ARRAY_ITEMS + length as usize * item_size;
             let ptr = heap.alloc(Layout::from_size_align_unchecked(size, 8));
             let class_ptr = heap.ptrs().encode(class as *const _ as usize);
             ((ptr.get() + OFFSET_CLASS) as *const AtomicCompressedPtr)
@@ -105,15 +94,7 @@ impl Object {
         if index >= self.array_length() {
             None
         } else {
-            Some(
-                (self.0.get()
-                    + if size_of::<T>() > 4 {
-                        OFFSET_ARRAY_ITEMS_LARGE
-                    } else {
-                        OFFSET_ARRAY_ITEMS_SMALL
-                    }
-                    + index as usize * size_of::<T>()) as *const T,
-            )
+            Some((self.0.get() + OFFSET_ARRAY_ITEMS + index as usize * size_of::<T>()) as *const T)
         }
     }
 
