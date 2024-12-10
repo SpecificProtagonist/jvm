@@ -1,10 +1,9 @@
 use std::{
-    alloc::Layout,
     mem::size_of,
     num::NonZeroUsize,
     ops::Deref,
     sync::atomic::{
-        AtomicI16, AtomicI32, AtomicI64, AtomicI8,
+        AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicU32,
         Ordering::{self, *},
     },
 };
@@ -19,19 +18,19 @@ use crate::{
     AccessFlags, Jvm,
 };
 
-// Object layout:
-// +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+———
-// | Class |    Monitor    |  Len  | Items…
-// |       |               |  Fields…
-// +—+—+—+—+—+—+—+—+—+—+—+—+———————————————————
+// Object layout (little endian):
+// +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—————————
+// | |Class|    Monitor    |  Len  | Items…
+// | |     |               |  Fields…
+// +—+—+—+—+—+—+—+—+—+—+—+—+—————————————————
 const OFFSET_CLASS: usize = 0;
 const OFFSET_MONITOR: usize = size_of::<CompressedPtr>();
 pub const OFFSET_FIELDS: usize = OFFSET_MONITOR + size_of::<Monitor>();
 const OFFSET_ARRAY_LENGTH: usize = OFFSET_FIELDS;
 const OFFSET_ARRAY_ITEMS: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
-// TODO: Allocate monitor on-demand, only store 2 bit in object.
-// Store hash code status in another bit or two in the same byte.
-// Allocate classese with higher alignment to free up bits in the class ptr for this.
+// TODO: Allocate monitor on-demand, only store 2 bits in object.
+// Store hash code status in another two bits in the same byte.
+// First byte (on little endian) of object is available for this.
 
 const _: () = assert!(OFFSET_ARRAY_ITEMS % 8 == 0);
 
@@ -42,8 +41,8 @@ pub(crate) struct Object(pub NonZeroUsize);
 impl Object {
     pub(crate) fn new_uninitialized(heap: &Heap, class: ClassRef) -> Self {
         unsafe {
-            let ptr = heap.alloc(Layout::from_size_align_unchecked(class.object_size, 8));
-            let class_ptr = heap.ptrs().encode(class as *const _ as usize);
+            let ptr = heap.alloc_object(class.object_size);
+            let class_ptr = heap.ptrs().encode_class(class as *const _ as usize);
             ((ptr.get() + OFFSET_CLASS) as *const AtomicCompressedPtr)
                 .as_ref_unchecked()
                 .store(class_ptr, Relaxed);
@@ -55,8 +54,8 @@ impl Object {
         unsafe {
             let item_size = class.element_type.as_ref().unwrap().size();
             let size = OFFSET_ARRAY_ITEMS + length as usize * item_size;
-            let ptr = heap.alloc(Layout::from_size_align_unchecked(size, 8));
-            let class_ptr = heap.ptrs().encode(class as *const _ as usize);
+            let ptr = heap.alloc_object(size);
+            let class_ptr = heap.ptrs().encode_class(class as *const _ as usize);
             ((ptr.get() + OFFSET_CLASS) as *const AtomicCompressedPtr)
                 .as_ref_unchecked()
                 .store(class_ptr, Relaxed);
@@ -73,8 +72,13 @@ impl Object {
 
     #[inline]
     pub(crate) fn class(self, ptrs: Ptrs) -> ClassRef {
-        let ptr = (self.0.get() + OFFSET_CLASS) as *const CompressedPtr;
-        unsafe { (ptrs.decode(ptr.read()) as *const Class).as_ref_unchecked() }
+        let compressed = unsafe {
+            ((self.0.get() + OFFSET_CLASS) as *const AtomicU32)
+                .as_ref_unchecked()
+                .load(Relaxed)
+        };
+
+        unsafe { (ptrs.decode_class(compressed) as *const Class).as_ref_unchecked() }
     }
 
     pub fn fields(self) -> FieldStorage {
@@ -386,7 +390,7 @@ impl Data for usize {
                 .as_ref_unchecked()
                 .load(ordering)
         };
-        ptrs.decode(compressed)
+        ptrs.decode_obj(compressed)
     }
 
     #[inline]
@@ -394,7 +398,7 @@ impl Data for usize {
         unsafe {
             (ptr as *const AtomicCompressedPtr)
                 .as_ref_unchecked()
-                .store(ptrs.encode(value), ordering)
+                .store(ptrs.encode_obj(value), ordering)
         }
     }
 }

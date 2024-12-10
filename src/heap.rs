@@ -5,6 +5,9 @@
 //! to reserve memory and only commit as needed.
 //!
 //! There's no GC (for now), so just this is a very simple (but threadsafe) bump allocator.
+//!
+//! Pointers are compressed to 32bit.
+//! The upper 4 bits of a compressed class pointer are free, so they can be used for other purposes.
 
 // Currently, provenance goes ignored.
 
@@ -15,6 +18,11 @@ use std::{
 };
 
 const HEAP_ALIGN: usize = 4096;
+const OBJECT_ALIGN: usize = 8;
+const CLASS_ALIGN: usize = 32;
+const MAX_CLASS_ADDR: usize = (1 << 24) * CLASS_ALIGN;
+/// Number of free low bits in a compressed class ptr
+const FLAG_BITS: u32 = 4;
 
 // TODO: keep a thread-local buffer to reduce locking
 pub struct Heap {
@@ -44,10 +52,10 @@ impl Heap {
         }
     }
 
-    pub fn alloc(&self, layout: Layout) -> NonZeroUsize {
+    pub fn alloc_object(&self, size: usize) -> NonZeroUsize {
         loop {
             let old_free_ptr = self.free_ptr.load(Relaxed);
-            let new_free_ptr = (old_free_ptr - layout.size()) & !(layout.align() - 1);
+            let new_free_ptr = (old_free_ptr - size) & !(OBJECT_ALIGN - 1);
             if self
                 .free_ptr
                 .compare_exchange(old_free_ptr, new_free_ptr, Release, Relaxed)
@@ -63,10 +71,10 @@ impl Heap {
         }
     }
 
-    pub fn alloc_permanent(&self, layout: Layout) -> NonZeroUsize {
+    pub fn alloc_permanent(&self, size: usize, align: usize) -> NonZeroUsize {
         loop {
             let old_bottom = self.free_ptr_bottom.load(Relaxed);
-            let new_bottom = (old_bottom + layout.size()) & !(layout.align() - 1);
+            let new_bottom = (old_bottom + size) & !(align - 1);
             if self
                 .free_ptr_bottom
                 .compare_exchange(old_bottom, new_bottom, Release, Relaxed)
@@ -77,13 +85,21 @@ impl Heap {
                     // TODO: OutOfMemoryError
                     panic!("Max JVM heap size exceeded");
                 }
+                #[cfg(target_pointer_width = "64")]
+                {
+                    if new_bottom - self.heap_bottom > MAX_CLASS_ADDR {
+                        panic!("Max permanent gen size exceeded");
+                    }
+                }
                 return unsafe { NonZeroUsize::new_unchecked(old_bottom) };
             }
         }
     }
 
-    pub fn alloc_permanent_typed<T>(&self, value: T) -> &'static T {
-        let ptr = self.alloc_permanent(Layout::new::<T>()).get() as *mut T;
+    pub fn alloc_class(&self, value: Class) -> ClassRef {
+        let ptr = self
+            .alloc_permanent(std::mem::size_of::<Class>(), CLASS_ALIGN)
+            .get() as *mut Class;
         unsafe {
             ptr.write(value);
             &*ptr
@@ -109,9 +125,11 @@ pub type AtomicCompressedPtr = std::sync::atomic::AtomicU32;
 
 pub use backend::Ptrs;
 
+use crate::class::{Class, ClassRef};
+
 #[cfg(target_pointer_width = "64")]
 mod backend {
-    use super::{CompressedPtr, Heap};
+    use super::{CompressedPtr, Heap, CLASS_ALIGN, FLAG_BITS, OBJECT_ALIGN};
 
     pub const HEAP_SIZE_LIMIT: usize = 1 << 35;
 
@@ -132,19 +150,32 @@ mod backend {
     }
 
     impl Ptrs {
-        pub fn encode(&self, ptr: usize) -> CompressedPtr {
-            ((ptr - self.base_ptr) >> 3) as u32
+        #[inline(always)]
+        pub fn encode_obj(&self, ptr: usize) -> CompressedPtr {
+            ((ptr - self.base_ptr) >> OBJECT_ALIGN.trailing_zeros()) as u32
         }
 
-        pub fn decode(&self, ptr: CompressedPtr) -> usize {
-            ((ptr as usize) << 3) + self.base_ptr
+        #[inline(always)]
+        pub fn decode_obj(&self, ptr: CompressedPtr) -> usize {
+            ((ptr as usize) << OBJECT_ALIGN.trailing_zeros()) + self.base_ptr
+        }
+
+        #[inline(always)]
+        pub fn encode_class(&self, ptr: usize) -> CompressedPtr {
+            ((ptr - self.base_ptr) >> (CLASS_ALIGN.trailing_zeros() - FLAG_BITS)) as u32
+        }
+
+        #[inline(always)]
+        pub fn decode_class(&self, ptr: CompressedPtr) -> usize {
+            let relevant = ptr & !((1 << FLAG_BITS) - 1);
+            ((relevant as usize) << (CLASS_ALIGN.trailing_zeros() - FLAG_BITS)) + self.base_ptr
         }
     }
 }
 
 #[cfg(target_pointer_width = "32")]
 mod backend {
-    use super::{CompressedPtr, Heap};
+    use super::{CompressedPtr, Heap, CLASS_ALIGN, FLAG_BITS};
 
     pub const HEAP_SIZE_LIMIT: usize = usize::MAX;
 
@@ -161,12 +192,24 @@ mod backend {
     }
 
     impl Ptrs {
-        pub fn encode(&self, ptr: usize) -> CompressedPtr {
+        #[inline(always)]
+        pub fn encode_obj(&self, ptr: usize) -> CompressedPtr {
             ptr as u32
         }
 
-        pub fn decode(&self, ptr: CompressedPtr) -> usize {
+        #[inline(always)]
+        pub fn decode_obj(&self, ptr: CompressedPtr) -> usize {
             ptr as usize
+        }
+
+        #[inline(always)]
+        pub fn encode_class(&self, ptr: usize) -> CompressedPtr {
+            (ptr as u32) << (FLAG_BITS - CLASS_ALIGN.trailing_zeros())
+        }
+
+        #[inline(always)]
+        pub fn decode_class(&self, ptr: CompressedPtr) -> usize {
+            (ptr as usize) >> (FLAG_BITS - CLASS_ALIGN.trailing_zeros())
         }
     }
 }

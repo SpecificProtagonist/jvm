@@ -4,7 +4,6 @@ use crate::identity_hash::IdentityHashes;
 use crate::provided_native_methods::get_provided_methods;
 use crate::{class_loader::ClassLoader, AccessFlags};
 use fixed_typed_arena::ManuallyDropArena;
-use std::alloc::Layout;
 use std::sync::atomic::AtomicU32;
 use std::sync::{atomic::Ordering, Arc};
 use std::sync::{Mutex, RwLock};
@@ -177,7 +176,7 @@ impl Jvm {
             init: ClassState::Unverified.into(),
             init_waiter: default(),
         };
-        let array = self.heap.alloc_permanent_typed(array);
+        let array = self.heap.alloc_class(array);
         let mut guard = self.classes.write().unwrap();
         // Check if loaded by another thread in the meantime
         if let Some(array) = guard.get(&name) {
@@ -298,14 +297,10 @@ impl Jvm {
         let static_storage = if static_size == 0 {
             FieldStorage::EMPTY
         } else {
-            FieldStorage(
-                self.heap
-                    .alloc(Layout::from_size_align(static_size, 8).unwrap())
-                    .get(),
-            )
+            FieldStorage(self.heap.alloc_object(static_size).get())
         };
 
-        let ref_type = self.heap.alloc_permanent_typed(Class {
+        let ref_type = self.heap.alloc_class(Class {
             name: class_desc.name,
             package: package.into(),
             super_class,
