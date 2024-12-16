@@ -23,18 +23,21 @@ use crate::{
 // | |Class|    Monitor    |  Len  | Items…
 // | |     |               |  Fields…
 // +—+—+—+—+—+—+—+—+—+—+—+—+—————————————————
-const OFFSET_CLASS: usize = 0;
+const OFFSET_MARK: usize = 0;
 const OFFSET_MONITOR: usize = size_of::<CompressedPtr>();
 pub const OFFSET_FIELDS: usize = OFFSET_MONITOR + size_of::<Monitor>();
 const OFFSET_ARRAY_LENGTH: usize = OFFSET_FIELDS;
 const OFFSET_ARRAY_ITEMS: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
+/// Number of free low bits in a compressed class ptr
+pub const OBJ_FLAG_BITS: u32 = 4;
+pub const MONITOR_LOCKED_BIT: u32 = 1;
 // TODO: Allocate monitor on-demand, only store 2 bits in object.
 // Store hash code status in another two bits in the same byte.
 // First byte (on little endian) of object is available for this.
 
 const _: () = assert!(OFFSET_ARRAY_ITEMS % 8 == 0);
 
-#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 pub(crate) struct Object(pub NonZeroUsize);
 
@@ -43,7 +46,7 @@ impl Object {
         unsafe {
             let ptr = heap.alloc_object(class.object_size);
             let class_ptr = heap.ptrs().encode_class(class as *const _ as usize);
-            ((ptr.get() + OFFSET_CLASS) as *const AtomicCompressedPtr)
+            ((ptr.get() + OFFSET_MARK) as *const AtomicCompressedPtr)
                 .as_ref_unchecked()
                 .store(class_ptr, Relaxed);
             Self(ptr)
@@ -56,7 +59,7 @@ impl Object {
             let size = OFFSET_ARRAY_ITEMS + length as usize * item_size;
             let ptr = heap.alloc_object(size);
             let class_ptr = heap.ptrs().encode_class(class as *const _ as usize);
-            ((ptr.get() + OFFSET_CLASS) as *const AtomicCompressedPtr)
+            ((ptr.get() + OFFSET_MARK) as *const AtomicCompressedPtr)
                 .as_ref_unchecked()
                 .store(class_ptr, Relaxed);
             ((ptr.get() + OFFSET_ARRAY_LENGTH) as *const AtomicI32)
@@ -73,12 +76,16 @@ impl Object {
     #[inline]
     pub(crate) fn class(self, ptrs: Ptrs) -> ClassRef {
         let compressed = unsafe {
-            ((self.0.get() + OFFSET_CLASS) as *const AtomicU32)
+            ((self.0.get() + OFFSET_MARK) as *const AtomicU32)
                 .as_ref_unchecked()
                 .load(Relaxed)
         };
 
         unsafe { (ptrs.decode_class(compressed) as *const Class).as_ref_unchecked() }
+    }
+
+    pub(crate) fn mark_word(self) -> &'static AtomicU32 {
+        unsafe { ((self.0.get() + OFFSET_MARK) as *const AtomicU32).as_ref_unchecked() }
     }
 
     pub fn fields(self) -> FieldStorage {

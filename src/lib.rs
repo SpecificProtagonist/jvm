@@ -15,6 +15,8 @@ mod jvm;
 mod method;
 mod miri;
 mod monitor;
+#[path = "monitor_2/monitor.rs"]
+mod monitor_2;
 mod object;
 mod opcodes;
 mod parse;

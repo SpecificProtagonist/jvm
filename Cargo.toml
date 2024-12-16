@@ -17,6 +17,7 @@ hashbrown = "0.14"
 # Stack exhaustion check
 stacker = "0.1"
 cesu8 = "1.1"
+# Maybe fully replace this by thread parking?
 atomic-wait = "1.1"
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies.libc]

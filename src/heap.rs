@@ -18,11 +18,9 @@ use std::{
 };
 
 const HEAP_ALIGN: usize = 4096;
-const OBJECT_ALIGN: usize = 8;
+pub const OBJECT_ALIGN: usize = 8;
 const CLASS_ALIGN: usize = 32;
 const MAX_CLASS_ADDR: usize = (1 << 24) * CLASS_ALIGN;
-/// Number of free low bits in a compressed class ptr
-const FLAG_BITS: u32 = 4;
 
 // TODO: keep a thread-local buffer to reduce locking
 pub struct Heap {
@@ -129,7 +127,8 @@ use crate::class::{Class, ClassRef};
 
 #[cfg(target_pointer_width = "64")]
 mod backend {
-    use super::{CompressedPtr, Heap, CLASS_ALIGN, FLAG_BITS, OBJECT_ALIGN};
+    use super::{CompressedPtr, Heap, CLASS_ALIGN, OBJECT_ALIGN};
+    use crate::object::OBJ_FLAG_BITS;
 
     pub const HEAP_SIZE_LIMIT: usize = 1 << 35;
 
@@ -162,20 +161,21 @@ mod backend {
 
         #[inline(always)]
         pub fn encode_class(&self, ptr: usize) -> CompressedPtr {
-            ((ptr - self.base_ptr) >> (CLASS_ALIGN.trailing_zeros() - FLAG_BITS)) as u32
+            ((ptr - self.base_ptr) >> (CLASS_ALIGN.trailing_zeros() - OBJ_FLAG_BITS)) as u32
         }
 
         #[inline(always)]
         pub fn decode_class(&self, ptr: CompressedPtr) -> usize {
-            let relevant = ptr & !((1 << FLAG_BITS) - 1);
-            ((relevant as usize) << (CLASS_ALIGN.trailing_zeros() - FLAG_BITS)) + self.base_ptr
+            let relevant = ptr & !((1 << OBJ_FLAG_BITS) - 1);
+            ((relevant as usize) << (CLASS_ALIGN.trailing_zeros() - OBJ_FLAG_BITS)) + self.base_ptr
         }
     }
 }
 
 #[cfg(target_pointer_width = "32")]
 mod backend {
-    use super::{CompressedPtr, Heap, CLASS_ALIGN, FLAG_BITS};
+    use super::{CompressedPtr, Heap, CLASS_ALIGN, OBJ_FLAG_BITS};
+    use crate::object::OBJ_FLAG_BITS;
 
     pub const HEAP_SIZE_LIMIT: usize = usize::MAX;
 
@@ -204,12 +204,12 @@ mod backend {
 
         #[inline(always)]
         pub fn encode_class(&self, ptr: usize) -> CompressedPtr {
-            (ptr as u32) << (FLAG_BITS - CLASS_ALIGN.trailing_zeros())
+            (ptr as u32) << (OBJ_FLAG_BITS - CLASS_ALIGN.trailing_zeros())
         }
 
         #[inline(always)]
         pub fn decode_class(&self, ptr: CompressedPtr) -> usize {
-            (ptr as usize) >> (FLAG_BITS - CLASS_ALIGN.trailing_zeros())
+            (ptr as usize) >> (OBJ_FLAG_BITS - CLASS_ALIGN.trailing_zeros())
         }
     }
 }

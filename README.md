@@ -36,7 +36,7 @@ Some current features:
 - lazy loading of classes
 - monitors
 - native methods (`Method::bind_native_code`)
-- hot method body reloading (`Jvm::reload_method_bytecodes_for_class`)
+- method body hot reloading (`Jvm::reload_method_bytecodes_for_class`)
 
 Some missing features:
 - garbage collection
@@ -47,6 +47,7 @@ Some missing features:
 - jar class loader
 - reliable protection from stackoverflow, memory exhaustion and deadlocking
 - wasm support
+- make multithreading support optional
 - debug adapter protocol support
 
 ## Class Library
