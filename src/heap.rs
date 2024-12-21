@@ -3,6 +3,7 @@
 //! The full heap is preallocated (which will use overcommit on some platforms).
 //! TODO: on Windows, use VirtualAlloc/NtAllocateVirtualMemory
 //! to reserve memory and only commit as needed.
+//! TODO: Miri (just target windows?)
 //!
 //! There's no GC (for now), so just this is a very simple (but threadsafe) bump allocator.
 //!
@@ -12,19 +13,17 @@
 // Currently, provenance goes ignored.
 
 use std::{
-    alloc::Layout,
     num::NonZeroUsize,
     sync::atomic::{AtomicUsize, Ordering::*},
 };
 
-const HEAP_ALIGN: usize = 4096;
 pub const OBJECT_ALIGN: usize = 8;
 const CLASS_ALIGN: usize = 32;
 const MAX_CLASS_ADDR: usize = (1 << 24) * CLASS_ALIGN;
 
 // TODO: keep a thread-local buffer to reduce locking
 pub struct Heap {
-    /// Points one past end
+    /// Points one past end (todo: make this pointer)
     heap_top: usize,
     heap_bottom: usize,
     /// Start of free space
@@ -35,11 +34,8 @@ pub struct Heap {
 
 impl Heap {
     pub fn new(max_heap: usize) -> Self {
-        let max_heap = max_heap.min(backend::HEAP_SIZE_LIMIT) & !(HEAP_ALIGN - 1);
-        let heap_bottom = unsafe {
-            std::alloc::alloc_zeroed(Layout::from_size_align(max_heap, HEAP_ALIGN).unwrap())
-                as usize
-        };
+        let heap_bottom =
+            memory_map::reserve_memory_range(max_heap.min(ptrs::HEAP_SIZE_LIMIT)) as usize;
         let heap_top = heap_bottom + max_heap;
 
         Self {
@@ -72,7 +68,7 @@ impl Heap {
     pub fn alloc_permanent(&self, size: usize, align: usize) -> NonZeroUsize {
         loop {
             let old_bottom = self.free_ptr_bottom.load(Relaxed);
-            let new_bottom = (old_bottom + size) & !(align - 1);
+            let new_bottom = (old_bottom + size + align - 1) & !(align - 1);
             if self
                 .free_ptr_bottom
                 .compare_exchange(old_bottom, new_bottom, Release, Relaxed)
@@ -108,9 +104,9 @@ impl Heap {
 impl Drop for Heap {
     fn drop(&mut self) {
         unsafe {
-            std::alloc::dealloc(
+            memory_map::unmap(
                 self.heap_bottom as *mut u8,
-                Layout::from_size_align(self.heap_top - self.heap_bottom, HEAP_ALIGN).unwrap(),
+                self.heap_top - self.heap_bottom,
             );
         }
     }
@@ -121,12 +117,47 @@ pub type CompressedPtr = u32;
 /// Only used by field_storage for read/write
 pub type AtomicCompressedPtr = std::sync::atomic::AtomicU32;
 
-pub use backend::Ptrs;
+pub use ptrs::Ptrs;
 
 use crate::class::{Class, ClassRef};
 
+mod memory_map {
+    #[cfg(not(target_os = "windows"))]
+    pub fn reserve_memory_range(size: usize) -> *mut u8 {
+        use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+
+        let result = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if result == MAP_FAILED {
+            panic!("Failed to reserve memory range for heap");
+        }
+        result as *mut u8
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub unsafe fn unmap(base: *mut u8, size: usize) {
+        // We can't do anything useful about errors here
+        libc::munmap(base as _, size);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn reserve_memory_range(size: usize) -> *mut u8 {
+        // winapi::um::memoryapi::VirtualAlloc();
+        todo!();
+    }
+}
+
 #[cfg(target_pointer_width = "64")]
-mod backend {
+mod ptrs {
+
     use super::{CompressedPtr, Heap, CLASS_ALIGN, OBJECT_ALIGN};
     use crate::object::OBJ_FLAG_BITS;
 
@@ -173,7 +204,7 @@ mod backend {
 }
 
 #[cfg(target_pointer_width = "32")]
-mod backend {
+mod ptrs {
     use super::{CompressedPtr, Heap, CLASS_ALIGN, OBJ_FLAG_BITS};
     use crate::object::OBJ_FLAG_BITS;
 

@@ -162,6 +162,19 @@ fn invoke_native() {
 }
 
 #[test]
+fn access_control() {
+    let jvm = make_jvm();
+    let object = jvm.resolve_class("java.lang.Object").unwrap();
+    let object_array = jvm.resolve_class("java.lang.Object[]").unwrap();
+    let other_package = jvm.resolve_class("Arrays").unwrap();
+
+    assert!(other_package.can_access_class(&jvm, object));
+    assert!(other_package.can_access_class(&jvm, object_array));
+
+    // TODO: more checks
+}
+
+#[test]
 fn arrays() {
     let jvm = make_jvm();
 
@@ -402,4 +415,14 @@ fn identity_hash_code() {
     let hash_2 = hash.invoke(&jvm, &[obj_2.into()]).unwrap();
 
     assert_ne!(hash_1, hash_2);
+}
+
+#[test]
+fn monitor_tmp() {
+    let jvm = make_jvm();
+    let class = jvm.resolve_class("java.lang.Object").unwrap();
+
+    let obj = class.create_object_uninitialized(&jvm);
+    obj.enter_monitor(&jvm);
+    obj.exit_monitor(&jvm).unwrap();
 }

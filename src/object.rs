@@ -12,25 +12,24 @@ use crate::{
     class::{Class, ClassRef},
     heap::{AtomicCompressedPtr, CompressedPtr, Heap, Ptrs},
     jvm::{throwable, JvmResult},
-    monitor::Monitor,
     typ::Type,
     value::Value,
     AccessFlags, Jvm,
 };
 
 // Object layout (little endian):
-// +—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—+—————————
-// | |Class|    Monitor    |  Len  | Items…
-// | |     |               |  Fields…
-// +—+—+—+—+—+—+—+—+—+—+—+—+—————————————————
+// +—+—+—+—+—+—+—+—+—————————
+// |M|Class|  Len  | Items…
+// | |     |  Fields…
+// +—+—+—+—+—————————————————
 const OFFSET_MARK: usize = 0;
-const OFFSET_MONITOR: usize = size_of::<CompressedPtr>();
-pub const OFFSET_FIELDS: usize = OFFSET_MONITOR + size_of::<Monitor>();
+pub const OFFSET_FIELDS: usize = size_of::<CompressedPtr>();
 const OFFSET_ARRAY_LENGTH: usize = OFFSET_FIELDS;
 const OFFSET_ARRAY_ITEMS: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
 /// Number of free low bits in a compressed class ptr
 pub const OBJ_FLAG_BITS: u32 = 4;
 pub const MONITOR_LOCKED_BIT: u32 = 1;
+pub const MONITOR_CONTENDED_BIT: u32 = 2;
 // TODO: Allocate monitor on-demand, only store 2 bits in object.
 // Store hash code status in another two bits in the same byte.
 // First byte (on little endian) of object is available for this.
@@ -200,10 +199,6 @@ impl Object {
         } else {
             panic!("Tried to read array item of non-array object");
         }
-    }
-
-    pub(crate) fn monitor(self) -> &'static Monitor {
-        unsafe { ((self.0.get() + OFFSET_MONITOR) as *const Monitor).as_ref_unchecked() }
     }
 
     pub(crate) fn format_short(self, ptrs: Ptrs) -> String {

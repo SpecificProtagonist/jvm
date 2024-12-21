@@ -234,7 +234,8 @@ impl Object {
     /// This is reëntrant: A thread may enter the monitor multiple times, and must [`exit`](Object::exit_monitor)
     /// is as many times to unlock the object.
     pub fn enter_monitor(self, jvm: &Jvm) {
-        self.into_inner(jvm.id).monitor().enter();
+        jvm.parking_lot
+            .monitor_enter(self.into_inner(jvm.id).mark_word());
     }
 
     /// Exists this object's monitor.
@@ -242,44 +243,47 @@ impl Object {
     ///
     /// Throws `IllegalMonitorStateException` is the object is not locked by this thread.
     pub fn exit_monitor(self, jvm: &Jvm) -> JvmResult<()> {
-        let m = self.into_inner(jvm.id).monitor();
-        if m.exit().is_err() {
+        if jvm
+            .parking_lot
+            .monitor_exit(self.into_inner(jvm.id).mark_word())
+            .is_err()
+        {
             error(jvm, "IllegalMonitorStateException", "");
         }
         Ok(())
     }
 
-    /// Wait on this object until notified by [`notify`](Object::notify) or [`notify_all`](Object::notify_all),
-    /// or until spuriously woken up.
-    ///
-    /// This thread must hold the object's lock beforehand (otherwise `IllegalMonitorStateException` will be thrown).
-    /// and will reäquire the lock when woken.
-    pub fn wait(self, jvm: &Jvm) -> JvmResult<()> {
-        self.into_inner(jvm.id)
-            .monitor()
-            .wait()
-            .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
-    }
+    // /// Wait on this object until notified by [`notify`](Object::notify) or [`notify_all`](Object::notify_all),
+    // /// or until spuriously woken up.
+    // ///
+    // /// This thread must hold the object's lock beforehand (otherwise `IllegalMonitorStateException` will be thrown).
+    // /// and will reäquire the lock when woken.
+    // pub fn wait(self, jvm: &Jvm) -> JvmResult<()> {
+    //     self.into_inner(jvm.id)
+    //         .monitor()
+    //         .wait()
+    //         .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
+    // }
 
-    /// Notifies a thread [`wait`ing](Object::wait) on this object.
-    ///
-    /// This thread must hold the object's lock (otherwise `IllegalMonitorStateException` will be thrown).
-    pub fn notify(self, jvm: &Jvm) -> JvmResult<()> {
-        self.into_inner(jvm.id)
-            .monitor()
-            .notify_one()
-            .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
-    }
+    // /// Notifies a thread [`wait`ing](Object::wait) on this object.
+    // ///
+    // /// This thread must hold the object's lock (otherwise `IllegalMonitorStateException` will be thrown).
+    // pub fn notify(self, jvm: &Jvm) -> JvmResult<()> {
+    //     self.into_inner(jvm.id)
+    //         .monitor()
+    //         .notify_one()
+    //         .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
+    // }
 
-    /// Notifies all threads [`wait`ing](Object::wait) on this object.
-    ///
-    /// This thread must hold the object's lock (otherwise `IllegalMonitorStateException` will be thrown).
-    pub fn notify_all(self, jvm: &Jvm) -> JvmResult<()> {
-        self.into_inner(jvm.id)
-            .monitor()
-            .notify_all()
-            .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
-    }
+    // /// Notifies all threads [`wait`ing](Object::wait) on this object.
+    // ///
+    // /// This thread must hold the object's lock (otherwise `IllegalMonitorStateException` will be thrown).
+    // pub fn notify_all(self, jvm: &Jvm) -> JvmResult<()> {
+    //     self.into_inner(jvm.id)
+    //         .monitor()
+    //         .notify_all()
+    //         .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
+    // }
 
     /// Creates a debug representation of the object. For a full object tree, use `Debug`.
     pub fn format_short(self, jvm: &Jvm) -> String {
@@ -405,6 +409,12 @@ impl Class {
             .methods
             .get(&MethodNaTBorrow { name, typ })
             .map(|value| Method::new(self.jvm, value))
+    }
+
+    /// Check whether this class is allowed to acces `other`
+    pub fn can_access_class(&self, jvm: &Jvm, other: Class) -> bool {
+        self.into_inner(jvm.id)
+            .can_access_class(other.into_inner(jvm.id))
     }
 
     /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.

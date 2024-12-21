@@ -8,14 +8,16 @@ use std::{
     thread::Thread,
 };
 
-use crate::heap::OBJECT_ALIGN;
+use crate::{heap::OBJECT_ALIGN, miri_println};
 
 use super::{mutex::Mutex, thread_queue::ThreadQueue};
 
-pub struct ParkingLot {
+#[derive(Default)]
+pub(crate) struct ParkingLot {
     map: AtomicPtr<Map>,
 }
 
+// TODO: Drop
 struct Map {
     /// Number of occupied buckets, including tombstones
     count: AtomicU32,
@@ -34,7 +36,7 @@ const BUCKET_EMPTY: usize = 0;
 struct Bucket {
     object: UnsafeCell<usize>,
     lock: Mutex,
-    thread_queue: UnsafeCell<ThreadQueue>,
+    waiting_for_lock: UnsafeCell<ThreadQueue>,
 }
 
 impl Map {
@@ -55,37 +57,38 @@ impl Bucket {
     /// SAFETY: Must have locked bucket and no references are held
     #[allow(clippy::mut_from_ref)]
     unsafe fn thread_queue(&self) -> &mut ThreadQueue {
-        (&self.thread_queue as *const _ as *mut ThreadQueue).as_mut_unchecked()
+        (&self.waiting_for_lock as *const _ as *mut ThreadQueue).as_mut_unchecked()
     }
 }
 
 impl ParkingLot {
     pub fn new() -> Self {
         let map = Box::into_raw(Box::new(Map {
-            count: 0.into(),
+            count: 1.into(),
             hash_bits: 0,
-            buckets: Box::new([]),
+            buckets: Box::new([Bucket::default()]),
         }))
         .into();
         Self { map }
     }
 
-    pub fn insert(&self, object: usize) {
+    pub(super) fn park_on_lock(&self, object: usize, should_park: impl FnOnce() -> bool) {
+        miri_println!("park_on_lock");
         debug_assert!(object != 0);
         // SAFETY: We always store a valid map and never take a mutable reference to it
         let mut map = unsafe { (self.map.load(Acquire) as *const Map).as_ref_unchecked() };
 
         let count = map.count.fetch_add(1, AcqRel);
 
-        if count as usize * LOAD_FACTOR_RECIPROCE == map.buckets.len() {
+        if count as usize * LOAD_FACTOR_RECIPROCE > map.buckets.len() {
             self.grow_map(map);
             map = unsafe { (self.map.load(Relaxed) as *const Map).as_ref_unchecked() };
         }
 
-        self.park(map, object);
+        self.park_with(map, object, should_park);
     }
 
-    fn park(&self, map: &Map, object: usize) {
+    fn park_with(&self, map: &Map, object: usize, should_park: impl FnOnce() -> bool) {
         let start_index = map.natural_index(object);
         let mut index = start_index;
 
@@ -113,25 +116,38 @@ impl ParkingLot {
             for i in start_index..=index {
                 map.buckets[i].lock.unlock();
             }
-            self.park(unsafe { new_map.as_ref_unchecked() }, object);
+            self.park_with(unsafe { new_map.as_ref_unchecked() }, object, should_park);
             return;
         }
 
-        // SAFETY: Bucket is locked
-        unsafe {
-            map.buckets[index].thread_queue().push();
-        }
+        if should_park() {
+            // SAFETY: Bucket is locked
+            unsafe {
+                map.buckets[index].thread_queue().push();
+            }
 
-        for i in start_index..=index {
-            map.buckets[i].lock.unlock();
-        }
+            for i in start_index..=index {
+                map.buckets[i].lock.unlock();
+            }
 
-        // Consume unpark token if thread has been unparked between bucket unlock
-        // and now, otherwise wait for unpark token.
-        std::thread::park();
+            // Consume unpark token if thread has been unparked between bucket unlock
+            // and now, otherwise wait for unpark token.
+            // TODO: Are spurious wakeups possible? Handle them
+            std::thread::park();
+        } else {
+            for i in start_index..=index {
+                map.buckets[i].lock.unlock();
+            }
+        }
     }
 
-    fn unpark_one(&self, map: &Map, object: usize) {
+    /// Unparks one thread.
+    /// Runs the provided function after bucket locking but before unparking.
+    /// That function will be called with `true` if there are no more waiting threads.
+    pub(super) fn unpark_one(&self, object: usize, pre_unpark: impl FnOnce(bool)) {
+        // SAFETY: We always store a valid map and never take a mutable reference to it
+        let mut map = unsafe { (self.map.load(Acquire) as *const Map).as_ref_unchecked() };
+
         let start_index = map.natural_index(object);
         let mut index = start_index;
 
@@ -146,8 +162,7 @@ impl ParkingLot {
                 break Some(bucket);
             } else if *entry == BUCKET_EMPTY {
                 // Not found.
-                // This can happen because a thread waking from contention always sets the contended flag.
-                // TODO: can we make this unreachable by returning whether there are more parked threads?
+                // TODO: This shouldn't happen anymore, double check this
                 break None;
             } else {
                 index += 1;
@@ -160,41 +175,43 @@ impl ParkingLot {
             for i in start_index..=index {
                 map.buckets[i].lock.unlock();
             }
-            self.unpark_one(unsafe { new_map.as_ref_unchecked() }, object);
-            return;
+            return self.unpark_one(object, pre_unpark);
         }
 
-        let empty = if let Some(bucket) = bucket {
-            unsafe { bucket.thread_queue().wake_one_check_if_empty() }
-        } else {
-            true
-        };
-
         let mut end_index = index;
-        // Remove item, relocating any subsequent ones that were offset because this bucket was occupied.
-        if empty {
+
+        if let Some(bucket) = bucket {
             unsafe {
-                *map.buckets[index].object() = BUCKET_EMPTY;
-            }
-            let mut gap_index = index;
-            loop {
-                let bucket = &map.buckets[index];
-                bucket.lock.lock();
-                let entry = unsafe { bucket.object() };
-                if *entry == BUCKET_EMPTY {
-                    break;
-                }
-                let natural = map.natural_index(*entry);
-                if natural <= gap_index {
-                    unsafe {
-                        *map.buckets[gap_index].object() = *bucket.object();
-                        *bucket.object() = BUCKET_EMPTY;
-                        *map.buckets[gap_index].thread_queue() =
-                            std::mem::take(bucket.thread_queue());
+                bucket.thread_queue().wake_one(|empty| {
+                    pre_unpark(empty);
+
+                    // Remove item, relocating any subsequent ones that were offset because this bucket was occupied.
+                    if empty {
+                        unsafe {
+                            *map.buckets[index].object() = BUCKET_EMPTY;
+                        }
+                        let mut gap_index = index;
+                        loop {
+                            let bucket = &map.buckets[index];
+                            bucket.lock.lock();
+                            let entry = unsafe { bucket.object() };
+                            if *entry == BUCKET_EMPTY {
+                                break;
+                            }
+                            let natural = map.natural_index(*entry);
+                            if natural <= gap_index {
+                                unsafe {
+                                    *map.buckets[gap_index].object() = *bucket.object();
+                                    *bucket.object() = BUCKET_EMPTY;
+                                    *map.buckets[gap_index].thread_queue() =
+                                        std::mem::take(bucket.thread_queue());
+                                }
+                                gap_index = end_index;
+                            }
+                            end_index += 1;
+                        }
                     }
-                    gap_index = end_index;
-                }
-                end_index += 1;
+                })
             }
         }
 

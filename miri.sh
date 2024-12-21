@@ -5,3 +5,5 @@ cargo miri test --target i686-unknown-linux-gnu
 # TODO: Test on 64 bit target too (stacker causing problems)
 
 # Useful flag for debugging monitor: -Zmiri-preemption-rate=0.2
+# For enabling prints: RUSTFLAGS="--cfg miri_debug_print"
+# Determinism: -Zmiri-seed

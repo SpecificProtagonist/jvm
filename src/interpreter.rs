@@ -96,16 +96,16 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
 
     let method_monitor = if method.access_flags.contains(AccessFlags::SYNCHRONIZED) {
         Some(if method.access_flags.contains(AccessFlags::STATIC) {
-            method.class().monitor()
+            &method.class().static_monitor
         } else {
-            args[0].as_obj().unwrap().monitor()
+            args[0].as_obj().unwrap().mark_word()
         })
     } else {
         None
     };
 
     if let Some(m) = method_monitor {
-        m.enter();
+        jvm.parking_lot.monitor_enter(m);
     }
 
     let code = method.code.read().unwrap();
@@ -132,7 +132,7 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
     };
 
     if let Some(m) = method_monitor {
-        if m.exit().is_err() {
+        if jvm.parking_lot.monitor_exit(m).is_err() {
             return Err(error(jvm, "IllegalMonitorStateException", ""));
         }
     }
@@ -1094,14 +1094,15 @@ fn run_until_exception_or_return(
                     .pop()
                     .as_obj()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                obj.monitor().enter();
+
+                jvm.parking_lot.monitor_enter(obj.mark_word());
             }
             MONITOREXIT => {
                 let obj = frame
                     .pop()
                     .as_obj()
                     .ok_or_else(|| throwable(jvm, "NullPointerException"))?;
-                if obj.monitor().exit().is_err() {
+                if jvm.parking_lot.monitor_exit(obj.mark_word()).is_err() {
                     return Err(throwable(jvm, "IllegalMonitorStateException"));
                 }
             }

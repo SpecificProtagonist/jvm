@@ -143,7 +143,7 @@ impl Field {
 
         // This is to avoid the need to take a ref to JVM for resolution
         fn assignable(class: &Class, to: &str) -> bool {
-            to == class.name.as_ref() || class.super_class.map_or(false, |s| assignable(s, to))
+            to == class.name.as_ref() || class.super_class.is_some_and(|s| assignable(s, to))
         }
 
         match (&self.nat.typ, value) {

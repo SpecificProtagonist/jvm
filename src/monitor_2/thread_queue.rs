@@ -49,15 +49,17 @@ impl ThreadQueue {
         });
     }
 
-    /// Pops and wakes one parked thread. Returns true if the queue is now empty.
-    pub fn wake_one_check_if_empty(&mut self) -> bool {
+    /// Pops and wakes one parked thread.
+    /// Returns true if the queue is now empty.
+    pub fn wake_one(&mut self, pre_wake: impl FnOnce(bool)) {
         THREAD_DATA.with(|current| {
             // TODO SAFETY doc
             unsafe {
                 let old_head = self.head.as_ref().expect("popped empty thread queue");
                 self.head = old_head.next;
+                let empty = self.head.is_null();
+                pre_wake(empty);
                 old_head.thread.unpark();
-                self.head.is_null()
             }
         })
     }

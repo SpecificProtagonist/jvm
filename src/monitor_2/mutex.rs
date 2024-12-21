@@ -3,7 +3,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering::*},
 };
 
-use crate::miri_println;
+// use crate::miri_println;
 
 // TODO: Use atomic version of ThreadQueue instead of atomic_wait?
 
@@ -23,11 +23,11 @@ impl Mutex {
             .compare_exchange(0, LOCKED_BIT, Acquire, Relaxed)
         {
             Ok(_) => {
-                miri_println!(
-                    "[{}] {:p} locked uncontended",
-                    thread_id(),
-                    self as *const _
-                );
+                // miri_println!(
+                //     "[{:?}] {:p} locked uncontended",
+                //     std::thread::current().id(),
+                //     self as *const _
+                // );
             }
             Err(loaded) => self.lock_locked(loaded),
         }
@@ -42,7 +42,7 @@ impl Mutex {
                     .compare_exchange_weak(loaded, loaded | CONTENDED_BIT, Release, Relaxed)
                     .is_ok()
             {
-                miri_println!("[{}] set contended flag", thread_id());
+                // miri_println!("[{:?}] set contended flag", std::thread::current().id());
             }
 
             // Only sleep if contended flag got set and lock didn't get released
@@ -58,7 +58,11 @@ impl Mutex {
                     Relaxed,
                 ) {
                     Ok(_) => {
-                        miri_println!("[{}] {:p} locked contended", thread_id(), self as *const _);
+                        // miri_println!(
+                        //     "[{:?}] {:p} locked contended",
+                        //     std::thread::current().id(),
+                        //     self as *const _
+                        // );
                         return;
                     }
                     Err(value) => {
@@ -72,9 +76,17 @@ impl Mutex {
     pub fn unlock(&self) {
         let current = self.lock_word.load(Relaxed);
 
-        miri_println!("[{}] {:p} release lock", thread_id(), self as *const _);
+        // miri_println!(
+        //     "[{:?}] {:p} release lock",
+        //     std::thread::current().id(),
+        //     self as *const _
+        // );
         if self.lock_word.swap(0, AcqRel) == LOCKED_BIT | CONTENDED_BIT {
-            miri_println!("[{}] {:p} wake one", thread_id(), self as *const _);
+            // miri_println!(
+            //     "[{:?}] {:p} wake one",
+            //     std::thread::current().id(),
+            //     self as *const _
+            // );
             atomic_wait::wake_one(&self.lock_word);
         }
     }

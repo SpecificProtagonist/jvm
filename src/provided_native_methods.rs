@@ -63,27 +63,27 @@ pub fn get_provided_methods() -> Vec<ProvidedMethod> {
             Some(Type::Int),
             |jvm: &Jvm, this: Object| Ok(this.identity_hash(jvm))
         ),
-        provide!(
-            "java.lang.Object",
-            "wait",
-            [],
-            None,
-            |jvm: &Jvm, this: Object| this.wait(jvm)
-        ),
-        provide!(
-            "java.lang.Object",
-            "notify",
-            [],
-            None,
-            |jvm: &Jvm, this: Object| this.notify(jvm)
-        ),
-        provide!(
-            "java.lang.Object",
-            "notifyAll",
-            [],
-            None,
-            |jvm: &Jvm, this: Object| this.notify_all(jvm)
-        ),
+        // provide!(
+        //     "java.lang.Object",
+        //     "wait",
+        //     [],
+        //     None,
+        //     |jvm: &Jvm, this: Object| this.wait(jvm)
+        // ),
+        // provide!(
+        //     "java.lang.Object",
+        //     "notify",
+        //     [],
+        //     None,
+        //     |jvm: &Jvm, this: Object| this.notify(jvm)
+        // ),
+        // provide!(
+        //     "java.lang.Object",
+        //     "notifyAll",
+        //     [],
+        //     None,
+        //     |jvm: &Jvm, this: Object| this.notify_all(jvm)
+        // ),
         provide!(
             "java.lang.System",
             "identityHashCode",

@@ -57,7 +57,7 @@ impl ConstPool {
             if let ConstPoolItem::RawClass(_) = self.items[i] {
                 let name = self.get_unresolved_class(jvm, i as u16)?;
                 let resolved = jvm.resolve_class_internal(&name)?;
-                if !resolved.is_accessible_from(this_class) {
+                if !this_class.can_access_class(resolved) {
                     return Err(error(
                         jvm,
                         "IllegalAccessError",

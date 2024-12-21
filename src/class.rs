@@ -1,6 +1,6 @@
 use hashbrown::HashMap;
 use std::{
-    sync::{Arc, Condvar, Mutex, RwLock},
+    sync::{atomic::AtomicU32, Arc, Condvar, Mutex, RwLock},
     thread::ThreadId,
 };
 
@@ -9,7 +9,6 @@ use crate::{
     field::{Field, FieldNaT, FieldNaTBorrow},
     jvm::{error, JvmResult},
     method::{MethodDescriptor, MethodNaT, MethodNaTBorrow, MethodRef},
-    monitor::Monitor,
     object::{self, FieldStorage, Object},
     typ::Type,
     verification::verify,
@@ -37,7 +36,9 @@ pub(crate) struct Class {
     pub(crate) fields: HashMap<FieldNaT, Field>,
     /// Includes inherited methods.
     pub(crate) methods: HashMap<MethodNaT, MethodRef>,
+    /// Data of all static fields
     pub(crate) static_storage: FieldStorage,
+    pub(crate) static_monitor: AtomicU32,
     /// Combined size of instance fields in normal class, 0 if array
     pub(crate) object_size: usize,
     pub(crate) init: Mutex<ClassState>,
@@ -116,7 +117,7 @@ impl Class {
             }
         };
 
-        let mut static_size = size_of::<Monitor>();
+        let mut static_size = 0;
         set_layouts(&mut static_size, static_fields);
 
         let mut object_size = match super_class {
@@ -188,10 +189,6 @@ impl Class {
         self.fields
             .get(&nat)
             .or_else(|| self.super_class.and_then(|c| c.field_by_nat(nat)))
-    }
-
-    pub(crate) fn monitor(&self) -> &'static Monitor {
-        unsafe { (self.static_storage.0 as *const Monitor).as_ref_unchecked() }
     }
 
     // TODO: provide fields() and methods()
@@ -370,8 +367,8 @@ impl Class {
         Ok(())
     }
 
-    pub fn is_accessible_from(&self, source: ClassRef) -> bool {
-        self.access_flags.contains(AccessFlags::PUBLIC) || (*self.package == *source.package)
+    pub fn can_access_class(&self, other: ClassRef) -> bool {
+        other.access_flags.contains(AccessFlags::PUBLIC) || (*self.package == *other.package)
     }
 
     pub fn is_member_accessible_from(

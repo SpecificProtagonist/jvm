@@ -1,6 +1,7 @@
 use crate::heap::Heap;
 use crate::hot_reloading::{reload_method_bytecodes_for_class, ReloadErr};
 use crate::identity_hash::IdentityHashes;
+use crate::monitor_2::ParkingLot;
 use crate::provided_native_methods::get_provided_methods;
 use crate::{class_loader::ClassLoader, AccessFlags};
 use fixed_typed_arena::ManuallyDropArena;
@@ -44,6 +45,7 @@ pub struct Jvm {
     pub(crate) method_storage: Mutex<ManuallyDropArena<Method, 128>>,
     pub(crate) classes: RwLock<HashMap<Arc<str>, ClassRef>>,
     pub(crate) identity_hashes: IdentityHashes,
+    pub(crate) parking_lot: ParkingLot,
 }
 
 impl Jvm {
@@ -64,6 +66,7 @@ impl Jvm {
             method_storage: default(),
             classes: default(),
             identity_hashes: default(),
+            parking_lot: default(),
         };
         if let Err(err) = jvm
             .resolve_class("java.lang.StackOverflowError")
@@ -144,6 +147,8 @@ impl Jvm {
             return Ok(*class);
         }
 
+        let top = self.resolve_class_internal("java.lang.Object")?;
+
         // Arrays of primitives inherit from objects,
         // other arrays inherit from arrays of the superclass of their component type
         let super_class = if let Type::Ref(component) = &component {
@@ -154,7 +159,7 @@ impl Jvm {
                 self.resolve_class_internal("java.lang.Object")?
             }
         } else {
-            self.resolve_class_internal("java.lang.Object")?
+            top
         };
 
         let array = Class {
@@ -172,6 +177,7 @@ impl Jvm {
             fields: default(),
             methods: super_class.methods.clone(),
             static_storage: FieldStorage::EMPTY,
+            static_monitor: AtomicU32::new(0),
             object_size: 0,
             init: ClassState::Unverified.into(),
             init_waiter: default(),
@@ -312,6 +318,7 @@ impl Jvm {
             fields,
             methods,
             static_storage,
+            static_monitor: AtomicU32::new(0),
             object_size,
             init: ClassState::Unverified.into(),
             init_waiter: default(),
