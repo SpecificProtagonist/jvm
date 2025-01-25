@@ -2,15 +2,13 @@
 // Implements a parking lot.
 // We cannot use dashmap as we need to hold the lock while sleeping.
 
-use std::{
-    cell::UnsafeCell,
-    sync::atomic::{AtomicPtr, AtomicU32, AtomicU8, Ordering::*},
-    thread::Thread,
-};
+use std::cell::UnsafeCell;
 
-use crate::{heap::OBJECT_ALIGN, miri_println};
+use super::thread_queue::ThreadQueue;
+use crate::{default, heap::OBJECT_ALIGN, miri_println, sync::*};
 
-use super::{mutex::Mutex, thread_queue::ThreadQueue};
+#[cfg(loom)]
+use lock_api::RawMutex as _;
 
 #[derive(Default)]
 pub(crate) struct ParkingLot {
@@ -32,11 +30,20 @@ const LOAD_FACTOR_RECIPROCE: usize = 3;
 /// No item in this bucket
 const BUCKET_EMPTY: usize = 0;
 
-#[derive(Default)]
 struct Bucket {
     object: UnsafeCell<usize>,
-    lock: Mutex,
+    lock: RawMutex,
     waiting_for_lock: UnsafeCell<ThreadQueue>,
+}
+
+impl Default for Bucket {
+    fn default() -> Self {
+        Self {
+            object: default(),
+            lock: RawMutex::INIT,
+            waiting_for_lock: default(),
+        }
+    }
 }
 
 impl Map {
@@ -114,7 +121,9 @@ impl ParkingLot {
         let new_map = self.map.load(Acquire);
         if new_map != map as *const _ as _ {
             for i in start_index..=index {
-                map.buckets[i].lock.unlock();
+                unsafe {
+                    map.buckets[i].lock.unlock();
+                }
             }
             self.park_with(unsafe { new_map.as_ref_unchecked() }, object, should_park);
             return;
@@ -127,16 +136,20 @@ impl ParkingLot {
             }
 
             for i in start_index..=index {
-                map.buckets[i].lock.unlock();
+                unsafe {
+                    map.buckets[i].lock.unlock();
+                }
             }
 
             // Consume unpark token if thread has been unparked between bucket unlock
             // and now, otherwise wait for unpark token.
             // TODO: Are spurious wakeups possible? Handle them
-            std::thread::park();
+            thread::park();
         } else {
             for i in start_index..=index {
-                map.buckets[i].lock.unlock();
+                unsafe {
+                    map.buckets[i].lock.unlock();
+                }
             }
         }
     }
@@ -173,7 +186,9 @@ impl ParkingLot {
         let new_map = self.map.load(Acquire);
         if new_map != map as *const _ as _ {
             for i in start_index..=index {
-                map.buckets[i].lock.unlock();
+                unsafe {
+                    map.buckets[i].lock.unlock();
+                }
             }
             return self.unpark_one(object, pre_unpark);
         }
@@ -216,7 +231,9 @@ impl ParkingLot {
         }
 
         for i in start_index..=end_index {
-            map.buckets[i].lock.unlock();
+            unsafe {
+                map.buckets[i].lock.unlock();
+            }
         }
     }
 
@@ -269,17 +286,9 @@ impl ParkingLot {
         self.map.store(new_map, Release);
 
         for bucket in &old.buckets {
-            bucket.lock.unlock();
+            unsafe {
+                bucket.lock.unlock();
+            }
         }
     }
-}
-
-#[cfg(test)]
-mod test {
-    use std::sync::atomic::AtomicU32;
-
-    use super::ParkingLot;
-
-    #[test]
-    fn parking_lot() {}
 }

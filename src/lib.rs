@@ -21,6 +21,8 @@ mod object;
 mod opcodes;
 mod parse;
 pub mod provided_native_methods;
+mod raw_mutex;
+mod sync;
 mod typ;
 mod value;
 mod verification;

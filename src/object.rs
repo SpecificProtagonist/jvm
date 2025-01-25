@@ -1,17 +1,10 @@
-use std::{
-    mem::size_of,
-    num::NonZeroUsize,
-    ops::Deref,
-    sync::atomic::{
-        AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicU32,
-        Ordering::{self, *},
-    },
-};
+use std::{mem::size_of, num::NonZeroUsize, ops::Deref};
 
 use crate::{
     class::{Class, ClassRef},
     heap::{AtomicCompressedPtr, CompressedPtr, Heap, Ptrs},
     jvm::{throwable, JvmResult},
+    sync::*,
     typ::Type,
     value::Value,
     AccessFlags, Jvm,

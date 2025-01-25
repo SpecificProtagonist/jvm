@@ -1,15 +1,14 @@
 #![allow(unused)]
-mod mutex;
 mod thread_parking_lot;
 mod thread_queue;
 
 use std::{
     cell::RefCell,
     collections::{btree_map::*, BTreeMap},
-    sync::atomic::{AtomicPtr, AtomicU32, Ordering::*},
-    thread::current,
 };
 
+use crate::sync::*;
+use thread::current;
 pub(crate) use thread_parking_lot::ParkingLot;
 
 use crate::{
@@ -68,64 +67,67 @@ thread_local! {
 impl ParkingLot {
     pub fn monitor_enter(&self, mark_ref: &AtomicU32) {
         miri_println!("[{:?}] Enter", current().id());
-        LOCK_COUNT.with_borrow_mut(|map| match map.entry(mark_ref.as_ptr().addr()) {
-            Entry::Occupied(mut count) => {
-                // Already locked
-                *count.get_mut() = count.get_mut().saturating_add(1);
-            }
-            Entry::Vacant(vacant_entry) => {
-                let mut mark = mark_ref.load(Relaxed);
-                let unlocked = mark & !MONITOR_LOCKED_BIT;
-                let locked = mark & MONITOR_LOCKED_BIT;
-                if mark_ref
-                    .compare_exchange(unlocked, locked, Acquire, Acquire)
-                    .is_err()
-                {
-                    // Failed to acquire the lock
-                    self.park_on_lock(mark_ref.as_ptr().addr(), || loop {
-                        // We have the lock on the bucket, so no other thread can set the contended bit, but the monitor may have already been unlocked.
-                        let mut mark = mark_ref.load(Relaxed);
-                        match mark_ref.compare_exchange(
-                            mark | MONITOR_LOCKED_BIT,
-                            mark | MONITOR_LOCKED_BIT | MONITOR_CONTENDED_BIT,
-                            Acquire,
-                            Acquire,
-                        ) {
-                            Ok(_) => {
-                                // Successfully set contended bit, go sleep
-                                return true;
-                            }
-                            Err(_) => {
-                                // Either the monitor was unlocked, or the hash flags changed
-                                if mark_ref
-                                    .compare_exchange(
-                                        mark | !MONITOR_LOCKED_BIT,
-                                        mark | MONITOR_LOCKED_BIT,
-                                        Acquire,
-                                        Acquire,
-                                    )
-                                    .is_ok()
-                                {
-                                    // We have the lock, no need to park
-                                    return false;
+        LOCK_COUNT.with_borrow_mut(
+            |map| match map.entry((mark_ref as *const AtomicU32).addr()) {
+                Entry::Occupied(mut count) => {
+                    // Already locked
+                    *count.get_mut() = count.get_mut().saturating_add(1);
+                }
+                Entry::Vacant(vacant_entry) => {
+                    let mut mark = mark_ref.load(Relaxed);
+                    let unlocked = mark & !MONITOR_LOCKED_BIT;
+                    let locked = mark & MONITOR_LOCKED_BIT;
+                    if mark_ref
+                        .compare_exchange(unlocked, locked, Acquire, Acquire)
+                        .is_err()
+                    {
+                        // Failed to acquire the lock
+                        self.park_on_lock((mark_ref as *const AtomicU32).addr(), || loop {
+                            // We have the lock on the bucket, so no other thread can set the contended bit, but the monitor may have already been unlocked.
+                            let mut mark = mark_ref.load(Relaxed);
+                            match mark_ref.compare_exchange(
+                                mark | MONITOR_LOCKED_BIT,
+                                mark | MONITOR_LOCKED_BIT | MONITOR_CONTENDED_BIT,
+                                Acquire,
+                                Acquire,
+                            ) {
+                                Ok(_) => {
+                                    // Successfully set contended bit, go sleep
+                                    return true;
+                                }
+                                Err(_) => {
+                                    // Either the monitor was unlocked, or the hash flags changed
+                                    if mark_ref
+                                        .compare_exchange(
+                                            mark | !MONITOR_LOCKED_BIT,
+                                            mark | MONITOR_LOCKED_BIT,
+                                            Acquire,
+                                            Acquire,
+                                        )
+                                        .is_ok()
+                                    {
+                                        // We have the lock, no need to park
+                                        return false;
+                                    }
                                 }
                             }
-                        }
-                    });
-                    // We only get unparked when we get passed the lock
-                } else {
-                    miri_println!("locked without parking");
+                        });
+                        // We only get unparked when we get passed the lock
+                    } else {
+                        miri_println!("locked without parking");
+                    }
+                    // Sucessfully locked object
+                    vacant_entry.insert(1);
                 }
-                // Sucessfully locked object
-                vacant_entry.insert(1);
-            }
-        });
+            },
+        );
     }
 
     pub fn monitor_exit(&self, mark_ref: &AtomicU32) -> Result<(), LockNotHeld> {
         miri_println!("[{:?}] Exit", current().id());
         LOCK_COUNT.with_borrow_mut(|map| {
-            let Entry::Occupied(mut entry) = map.entry(mark_ref.as_ptr().addr()) else {
+            let Entry::Occupied(mut entry) = map.entry((mark_ref as *const AtomicU32).addr())
+            else {
                 return Err(LockNotHeld);
             };
             *entry.get_mut() -= 1;
@@ -142,7 +144,7 @@ impl ParkingLot {
                             return Ok(());
                         }
                     } else {
-                        self.unpark_one(mark_ref.as_ptr().addr(), |empty| {
+                        self.unpark_one((mark_ref as *const AtomicU32).addr(), |empty| {
                             if empty {
                                 loop {
                                     let mark = mark_ref.load(Relaxed);
@@ -172,48 +174,55 @@ impl ParkingLot {
 #[derive(Debug)]
 pub struct LockNotHeld;
 
-#[cfg(test)]
+#[cfg(loom)]
 mod test {
-    use std::sync::atomic::{AtomicU32, Ordering::*};
-
-    use crate::{heap::Heap, monitor_2::ParkingLot};
+    use crate::{heap::Heap, monitor_2::ParkingLot, sync::*};
 
     use super::Object;
 
     #[test]
     fn new_monitor_reentrancy() {
-        let parking_lot = ParkingLot::new();
-        let mark_ref = &AtomicU32::new(0);
-        parking_lot.monitor_enter(mark_ref);
-        parking_lot.monitor_enter(mark_ref);
-        parking_lot.monitor_exit(mark_ref).unwrap();
-        parking_lot.monitor_exit(mark_ref).unwrap();
+        loom::model(|| {
+            let parking_lot = ParkingLot::new();
+            let mark_ref = &AtomicU32::new(0);
+            parking_lot.monitor_enter(mark_ref);
+            parking_lot.monitor_enter(mark_ref);
+            parking_lot.monitor_exit(mark_ref).unwrap();
+            parking_lot.monitor_exit(mark_ref).unwrap();
+        });
     }
 
     #[test]
     fn new_monitor_contention() {
-        let threads = 4;
-        let per_thread = 10;
+        loom::model(|| {
+            let threads = 2;
+            let per_thread = 1;
 
-        let parking_lot = ParkingLot::new();
-        let mark_ref = &AtomicU32::new(0);
-        let sum = AtomicU32::new(0);
+            let parking_lot = std::sync::Arc::new(ParkingLot::new());
+            let mark_ref = std::sync::Arc::new(AtomicU32::new(0));
+            let sum = std::sync::Arc::new(AtomicU32::new(0));
 
-        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            // No scoped threads in loom…
             for _ in 0..threads {
-                scope.spawn(|| {
+                let parking_lot = parking_lot.clone();
+                let mark_ref = mark_ref.clone();
+                let sum = sum.clone();
+                handles.push(thread::spawn(move || {
                     for _ in 0..per_thread {
-                        parking_lot.monitor_enter(mark_ref);
-                        parking_lot.monitor_enter(mark_ref);
+                        parking_lot.monitor_enter(&*mark_ref);
+                        parking_lot.monitor_enter(&*mark_ref);
                         sum.store(sum.load(Relaxed) + 1, Relaxed);
-                        parking_lot.monitor_exit(mark_ref).unwrap();
-                        parking_lot.monitor_exit(mark_ref).unwrap();
+                        parking_lot.monitor_exit(&*mark_ref).unwrap();
+                        parking_lot.monitor_exit(&*mark_ref).unwrap();
                     }
-                });
+                }));
             }
-        });
+            for handle in handles {
+                handle.join();
+            }
 
-        parking_lot.monitor_enter(mark_ref);
-        assert_eq!(sum.load(Relaxed), threads * per_thread);
+            assert_eq!(sum.load(Relaxed), threads * per_thread);
+        });
     }
 }

@@ -1,8 +1,7 @@
 use hashbrown::HashMap;
-use std::{
-    sync::{atomic::AtomicU32, Arc, Condvar, Mutex, RwLock},
-    thread::ThreadId,
-};
+use std::{sync::Arc, thread::ThreadId};
+
+use crate::sync::*;
 
 use crate::{
     const_pool::ConstPool,

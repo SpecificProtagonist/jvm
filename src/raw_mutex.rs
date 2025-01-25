@@ -1,21 +1,24 @@
-use std::{
-    cell::Cell,
-    sync::atomic::{AtomicU32, Ordering::*},
-};
+#![cfg_attr(loom, allow(unused))]
+// Can't use loom as it doesn't mock atomic-wait
+use std::sync::atomic::{AtomicU32, Ordering::*};
 
 // use crate::miri_println;
 
 // TODO: Use atomic version of ThreadQueue instead of atomic_wait?
 
-#[derive(Default)]
-pub(super) struct Mutex {
+pub(super) struct RawMutex {
     lock_word: AtomicU32,
 }
 
 const LOCKED_BIT: u32 = 1;
 const CONTENDED_BIT: u32 = 2;
 
-impl Mutex {
+impl RawMutex {
+    #[allow(clippy::declare_interior_mutable_const)]
+    pub const INIT: Self = Self {
+        lock_word: AtomicU32::new(0),
+    };
+
     #[inline]
     pub fn lock(&self) {
         match self
@@ -73,8 +76,8 @@ impl Mutex {
         }
     }
 
-    pub fn unlock(&self) {
-        let current = self.lock_word.load(Relaxed);
+    pub unsafe fn unlock(&self) {
+        let _current = self.lock_word.load(Relaxed);
 
         // miri_println!(
         //     "[{:?}] {:p} release lock",
@@ -95,7 +98,6 @@ impl Mutex {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::default;
     use std::thread;
 
     #[test]
@@ -103,7 +105,7 @@ mod test {
         let threads = 16;
         let per_thread = 1000;
 
-        let mutex = Mutex::default();
+        let mutex = RawMutex::INIT;
         let sum = AtomicU32::new(0);
 
         thread::scope(|scope| {
@@ -112,7 +114,9 @@ mod test {
                     for _ in 0..per_thread {
                         mutex.lock();
                         sum.store(sum.load(Relaxed) + 1, Relaxed);
-                        mutex.unlock();
+                        unsafe {
+                            mutex.unlock();
+                        }
                     }
                 });
             }

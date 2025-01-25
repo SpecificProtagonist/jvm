@@ -1,4 +1,7 @@
-use std::{cell::UnsafeCell, thread::Thread};
+use std::cell::UnsafeCell;
+
+use crate::sync::*;
+use thread::Thread;
 
 pub struct ThreadQueue {
     head: *mut ThreadData,
@@ -24,7 +27,7 @@ pub struct ThreadData {
 
 thread_local! {
     static THREAD_DATA: UnsafeCell<ThreadData> = UnsafeCell::new(ThreadData{
-        thread: std::thread::current(),
+        thread: thread::current(),
         next: std::ptr::null_mut()
     });
 }
