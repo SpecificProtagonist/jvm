@@ -6,7 +6,6 @@ use crate::provided_native_methods::get_provided_methods;
 use crate::sync::*;
 use crate::{class_loader::ClassLoader, AccessFlags};
 use fixed_typed_arena::ManuallyDropArena;
-use std::sync::Arc;
 // TODO: posibly exchange for different hasher (benchmark)
 use hashbrown::HashMap;
 

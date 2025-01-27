@@ -1,7 +1,7 @@
 //! This module is responsible for managing the jvm heap.
 //!
 //! The full heap is preallocated (which will use overcommit on some platforms).
-//! TODO: on Windows, use VirtualAlloc/NtAllocateVirtualMemory
+//! TODO: on Windows, use VirtualAlloc
 //! to reserve memory and only commit as needed.
 //! TODO: Miri (just target windows?)
 //!
@@ -136,7 +136,7 @@ mod memory_map {
                 0,
             )
         };
-        if result == MAP_FAILED {
+        if core::ptr::eq(result, MAP_FAILED) {
             panic!("Failed to reserve memory range for heap");
         }
         result as *mut u8

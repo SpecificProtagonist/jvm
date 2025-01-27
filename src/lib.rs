@@ -1,5 +1,6 @@
 #![feature(ptr_as_ref_unchecked)]
 #![feature(sync_unsafe_cell)]
+#![feature(unsafe_cell_access)]
 #![doc = include_str!("../README.md")]
 
 mod class;

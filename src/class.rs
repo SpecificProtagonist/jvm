@@ -1,5 +1,5 @@
 use hashbrown::HashMap;
-use std::{sync::Arc, thread::ThreadId};
+use std::thread::ThreadId;
 
 use crate::sync::*;
 

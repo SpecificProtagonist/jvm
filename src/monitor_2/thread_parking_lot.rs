@@ -1,30 +1,49 @@
 #![allow(unused)]
-// Implements a parking lot.
-// We cannot use dashmap as we need to hold the lock while sleeping.
-
-use std::cell::UnsafeCell;
+use core::cell::{SyncUnsafeCell, UnsafeCell};
 
 use super::thread_queue::ThreadQueue;
-use crate::{default, heap::OBJECT_ALIGN, miri_println, sync::*};
+use crate::{default, heap::OBJECT_ALIGN, sync::*};
 
 #[cfg(loom)]
 use lock_api::RawMutex as _;
 
-#[derive(Default)]
+/// A thread parking lot.
 pub(crate) struct ParkingLot {
+    /// The current hashmap, will be replaced with a larger one when too full.
+    ///
+    /// SAFETY: This always points to the current map. An exclusive reference will never be taken.
     map: AtomicPtr<Map>,
+    /// Taken while growing the map.
+    grow_map_lock: RawMutex,
 }
 
-// TODO: Drop
+impl Default for ParkingLot {
+    fn default() -> Self {
+        let map = Box::into_raw(Box::new(Map {
+            count: 1.into(),
+            hash_bits: 0,
+            buckets: Box::new([Bucket::default()]),
+        }))
+        .into();
+        Self {
+            map,
+            grow_map_lock: RawMutex::INIT,
+        }
+    }
+}
+
+// Fixed-size open-addressing hashmap of waiting threads.
 struct Map {
-    /// Number of occupied buckets, including tombstones
+    /// Number of occupied buckets, including tombstones.
     count: AtomicU32,
-    /// Number of low bits of the address hash used
+    /// Number of low bits of the address hash used.
     hash_bits: u8,
+    // Stored data.
     buckets: Box<[Bucket]>,
 }
 
-/// Map will have at most 1/LOAD_FACTOR_RECIPROCE occupied buckets
+/// Map will have at most 1/LOAD_FACTOR_RECIPROCE occupied buckets.
+/// This keeps probing short.
 const LOAD_FACTOR_RECIPROCE: usize = 3;
 
 /// No item in this bucket
@@ -33,7 +52,7 @@ const BUCKET_EMPTY: usize = 0;
 struct Bucket {
     object: UnsafeCell<usize>,
     lock: RawMutex,
-    waiting_for_lock: UnsafeCell<ThreadQueue>,
+    waiting_threads: SyncUnsafeCell<ThreadQueue>,
 }
 
 impl Default for Bucket {
@@ -41,14 +60,15 @@ impl Default for Bucket {
         Self {
             object: default(),
             lock: RawMutex::INIT,
-            waiting_for_lock: default(),
+            waiting_threads: default(),
         }
     }
 }
 
 impl Map {
+    /// Index of the bucket where the element will be placed if there are no collisions.
     fn natural_index(&self, object: usize) -> usize {
-        // TODO: Choose an actually good hash function
+        // TODO: Does this work as a decent hash function?
         let base = object >> OBJECT_ALIGN.trailing_zeros();
         base.wrapping_add(base >> self.hash_bits) & ((1 << self.hash_bits) - 1)
     }
@@ -64,42 +84,35 @@ impl Bucket {
     /// SAFETY: Must have locked bucket and no references are held
     #[allow(clippy::mut_from_ref)]
     unsafe fn thread_queue(&self) -> &mut ThreadQueue {
-        (&self.waiting_for_lock as *const _ as *mut ThreadQueue).as_mut_unchecked()
+        (&self.waiting_threads as *const _ as *mut ThreadQueue).as_mut_unchecked()
     }
 }
 
 impl ParkingLot {
-    pub fn new() -> Self {
-        let map = Box::into_raw(Box::new(Map {
-            count: 1.into(),
-            hash_bits: 0,
-            buckets: Box::new([Bucket::default()]),
-        }))
-        .into();
-        Self { map }
-    }
-
+    /// Park the current thread on `object` until it's unparked.
+    /// `should_park` is called once, during which a lock for the object is held.
+    /// If it returns `false`, cancels the parking.
     pub(super) fn park_on_lock(&self, object: usize, should_park: impl FnOnce() -> bool) {
-        miri_println!("park_on_lock");
         debug_assert!(object != 0);
         // SAFETY: We always store a valid map and never take a mutable reference to it
         let mut map = unsafe { (self.map.load(Acquire) as *const Map).as_ref_unchecked() };
 
         let count = map.count.fetch_add(1, AcqRel);
-
         if count as usize * LOAD_FACTOR_RECIPROCE > map.buckets.len() {
-            self.grow_map(map);
+            self.grow_map();
             map = unsafe { (self.map.load(Relaxed) as *const Map).as_ref_unchecked() };
         }
 
-        self.park_with(map, object, should_park);
+        self.park_with_map(map, object, should_park);
     }
 
-    fn park_with(&self, map: &Map, object: usize, should_park: impl FnOnce() -> bool) {
+    fn park_with_map(&self, map: &Map, object: usize, should_park: impl FnOnce() -> bool) {
         let start_index = map.natural_index(object);
         let mut index = start_index;
 
-        // Search for right bucket
+        // Linear probing.
+        // This will usually succeed at the first bucket.
+        // TODO: Instead grow map when there is a collision? Needs good hash though.
         loop {
             let bucket = &map.buckets[index];
             bucket.lock.lock();
@@ -113,44 +126,39 @@ impl ParkingLot {
                 *entry = object;
                 break;
             } else {
+                // Used by a different object
                 index += 1;
             }
         }
 
         // Check whether still the same map
-        let new_map = self.map.load(Acquire);
-        if new_map != map as *const _ as _ {
+        let new_map = unsafe { self.map.load(Acquire).as_ref_unchecked() };
+        if !std::ptr::eq(new_map, map) {
             for i in start_index..=index {
                 unsafe {
                     map.buckets[i].lock.unlock();
                 }
             }
-            self.park_with(unsafe { new_map.as_ref_unchecked() }, object, should_park);
+            self.park_with_map(new_map, object, should_park);
             return;
         }
 
+        let unlock_buckets = || {
+            for i in start_index..=index {
+                unsafe {
+                    map.buckets[i].lock.unlock();
+                }
+            }
+        };
+
+        // We hold the lock for the bucket, see if we should park
         if should_park() {
             // SAFETY: Bucket is locked
             unsafe {
-                map.buckets[index].thread_queue().push();
+                ThreadQueue::park(&map.buckets[index].waiting_threads, unlock_buckets);
             }
-
-            for i in start_index..=index {
-                unsafe {
-                    map.buckets[i].lock.unlock();
-                }
-            }
-
-            // Consume unpark token if thread has been unparked between bucket unlock
-            // and now, otherwise wait for unpark token.
-            // TODO: Are spurious wakeups possible? Handle them
-            thread::park();
         } else {
-            for i in start_index..=index {
-                unsafe {
-                    map.buckets[i].lock.unlock();
-                }
-            }
+            unlock_buckets();
         }
     }
 
@@ -184,7 +192,7 @@ impl ParkingLot {
 
         // Check whether still the same map
         let new_map = self.map.load(Acquire);
-        if new_map != map as *const _ as _ {
+        if !core::ptr::eq(new_map, map) {
             for i in start_index..=index {
                 unsafe {
                     map.buckets[i].lock.unlock();
@@ -219,7 +227,7 @@ impl ParkingLot {
                                     *map.buckets[gap_index].object() = *bucket.object();
                                     *bucket.object() = BUCKET_EMPTY;
                                     *map.buckets[gap_index].thread_queue() =
-                                        std::mem::take(bucket.thread_queue());
+                                        core::mem::take(bucket.thread_queue());
                                 }
                                 gap_index = end_index;
                             }
@@ -237,8 +245,15 @@ impl ParkingLot {
         }
     }
 
-    fn grow_map(&self, old: &'static Map) {
+    fn grow_map(&self) {
+        self.grow_map_lock.lock();
+
+        let old_ptr = self.map.load(Acquire);
+        // SAFETY: We always store a valid map and never take a mutable reference to it
+        let old = unsafe { (old_ptr as *const Map).as_ref_unchecked() };
+
         let new_capacity = old.buckets.len() + LOAD_FACTOR_RECIPROCE;
+        loom_info!(old_len = old.buckets.len(), new_capacity, "growing map");
 
         let mut items = (0..new_capacity)
             .map(|_| Bucket::default())
@@ -271,7 +286,7 @@ impl ParkingLot {
                     if *entry == BUCKET_EMPTY {
                         *entry = addr;
                         unsafe {
-                            *new_bucket.thread_queue() = std::mem::take(old_bucket.thread_queue());
+                            *new_bucket.thread_queue() = core::mem::take(old_bucket.thread_queue());
                         }
                         break;
                     } else {
@@ -285,10 +300,21 @@ impl ParkingLot {
 
         self.map.store(new_map, Release);
 
+        loom_info!(
+            old = old as *const _ as usize,
+            new = new_map as usize,
+            "written"
+        );
+
         for bucket in &old.buckets {
             unsafe {
                 bucket.lock.unlock();
             }
+        }
+
+        unsafe { Box::from_raw(old_ptr) };
+        unsafe {
+            self.grow_map_lock.unlock();
         }
     }
 }

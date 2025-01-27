@@ -3,18 +3,16 @@ mod thread_parking_lot;
 mod thread_queue;
 
 use std::{
-    cell::RefCell,
+    cell::{RefCell, RefMut},
     collections::{btree_map::*, BTreeMap},
+    panic::Location,
 };
 
 use crate::sync::*;
 use thread::current;
 pub(crate) use thread_parking_lot::ParkingLot;
 
-use crate::{
-    miri_println,
-    object::{Object, MONITOR_CONTENDED_BIT, MONITOR_LOCKED_BIT},
-};
+use crate::object::{Object, MONITOR_CONTENDED_BIT, MONITOR_LOCKED_BIT};
 
 ///! This module implements object monitors.
 ///!
@@ -66,14 +64,17 @@ thread_local! {
 
 impl ParkingLot {
     pub fn monitor_enter(&self, mark_ref: &AtomicU32) {
-        miri_println!("[{:?}] Enter", current().id());
-        LOCK_COUNT.with_borrow_mut(
-            |map| match map.entry((mark_ref as *const AtomicU32).addr()) {
+        loom_info!(object = (mark_ref as *const _ as usize), "enter");
+        LOCK_COUNT.with(|cell| {
+            let mut map = cell.borrow_mut();
+            match map.entry((mark_ref as *const AtomicU32).addr()) {
                 Entry::Occupied(mut count) => {
                     // Already locked
                     *count.get_mut() = count.get_mut().saturating_add(1);
+                    loom_info!(new_count = count.get_mut(), "Reentrant");
                 }
                 Entry::Vacant(vacant_entry) => {
+                    loom_info!("Not reentrant");
                     let mut mark = mark_ref.load(Relaxed);
                     let unlocked = mark & !MONITOR_LOCKED_BIT;
                     let locked = mark & MONITOR_LOCKED_BIT;
@@ -81,6 +82,7 @@ impl ParkingLot {
                         .compare_exchange(unlocked, locked, Acquire, Acquire)
                         .is_err()
                     {
+                        loom_info!("already locked by other thread");
                         // Failed to acquire the lock
                         self.park_on_lock((mark_ref as *const AtomicU32).addr(), || loop {
                             // We have the lock on the bucket, so no other thread can set the contended bit, but the monitor may have already been unlocked.
@@ -92,7 +94,8 @@ impl ParkingLot {
                                 Acquire,
                             ) {
                                 Ok(_) => {
-                                    // Successfully set contended bit, go sleep
+                                    loom_info!("set contended bit, going to park");
+                                    // Successfully set contended bit, go park
                                     return true;
                                 }
                                 Err(_) => {
@@ -106,6 +109,7 @@ impl ParkingLot {
                                         )
                                         .is_ok()
                                     {
+                                        loom_info!("acquired lock, no need to park");
                                         // We have the lock, no need to park
                                         return false;
                                     }
@@ -114,38 +118,49 @@ impl ParkingLot {
                         });
                         // We only get unparked when we get passed the lock
                     } else {
-                        miri_println!("locked without parking");
+                        loom_info!("locked without parking");
                     }
                     // Sucessfully locked object
                     vacant_entry.insert(1);
                 }
-            },
-        );
+            };
+            drop(map);
+        });
     }
 
     pub fn monitor_exit(&self, mark_ref: &AtomicU32) -> Result<(), LockNotHeld> {
-        miri_println!("[{:?}] Exit", current().id());
-        LOCK_COUNT.with_borrow_mut(|map| {
+        LOCK_COUNT.with(|cell| {
+            let mut map = cell.borrow_mut();
             let Entry::Occupied(mut entry) = map.entry((mark_ref as *const AtomicU32).addr())
             else {
+                loom_info!("lock not held");
                 return Err(LockNotHeld);
             };
             *entry.get_mut() -= 1;
+            loom_info!(
+                object = (mark_ref as *const _ as usize),
+                new_count = *entry.get(),
+                "monitor_exit"
+            );
             if *entry.get() == 0 {
+                loom_info!("trying to unlock");
                 entry.remove_entry();
                 loop {
                     // Load because there is other data in the mark word
                     let mark = mark_ref.load(Relaxed);
-                    if (mark & MONITOR_CONTENDED_BIT) != 0 {
+                    if (mark & MONITOR_CONTENDED_BIT) == 0 {
                         if mark_ref
                             .compare_exchange(mark, mark & !MONITOR_LOCKED_BIT, AcqRel, Relaxed)
                             .is_ok()
                         {
+                            loom_info!("uncontended, unlocking");
                             return Ok(());
                         }
                     } else {
+                        loom_info!("unparking one");
                         self.unpark_one((mark_ref as *const AtomicU32).addr(), |empty| {
                             if empty {
+                                loom_info!("queue empty, unlocking");
                                 loop {
                                     let mark = mark_ref.load(Relaxed);
                                     if mark_ref
@@ -166,6 +181,7 @@ impl ParkingLot {
                     }
                 }
             }
+            drop(map);
             Ok(())
         })
     }
@@ -174,16 +190,27 @@ impl ParkingLot {
 #[derive(Debug)]
 pub struct LockNotHeld;
 
-#[cfg(loom)]
+// TODO: Only build these if loom is active?
+#[cfg(test)]
 mod test {
     use crate::{heap::Heap, monitor_2::ParkingLot, sync::*};
 
     use super::Object;
 
+    fn model<F>(fun: F)
+    where
+        F: Fn() + Sync + Send + 'static,
+    {
+        #[cfg(not(loom))]
+        fun();
+        #[cfg(loom)]
+        loom::model(fun);
+    }
+
     #[test]
     fn new_monitor_reentrancy() {
-        loom::model(|| {
-            let parking_lot = ParkingLot::new();
+        model(|| {
+            let parking_lot = ParkingLot::default();
             let mark_ref = &AtomicU32::new(0);
             parking_lot.monitor_enter(mark_ref);
             parking_lot.monitor_enter(mark_ref);
@@ -194,13 +221,13 @@ mod test {
 
     #[test]
     fn new_monitor_contention() {
-        loom::model(|| {
+        model(|| {
             let threads = 2;
             let per_thread = 1;
 
-            let parking_lot = std::sync::Arc::new(ParkingLot::new());
-            let mark_ref = std::sync::Arc::new(AtomicU32::new(0));
-            let sum = std::sync::Arc::new(AtomicU32::new(0));
+            let parking_lot = Arc::new(ParkingLot::default());
+            let mark_ref = Arc::new(AtomicU32::new(0));
+            let sum = Arc::new(AtomicU32::new(0));
 
             let mut handles = Vec::new();
             // No scoped threads in loom…
@@ -209,13 +236,17 @@ mod test {
                 let mark_ref = mark_ref.clone();
                 let sum = sum.clone();
                 handles.push(thread::spawn(move || {
-                    for _ in 0..per_thread {
-                        parking_lot.monitor_enter(&*mark_ref);
-                        parking_lot.monitor_enter(&*mark_ref);
+                    loom_info!("Start test thread");
+                    for i in 0..per_thread {
+                        loom_info!(iter = i, "");
+                        parking_lot.monitor_enter(&mark_ref);
+                        parking_lot.monitor_enter(&mark_ref);
                         sum.store(sum.load(Relaxed) + 1, Relaxed);
-                        parking_lot.monitor_exit(&*mark_ref).unwrap();
-                        parking_lot.monitor_exit(&*mark_ref).unwrap();
+                        loom_info!(new = sum.load(Relaxed), "Mutate locked data");
+                        parking_lot.monitor_exit(&mark_ref).unwrap();
+                        parking_lot.monitor_exit(&mark_ref).unwrap();
                     }
+                    loom_info!("Completed test thread");
                 }));
             }
             for handle in handles {
