@@ -12,7 +12,7 @@
 
 // Currently, provenance goes ignored.
 
-use std::{
+use core::{
     num::NonZeroUsize,
     sync::atomic::{AtomicUsize, Ordering::*},
 };
@@ -92,7 +92,7 @@ impl Heap {
 
     pub fn alloc_class(&self, value: Class) -> ClassRef {
         let ptr = self
-            .alloc_permanent(std::mem::size_of::<Class>(), CLASS_ALIGN)
+            .alloc_permanent(core::mem::size_of::<Class>(), CLASS_ALIGN)
             .get() as *mut Class;
         unsafe {
             ptr.write(value);
@@ -115,7 +115,7 @@ impl Drop for Heap {
 /// Currently always 32bit, maybe add option for >32gb heaps later?
 pub type CompressedPtr = u32;
 /// Only used by field_storage for read/write
-pub type AtomicCompressedPtr = std::sync::atomic::AtomicU32;
+pub type AtomicCompressedPtr = core::sync::atomic::AtomicU32;
 
 pub use ptrs::Ptrs;
 
@@ -128,7 +128,7 @@ mod memory_map {
 
         let result = unsafe {
             libc::mmap(
-                std::ptr::null_mut(),
+                core::ptr::null_mut(),
                 size,
                 PROT_READ | PROT_WRITE,
                 MAP_PRIVATE | MAP_ANONYMOUS,

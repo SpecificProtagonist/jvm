@@ -1,11 +1,9 @@
-use std::{
+use alloc::{collections::BTreeMap, sync::Arc};
+use core::{
     cell::SyncUnsafeCell,
-    collections::BTreeMap,
-    sync::{
-        atomic::{AtomicPtr, Ordering},
-        Arc, RwLock,
-    },
+    sync::atomic::{AtomicPtr, Ordering},
 };
+use std::sync::RwLock;
 
 use hashbrown::Equivalent;
 
@@ -134,18 +132,18 @@ pub(crate) type MethodRef = &'static Method;
 impl Eq for MethodRef {}
 impl PartialEq for MethodRef {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(*self, *other)
+        core::ptr::eq(*self, *other)
     }
 }
 
-impl std::hash::Hash for MethodRef {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&(*self as *const _ as usize), state)
+impl core::hash::Hash for MethodRef {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::hash::Hash::hash(&(*self as *const _ as usize), state)
     }
 }
 
-impl std::fmt::Display for Method {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Method {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some(ret) = &self.nat.typ.returns {
             write!(f, "{}", ret)?;
         } else {
@@ -165,14 +163,14 @@ impl std::fmt::Display for Method {
     }
 }
 
-impl std::fmt::Debug for Method {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Method {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{self}")
     }
 }
 
-impl std::fmt::Display for MethodNaT {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for MethodNaT {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some(ret) = &self.typ.returns {
             write!(f, "{}", ret)?;
         } else {

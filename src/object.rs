@@ -1,4 +1,4 @@
-use std::{mem::size_of, num::NonZeroUsize, ops::Deref};
+use core::{mem::size_of, num::NonZeroUsize, ops::Deref};
 
 use crate::{
     class::{Class, ClassRef},
@@ -196,8 +196,8 @@ impl Object {
 
     pub(crate) fn format_short(self, ptrs: Ptrs) -> String {
         struct Fmt(Object, Ptrs);
-        impl std::fmt::Debug for Fmt {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        impl core::fmt::Debug for Fmt {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 fmt_object(self.1, self.0, f, false)
             }
         }
@@ -205,8 +205,8 @@ impl Object {
     }
 }
 
-impl std::fmt::Debug for Object {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Object {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "@{:x}", self.0)
     }
 }
@@ -214,9 +214,9 @@ impl std::fmt::Debug for Object {
 pub(crate) fn fmt_object(
     ptrs: Ptrs,
     object: Object,
-    f: &mut std::fmt::Formatter<'_>,
+    f: &mut core::fmt::Formatter<'_>,
     full: bool,
-) -> std::fmt::Result {
+) -> core::fmt::Result {
     let class = object.class(ptrs);
 
     // Prettier printing for strings
@@ -300,13 +300,13 @@ pub(crate) fn fmt_object(
     Ok(())
 }
 
-impl std::fmt::Pointer for Object {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Pointer for Object {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "@{:x}", self.0)
     }
 }
 
-const _: () = assert!(std::mem::size_of::<Object>() == std::mem::size_of::<Option<Object>>());
+const _: () = assert!(core::mem::size_of::<Object>() == core::mem::size_of::<Option<Object>>());
 
 pub trait Data {
     fn read(ptrs: Ptrs, ptr: *const Self, ordering: Ordering) -> Self;

@@ -1,7 +1,5 @@
-use std::sync::{
-    atomic::{AtomicPtr, Ordering},
-    Arc,
-};
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use hashbrown::Equivalent;
 
@@ -186,24 +184,24 @@ impl Field {
 impl Eq for &'_ Field {}
 impl PartialEq for &'_ Field {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(*self, *other)
+        core::ptr::eq(*self, *other)
     }
 }
 
-impl std::hash::Hash for &'_ Field {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&(*self as *const _ as usize), state)
+impl core::hash::Hash for &'_ Field {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::hash::Hash::hash(&(*self as *const _ as usize), state)
     }
 }
 
-impl std::fmt::Debug for FieldNaT {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for FieldNaT {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{} {}", self.typ, self.name)
     }
 }
 
-impl std::fmt::Debug for Field {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Field {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.nat.fmt(f)
     }
 }

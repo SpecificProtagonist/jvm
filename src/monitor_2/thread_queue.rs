@@ -1,4 +1,4 @@
-use std::cell::{SyncUnsafeCell, UnsafeCell};
+use core::cell::{SyncUnsafeCell, UnsafeCell};
 
 use crate::sync::*;
 use thread::Thread;
@@ -18,8 +18,8 @@ unsafe impl Sync for ThreadQueue {}
 impl Default for ThreadQueue {
     fn default() -> Self {
         Self {
-            head: std::ptr::null_mut(),
-            tail: std::ptr::null_mut(),
+            head: core::ptr::null_mut(),
+            tail: core::ptr::null_mut(),
         }
     }
 }
@@ -87,7 +87,7 @@ impl ThreadQueue {
 
 #[cfg(test)]
 mod tests {
-    use std::{
+    use core::{
         cell::{SyncUnsafeCell, UnsafeCell},
         sync::atomic::{AtomicBool, AtomicI32, Ordering},
         time::Duration,

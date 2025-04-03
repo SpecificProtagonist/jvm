@@ -1,4 +1,5 @@
-use std::{cell::SyncUnsafeCell, collections::BTreeMap, ops::Deref};
+use alloc::collections::BTreeMap;
+use core::{cell::SyncUnsafeCell, ops::Deref};
 
 use crate::{
     class::{Class, ClassRef},
@@ -57,7 +58,7 @@ impl VerificationType {
         pub fn is_java_assignable(from: ClassRef, to: ClassRef) -> bool {
             // Interfaces are to be treated as java.lang.Object
             to.is_interface()
-                || std::ptr::eq(from, to)
+                || core::ptr::eq(from, to)
                 || from.super_class.is_some_and(|s| is_java_assignable(s, to))
         }
 
@@ -1356,8 +1357,8 @@ fn verify_bytecode(
         // If the next specified stack map frame is reached, check if it matches the inferred one
         if let Some((type_state_pc, explicit_type_state)) = next_explicit_type_state {
             match (*pc).cmp(type_state_pc) {
-                std::cmp::Ordering::Less => {} // Not at frame yet
-                std::cmp::Ordering::Equal => {
+                core::cmp::Ordering::Less => {} // Not at frame yet
+                core::cmp::Ordering::Equal => {
                     verify!(
                         jvm,
                         !connected_to_previous_block
@@ -1366,7 +1367,7 @@ fn verify_bytecode(
                     type_state = explicit_type_state.clone();
                     next_explicit_type_state = type_states.next();
                 }
-                std::cmp::Ordering::Greater => verify_failed!(jvm),
+                core::cmp::Ordering::Greater => verify_failed!(jvm),
             }
         }
     }

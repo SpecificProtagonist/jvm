@@ -40,3 +40,7 @@ harness = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(miri_debug_print)', 'cfg(loom)'] }
+
+[lints.clippy]
+std_instead_of_core = "warn"
+std_instead_of_alloc = "warn"

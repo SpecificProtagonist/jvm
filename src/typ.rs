@@ -1,7 +1,5 @@
-use std::sync::{
-    atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicU8},
-    Arc,
-};
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicU8};
 
 use crate::heap::AtomicCompressedPtr;
 
@@ -42,8 +40,8 @@ impl Type {
     }
 }
 
-impl std::fmt::Display for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Type {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Type::Boolean => write!(f, "boolean"),
             Type::Byte => write!(f, "byte"),

@@ -1,4 +1,4 @@
-use std::{
+use core::{
     cell::SyncUnsafeCell,
     ops::Deref,
     sync::atomic::{AtomicU8, Ordering::Relaxed},

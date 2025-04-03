@@ -3,6 +3,8 @@
 #![feature(unsafe_cell_access)]
 #![doc = include_str!("../README.md")]
 
+extern crate alloc;
+
 mod class;
 mod class_loader;
 mod const_pool;
@@ -28,7 +30,7 @@ mod typ;
 mod value;
 mod verification;
 
-use std::{
+use core::{
     fmt::{Debug, Display},
     hash::Hash,
     marker::PhantomData,
@@ -81,13 +83,13 @@ macro_rules! define_guard {
         }
 
         impl Debug for $guard_typ {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 write!(f, "{:p}", self.value as *const $impl_typ)
             }
         }
 
         impl Hash for $guard_typ {
-            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
                 // This is safe because pointers are hashed instead of dereferenced
                 self.value.hash(state);
             }
@@ -111,7 +113,7 @@ pub struct Object {
 }
 
 impl Hash for Object {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         // This is safe because pointers are hashed instead of dereferenced
         self.value.hash(state);
     }
@@ -125,7 +127,7 @@ impl PartialEq for Object {
 }
 
 impl Debug for Object {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{:x}", self.value.0)
     }
 }
@@ -309,16 +311,16 @@ impl Object {
     }
 }
 
-impl std::fmt::Pointer for Object {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        std::fmt::Pointer::fmt(&self.value, f)
+impl core::fmt::Pointer for Object {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        core::fmt::Pointer::fmt(&self.value, f)
     }
 }
 
 struct ObjectFmt<'a>(object::Object, Ptrs, PhantomData<&'a Jvm>);
 
 impl Debug for ObjectFmt<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         object::fmt_object(self.1, self.0, f, true)
     }
 }
@@ -673,7 +675,7 @@ impl Value {
 }
 
 impl Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
             Self::Ref(None) => write!(f, "null"),
             Self::Ref(Some(obj)) => write!(f, "@{:?}", obj.value),
@@ -768,7 +770,7 @@ impl PartialEq<Value> for Object {
 
 /// Err is an object that extends Throwable.
 /// Currently no call stack is provided.
-pub type JvmResult<T> = std::result::Result<T, Object>;
+pub type JvmResult<T> = Result<T, Object>;
 
 bitflags::bitflags! {
     /// Access flags of a class, field or method

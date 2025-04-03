@@ -1,11 +1,9 @@
 #![allow(unused)]
-use std::{
+use core::{
     cell::Cell,
-    sync::{
-        atomic::{AtomicU32, Ordering::*},
-        Mutex,
-    },
+    sync::atomic::{AtomicU32, Ordering::*},
 };
+use std::sync::Mutex;
 
 use crate::miri_println;
 
@@ -266,7 +264,8 @@ impl Monitor {
 mod test {
     use super::*;
     use crate::default;
-    use std::{sync::atomic::AtomicBool, thread, time::Duration};
+    use core::{sync::atomic::AtomicBool, time::Duration};
+    use std::thread;
 
     fn new() -> Box<Monitor> {
         Box::new(Monitor {

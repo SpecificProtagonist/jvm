@@ -18,7 +18,7 @@ use crate::value::Value;
 use crate::{class::*, default};
 
 /// Err is an object that extends Throwable
-pub(crate) type JvmResult<T> = std::result::Result<T, Object>;
+pub(crate) type JvmResult<T> = Result<T, Object>;
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct JvmId(u32);
@@ -52,7 +52,7 @@ impl Jvm {
     /// NOTE: The Jvm will preallocate `max_heap` bytes, relying on memory overcommit.
     /// On 64bit systems, `max_heap` is limited to 2³⁵ bytes (32Gb).
     pub fn new(base_class_loader: Box<dyn ClassLoader>, max_heap: usize) -> Self {
-        static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        static NEXT_ID: AtomicU32 = AtomicU32::new(0);
         let id = JvmId(NEXT_ID.fetch_add(1, Ordering::SeqCst));
         if id.0 == u32::MAX {
             panic!("You've created 4294967296 jvm instances. You've had your fun but that's enough for today.")

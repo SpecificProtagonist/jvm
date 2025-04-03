@@ -1,8 +1,6 @@
-use std::{
-    cell::SyncUnsafeCell,
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use alloc::{collections::BTreeMap, sync::Arc};
+use core::cell::SyncUnsafeCell;
+use hashbrown::HashMap;
 
 use crate::{
     const_pool::{ConstPool, ConstPoolItem},

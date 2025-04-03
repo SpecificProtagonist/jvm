@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use core::sync::atomic::Ordering;
 
 use crate::{
     class::{Class, ClassState},
@@ -114,7 +114,7 @@ pub(crate) fn reload_method_bytecodes_for_class(jvm: &Jvm, name: &str) -> Result
         let mut new = method.code.write().unwrap();
         let mut old = class.methods.get(nat).unwrap().code.write().unwrap();
         if let (Code::Bytecode(old), Code::Bytecode(new)) = (&mut *old, &mut *new) {
-            std::mem::swap(old, new);
+            core::mem::swap(old, new);
         }
     }
     // Skip preparation & initialization to keep existing state

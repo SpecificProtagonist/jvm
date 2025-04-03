@@ -59,13 +59,13 @@ pub(crate) type ClassRef = &'static Class;
 impl Eq for ClassRef {}
 impl PartialEq for ClassRef {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(*self, *other)
+        core::ptr::eq(*self, *other)
     }
 }
 
-impl std::hash::Hash for ClassRef {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&(*self as *const Class as usize), state)
+impl core::hash::Hash for ClassRef {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::hash::Hash::hash(&(*self as *const Class as usize), state)
     }
 }
 
@@ -384,14 +384,14 @@ impl Class {
     }
 }
 
-impl std::fmt::Display for Class {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Class {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.name)
     }
 }
 
-impl std::fmt::Debug for Class {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Class {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.name)
     }
 }

@@ -57,6 +57,6 @@ impl IdentityHashesGcLock<'_> {
 
 impl Drop for IdentityHashesGcLock<'_> {
     fn drop(&mut self) {
-        *self.lock = std::mem::take(&mut self.new);
+        *self.lock = core::mem::take(&mut self.new);
     }
 }

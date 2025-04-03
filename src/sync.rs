@@ -13,13 +13,11 @@ pub(crate) use loom::{
 #[cfg(not(loom))]
 pub(crate) use {
     crate::raw_mutex::RawMutex,
-    std::{
-        sync::{atomic::*, *},
-        thread,
-    },
+    alloc::sync::Arc,
+    core::sync::atomic::{Ordering::*, *},
+    std::sync::{Condvar, Mutex, RwLock},
+    std::thread,
 };
-
-pub(crate) use std::sync::{atomic::Ordering::*, Arc};
 
 /// Log provided info if loom is active
 #[cfg(loom)]

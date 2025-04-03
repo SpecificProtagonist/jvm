@@ -2,9 +2,9 @@
 mod thread_parking_lot;
 mod thread_queue;
 
-use std::{
+use alloc::collections::{btree_map::*, BTreeMap};
+use core::{
     cell::{RefCell, RefMut},
-    collections::{btree_map::*, BTreeMap},
     panic::Location,
 };
 

@@ -1,6 +1,6 @@
 #![cfg_attr(loom, allow(unused))]
 // Can't use loom as it doesn't mock atomic-wait
-use std::sync::atomic::{AtomicU32, Ordering::*};
+use core::sync::atomic::{AtomicU32, Ordering::*};
 
 // TODO: Use atomic version of ThreadQueue instead of atomic_wait?
 
