@@ -20,7 +20,6 @@ pub(crate) struct ParkingLot {
 impl Default for ParkingLot {
     fn default() -> Self {
         let map = Box::into_raw(Box::new(Map {
-            count: 1.into(),
             hash_bits: 0,
             buckets: Box::new([Bucket::default()]),
         }))
@@ -32,19 +31,17 @@ impl Default for ParkingLot {
     }
 }
 
-// Fixed-size open-addressing hashmap of waiting threads.
+/// Fixed-size hashmap of waiting threads.
+///
+/// There is at most one entry per thread and speed is important,
+/// therefore instead of open addressing or chaining, we grow the
+/// map on collision.
 struct Map {
-    /// Number of occupied buckets, including tombstones.
-    count: AtomicU32,
     /// Number of low bits of the address hash used.
     hash_bits: u8,
     // Stored data.
     buckets: Box<[Bucket]>,
 }
-
-/// Map will have at most 1/LOAD_FACTOR_RECIPROCE occupied buckets.
-/// This keeps probing short.
-const LOAD_FACTOR_RECIPROCE: usize = 3;
 
 /// No item in this bucket
 const BUCKET_EMPTY: usize = 0;
@@ -67,7 +64,7 @@ impl Default for Bucket {
 
 impl Map {
     /// Index of the bucket where the element will be placed if there are no collisions.
-    fn natural_index(&self, object: usize) -> usize {
+    fn index(&self, object: usize) -> usize {
         // TODO: Does this work as a decent hash function?
         let base = object >> OBJECT_ALIGN.trailing_zeros();
         base.wrapping_add(base >> self.hash_bits) & ((1 << self.hash_bits) - 1)
@@ -97,68 +94,48 @@ impl ParkingLot {
         // SAFETY: We always store a valid map and never take a mutable reference to it
         let mut map = unsafe { (self.map.load(Acquire) as *const Map).as_ref_unchecked() };
 
-        let count = map.count.fetch_add(1, AcqRel);
-        if count as usize * LOAD_FACTOR_RECIPROCE > map.buckets.len() {
+        let index = map.index(object);
+
+        let bucket = &map.buckets[index];
+        bucket.lock.lock();
+
+        // Was the map grown by another thread?
+        let new_map = self.map.load(Acquire);
+        if !core::ptr::eq(new_map, map) {
+            unsafe {
+                map.buckets[index].lock.unlock();
+            }
+            return self.park_on_lock(object, should_park);
+        }
+
+        // SAFETY: Bucket is locked
+        let entry = unsafe { bucket.object() };
+        if *entry == BUCKET_EMPTY {
+            // New entry
+            *entry = object;
+        } else if *entry == object {
+            // Already present
+        } else {
+            // Used by a different object → grow map
+            unsafe { bucket.lock.unlock() };
             self.grow_map();
-            map = unsafe { (self.map.load(Relaxed) as *const Map).as_ref_unchecked() };
-        }
-
-        self.park_with_map(map, object, should_park);
-    }
-
-    fn park_with_map(&self, map: &Map, object: usize, should_park: impl FnOnce() -> bool) {
-        let start_index = map.natural_index(object);
-        let mut index = start_index;
-
-        // Linear probing.
-        // This will usually succeed at the first bucket.
-        // TODO: Instead grow map when there is a collision? Needs good hash though.
-        loop {
-            let bucket = &map.buckets[index];
-            bucket.lock.lock();
-            // SAFETY: Bucket is locked
-            let entry = unsafe { bucket.object() };
-            if *entry == object {
-                // Already present
-                break;
-            } else if *entry == BUCKET_EMPTY {
-                // New entry
-                *entry = object;
-                break;
-            } else {
-                // Used by a different object
-                index += 1;
-            }
-        }
-
-        // Check whether still the same map
-        let new_map = unsafe { self.map.load(Acquire).as_ref_unchecked() };
-        if !std::ptr::eq(new_map, map) {
-            for i in start_index..=index {
-                unsafe {
-                    map.buckets[i].lock.unlock();
-                }
-            }
-            self.park_with_map(new_map, object, should_park);
+            self.park_on_lock(object, should_park);
             return;
         }
 
-        let unlock_buckets = || {
-            for i in start_index..=index {
-                unsafe {
-                    map.buckets[i].lock.unlock();
-                }
-            }
+        // SAFETY: We've locked the bucket
+        let unlock_bucket = || unsafe {
+            map.buckets[index].lock.unlock();
         };
 
         // We hold the lock for the bucket, see if we should park
         if should_park() {
             // SAFETY: Bucket is locked
             unsafe {
-                ThreadQueue::park(&map.buckets[index].waiting_threads, unlock_buckets);
+                ThreadQueue::park(&map.buckets[index].waiting_threads, unlock_bucket);
             }
         } else {
-            unlock_buckets();
+            unlock_bucket();
         }
     }
 
@@ -169,90 +146,54 @@ impl ParkingLot {
         // SAFETY: We always store a valid map and never take a mutable reference to it
         let mut map = unsafe { (self.map.load(Acquire) as *const Map).as_ref_unchecked() };
 
-        let start_index = map.natural_index(object);
-        let mut index = start_index;
+        let index = map.index(object);
+        let bucket = &map.buckets[index];
+        bucket.lock.lock();
 
-        // Search for right bucket
-        let bucket = loop {
-            let bucket = &map.buckets[index];
-            bucket.lock.lock();
-            // SAFETY: Bucket is locked
-            let entry = unsafe { bucket.object() };
-            if *entry == object {
-                // Found
-                break Some(bucket);
-            } else if *entry == BUCKET_EMPTY {
-                // Not found.
-                // TODO: This shouldn't happen anymore, double check this
-                break None;
-            } else {
-                index += 1;
-            }
-        };
-
-        // Check whether still the same map
+        // Was the map grown by another thread?
         let new_map = self.map.load(Acquire);
         if !core::ptr::eq(new_map, map) {
-            for i in start_index..=index {
-                unsafe {
-                    map.buckets[i].lock.unlock();
-                }
+            // SAFETY: Bucket locked
+            unsafe {
+                map.buckets[index].lock.unlock();
             }
             return self.unpark_one(object, pre_unpark);
         }
 
         let mut end_index = index;
 
-        if let Some(bucket) = bucket {
-            unsafe {
-                bucket.thread_queue().wake_one(|empty| {
-                    pre_unpark(empty);
+        unsafe {
+            bucket.thread_queue().wake_one(|empty| {
+                // Bucket is locked
+                pre_unpark(empty);
 
-                    // Remove item, relocating any subsequent ones that were offset because this bucket was occupied.
-                    if empty {
-                        unsafe {
-                            *map.buckets[index].object() = BUCKET_EMPTY;
-                        }
-                        let mut gap_index = index;
-                        loop {
-                            let bucket = &map.buckets[index];
-                            bucket.lock.lock();
-                            let entry = unsafe { bucket.object() };
-                            if *entry == BUCKET_EMPTY {
-                                break;
-                            }
-                            let natural = map.natural_index(*entry);
-                            if natural <= gap_index {
-                                unsafe {
-                                    *map.buckets[gap_index].object() = *bucket.object();
-                                    *bucket.object() = BUCKET_EMPTY;
-                                    *map.buckets[gap_index].thread_queue() =
-                                        core::mem::take(bucket.thread_queue());
-                                }
-                                gap_index = end_index;
-                            }
-                            end_index += 1;
-                        }
+                if empty {
+                    // Remove entry
+                    // SAFETY: Bucket locked
+                    unsafe {
+                        *map.buckets[index].object() = BUCKET_EMPTY;
                     }
-                })
-            }
+                }
+            })
         }
 
-        for i in start_index..=end_index {
-            unsafe {
-                map.buckets[i].lock.unlock();
-            }
+        // SAFETY: Bucket is locked
+        unsafe {
+            map.buckets[index].lock.unlock();
         }
     }
 
+    /// Switches to a larger hashmap. Requires no buckets to be locked by this thread.
     fn grow_map(&self) {
-        self.grow_map_lock.lock();
-
         let old_ptr = self.map.load(Acquire);
         // SAFETY: We always store a valid map and never take a mutable reference to it
         let old = unsafe { (old_ptr as *const Map).as_ref_unchecked() };
 
-        let new_capacity = old.buckets.len() + LOAD_FACTOR_RECIPROCE;
+        for bucket in &old.buckets {
+            bucket.lock.lock();
+        }
+
+        let new_capacity = old.buckets.len() * 2;
         loom_info!(old_len = old.buckets.len(), new_capacity, "growing map");
 
         let mut items = (0..new_capacity)
@@ -260,12 +201,7 @@ impl ParkingLot {
             .collect::<Vec<_>>()
             .into();
 
-        for bucket in &old.buckets {
-            bucket.lock.lock();
-        }
-
         let mut new_map = Map {
-            count: 0.into(),
             hash_bits: new_capacity.trailing_zeros() as u8,
             buckets: items,
         };
@@ -276,7 +212,7 @@ impl ParkingLot {
                 // SAFETY: Bucket is locked → exclusive access
                 unsafe { *old_bucket.object() };
             if addr != BUCKET_EMPTY {
-                let mut index = new_map.natural_index(addr);
+                let mut index = new_map.index(addr);
                 // Search for right bucket
                 loop {
                     let new_bucket = &new_map.buckets[index];
@@ -307,14 +243,14 @@ impl ParkingLot {
         );
 
         for bucket in &old.buckets {
+            // SAFETY: All buckets are locked
             unsafe {
                 bucket.lock.unlock();
             }
         }
 
-        unsafe { Box::from_raw(old_ptr) };
-        unsafe {
-            self.grow_map_lock.unlock();
-        }
+        // We can't deallocate the old map yet because we don't know if another thread is still using it.
+        // Tell miri we deliberately leak.
+        Box::leak(unsafe { Box::from_raw(old_ptr) });
     }
 }
