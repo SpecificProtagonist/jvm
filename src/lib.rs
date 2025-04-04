@@ -17,15 +17,13 @@ mod interpreter;
 mod jvm;
 mod method;
 mod miri;
+#[path = "monitor/monitor.rs"]
 mod monitor;
-#[path = "monitor_2/monitor.rs"]
-mod monitor_2;
 mod object;
 mod opcodes;
 mod parse;
 pub mod provided_native_methods;
 mod raw_mutex;
-mod sync;
 mod typ;
 mod value;
 mod verification;

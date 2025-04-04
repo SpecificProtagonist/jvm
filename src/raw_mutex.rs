@@ -2,6 +2,8 @@
 // Can't use loom as it doesn't mock atomic-wait
 use core::sync::atomic::{AtomicU32, Ordering::*};
 
+use crate::miri_println;
+
 // TODO: Use atomic version of ThreadQueue instead of atomic_wait?
 
 pub(super) struct RawMutex {
@@ -19,12 +21,18 @@ impl RawMutex {
 
     #[inline]
     pub fn lock(&self) {
+        miri_println!(
+            "[{:?}] locking bucket {:?}",
+            std::thread::current().id(),
+            self as *const _
+        );
         if let Err(loaded) = self
             .lock_word
             .compare_exchange(0, LOCKED_BIT, Acquire, Relaxed)
         {
             self.lock_locked(loaded);
         }
+        miri_println!("[{:?}] locked bucket", std::thread::current().id());
     }
 
     #[cold]
@@ -64,6 +72,11 @@ impl RawMutex {
 
     /// SAFETY: Mutex must be locked
     pub unsafe fn unlock(&self) {
+        miri_println!(
+            "[{:?}] unlocking bucket {:?}",
+            std::thread::current().id(),
+            self as *const _
+        );
         if self.lock_word.swap(0, AcqRel) == LOCKED_BIT | CONTENDED_BIT {
             atomic_wait::wake_one(&self.lock_word);
         }

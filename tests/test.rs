@@ -1,8 +1,6 @@
 #![feature(closure_lifetime_binder)]
-use std::{
-    sync::atomic::{AtomicBool, Ordering},
-    thread::scope,
-};
+use core::sync::atomic::{AtomicBool, Ordering::*};
+use std::thread::scope;
 
 use jvm::*;
 
@@ -307,7 +305,7 @@ fn hot_reloading() {
     impl ClassLoader for TestClassloader {
         fn load(&self, mut name: &str) -> Option<Vec<u8>> {
             if name == "HotReloading" {
-                if RELOADED.load(Ordering::SeqCst) {
+                if RELOADED.load(SeqCst) {
                     name = "HotReloading2";
                 } else {
                     name = "HotReloading1"
@@ -327,7 +325,7 @@ fn hot_reloading() {
         .unwrap();
     assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), 1);
 
-    RELOADED.store(true, Ordering::SeqCst);
+    RELOADED.store(true, SeqCst);
     jvm.reload_method_bytecodes_for_class("HotReloading")
         .unwrap();
     assert_eq!(method.invoke(&jvm, &[]).unwrap().unwrap(), 2);

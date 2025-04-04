@@ -1,5 +1,6 @@
-use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicU8};
+
+use alloc::sync::Arc;
 
 use crate::heap::AtomicCompressedPtr;
 

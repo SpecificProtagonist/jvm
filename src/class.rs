@@ -1,8 +1,9 @@
+use alloc::sync::Arc;
 use hashbrown::HashMap;
+use std::sync::{Condvar, Mutex, RwLock};
 use std::thread::ThreadId;
 
-use crate::sync::*;
-
+use crate::monitor::maybe_loom;
 use crate::{
     const_pool::ConstPool,
     field::{Field, FieldNaT, FieldNaTBorrow},
@@ -37,7 +38,7 @@ pub(crate) struct Class {
     pub(crate) methods: HashMap<MethodNaT, MethodRef>,
     /// Data of all static fields
     pub(crate) static_storage: FieldStorage,
-    pub(crate) static_monitor: AtomicU32,
+    pub(crate) static_monitor: maybe_loom::AtomicU32,
     /// Combined size of instance fields in normal class, 0 if array
     pub(crate) object_size: usize,
     pub(crate) init: Mutex<ClassState>,

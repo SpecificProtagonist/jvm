@@ -1,9 +1,12 @@
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU32, Ordering::*};
+use std::sync::{Mutex, RwLock};
+
 use crate::heap::Heap;
 use crate::hot_reloading::{reload_method_bytecodes_for_class, ReloadErr};
 use crate::identity_hash::IdentityHashes;
-use crate::monitor_2::ParkingLot;
+use crate::monitor::{maybe_loom, ParkingLot};
 use crate::provided_native_methods::get_provided_methods;
-use crate::sync::*;
 use crate::{class_loader::ClassLoader, AccessFlags};
 use fixed_typed_arena::ManuallyDropArena;
 // TODO: posibly exchange for different hasher (benchmark)
@@ -53,7 +56,7 @@ impl Jvm {
     /// On 64bit systems, `max_heap` is limited to 2³⁵ bytes (32Gb).
     pub fn new(base_class_loader: Box<dyn ClassLoader>, max_heap: usize) -> Self {
         static NEXT_ID: AtomicU32 = AtomicU32::new(0);
-        let id = JvmId(NEXT_ID.fetch_add(1, Ordering::SeqCst));
+        let id = JvmId(NEXT_ID.fetch_add(1, SeqCst));
         if id.0 == u32::MAX {
             panic!("You've created 4294967296 jvm instances. You've had your fun but that's enough for today.")
         }
@@ -175,7 +178,7 @@ impl Jvm {
             fields: default(),
             methods: super_class.methods.clone(),
             static_storage: FieldStorage::EMPTY,
-            static_monitor: AtomicU32::new(0),
+            static_monitor: maybe_loom::AtomicU32::new(0),
             object_size: 0,
             init: ClassState::Unverified.into(),
             init_waiter: default(),
@@ -316,7 +319,7 @@ impl Jvm {
             fields,
             methods,
             static_storage,
-            static_monitor: AtomicU32::new(0),
+            static_monitor: maybe_loom::AtomicU32::new(0),
             object_size,
             init: ClassState::Unverified.into(),
             init_waiter: default(),
@@ -335,12 +338,12 @@ impl Jvm {
         for method in new_methods.values() {
             method
                 .class
-                .store(*class as *const Class as *mut Class, Ordering::SeqCst);
+                .store(*class as *const Class as *mut Class, SeqCst);
         }
         for field in class.fields.values() {
             field
                 .class
-                .store(*class as *const Class as *mut Class, Ordering::SeqCst);
+                .store(*class as *const Class as *mut Class, SeqCst);
         }
 
         check_circular.pop();

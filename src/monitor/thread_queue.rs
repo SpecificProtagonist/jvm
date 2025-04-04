@@ -1,7 +1,7 @@
 use core::cell::{SyncUnsafeCell, UnsafeCell};
 
-use crate::sync::*;
-use thread::Thread;
+use super::*;
+use crate::miri_println;
 
 /// Queue of parked threads.
 ///
@@ -10,6 +10,7 @@ use thread::Thread;
 /// we can allocate it in thread local data.
 pub(super) struct ThreadQueue {
     head: *const ThreadData,
+    /// Only valid when `head` is not null.
     tail: *const ThreadData,
 }
 
@@ -47,14 +48,15 @@ impl ThreadQueue {
 
         THREAD_DATA.with(|current| {
             {
+                // SAFETY: Not in any queue
+                unsafe { *current.next.get() = core::ptr::null_mut() }
                 // SAFETY: Function precondition
-                let mut queue = unsafe { &mut *queue.get() };
-                // SAFETY: All pointers are either null or point to a valid list entry.
-                if let Some(tail) = unsafe { queue.tail.as_ref() } {
-                    // SAFETY: We have exclusive access to the queue
-                    unsafe { *tail.next.get() = current as _ };
-                } else {
+                let queue = unsafe { &mut *queue.get() };
+                if queue.head.is_null() {
                     queue.head = current as _;
+                } else {
+                    // SAFETY: We have exclusive access to the queue
+                    unsafe { *queue.tail.as_ref_unchecked().next.get() = current as _ };
                 }
                 queue.tail = current as _;
             }
@@ -65,22 +67,26 @@ impl ThreadQueue {
             // Consume unpark token if thread has been unparked between bucket unlock
             // and now, otherwise wait for unpark token.
             // To guard against wakeups not caused by `Self::wake_one`, we use out own token.
-            while !current.woken.swap(false, Ordering::Acquire) {
+            while !current.woken.swap(false, Acquire) {
+                miri_println!("[{:?}] calling park", thread::current().id());
                 thread::park();
             }
+            miri_println!("[{:?}] woken", thread::current().id());
         });
     }
 
     /// Pops and wakes one parked thread.
-    /// `pre_wake` gets passed true iff the queue will now be empty.
-    pub(super) fn wake_one(&mut self, pre_wake: impl FnOnce(bool)) {
+    /// `on_cleared` gets called if the queue will now be empty.
+    pub(super) fn wake_one(&mut self, on_cleared: impl FnOnce()) {
         // SAFETY: All pointers are either null or point to a valid list entry
         let thread_to_wake = unsafe { self.head.as_ref().expect("popped empty thread queue") };
         // SAFETY: `next` only gets written to in `Self::park`, which requires a mutable ref
         self.head = unsafe { *thread_to_wake.next.get() };
-        let empty = self.head.is_null();
-        pre_wake(empty);
-        thread_to_wake.woken.store(true, Ordering::Release);
+        if self.head.is_null() {
+            on_cleared();
+        }
+        thread_to_wake.woken.store(true, Release);
+        miri_println!("waking {:?}", thread_to_wake.thread);
         thread_to_wake.thread.unpark();
     }
 }
@@ -88,8 +94,8 @@ impl ThreadQueue {
 #[cfg(test)]
 mod tests {
     use core::{
-        cell::{SyncUnsafeCell, UnsafeCell},
-        sync::atomic::{AtomicBool, AtomicI32, Ordering},
+        cell::SyncUnsafeCell,
+        sync::atomic::{AtomicI32, Ordering},
         time::Duration,
     };
 
@@ -115,8 +121,10 @@ mod tests {
             thread.thread().unpark();
 
             std::thread::sleep(Duration::from_millis(100));
-            state.store(2, Ordering::SeqCst);
-            unsafe { &mut *queue.get() }.wake_one(|empty| assert!(empty));
+
+            unsafe { &mut *queue.get() }.wake_one(|| {
+                state.store(2, Ordering::SeqCst);
+            });
         });
     }
 }

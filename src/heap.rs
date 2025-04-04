@@ -205,7 +205,7 @@ mod ptrs {
 
 #[cfg(target_pointer_width = "32")]
 mod ptrs {
-    use super::{CompressedPtr, Heap, CLASS_ALIGN, OBJ_FLAG_BITS};
+    use super::{CompressedPtr, Heap, CLASS_ALIGN};
     use crate::object::OBJ_FLAG_BITS;
 
     pub const HEAP_SIZE_LIMIT: usize = usize::MAX;

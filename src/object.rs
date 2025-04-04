@@ -1,10 +1,15 @@
-use core::{mem::size_of, num::NonZeroUsize, ops::Deref};
+use core::{
+    mem::size_of,
+    num::NonZeroUsize,
+    ops::Deref,
+    sync::atomic::{Ordering::*, *},
+};
 
 use crate::{
     class::{Class, ClassRef},
     heap::{AtomicCompressedPtr, CompressedPtr, Heap, Ptrs},
     jvm::{throwable, JvmResult},
-    sync::*,
+    monitor::maybe_loom,
     typ::Type,
     value::Value,
     AccessFlags, Jvm,
@@ -76,8 +81,8 @@ impl Object {
         unsafe { (ptrs.decode_class(compressed) as *const Class).as_ref_unchecked() }
     }
 
-    pub(crate) fn mark_word(self) -> &'static AtomicU32 {
-        unsafe { ((self.0.get() + OFFSET_MARK) as *const AtomicU32).as_ref_unchecked() }
+    pub(crate) fn mark_word(self) -> &'static maybe_loom::AtomicU32 {
+        unsafe { ((self.0.get() + OFFSET_MARK) as *const maybe_loom::AtomicU32).as_ref_unchecked() }
     }
 
     pub fn fields(self) -> FieldStorage {
