@@ -37,6 +37,7 @@ Some current features:
 - monitors
 - native methods (`Method::bind_native_code`)
 - method body hot reloading (`Jvm::reload_method_bytecodes_for_class`)
+- compressed pointers & object headers
 
 Some missing features:
 - garbage collection
@@ -54,6 +55,9 @@ Some missing features:
 This JVM doesn't come with a class library, so you will have to provide your own suitable for your usecase – e.g. you might provide a library that does not include I/O functionality. Unfortunately the Java Virtual Machine Specification does not define what the JVM and the class library require of each other. Part of the class library provided by HotSpot will work, but a lot of functionality such as reflection will be missing.
 
 At minimum, the JVM requires the following classes and interfaces to exist:
+<details>
+<summary>Click to show</summary>
+
 ```ignore
 java
 ├── io
@@ -78,12 +82,13 @@ java
     ├── Object
     ├── StackOverflowError
     ├── String
-    │   with field: char[] chars
+    │   ◦ char[] chars
     ├── Throwable
     ├── UnsatisfiedLinkError
     ├── UnsupportedClassVersionError
     └── VerifyError
 ```
+</details>
 
 Optional implementations for some native methods are provided. You can bind all of them via `Jvm::bind_provided_native_methods`, or get a list via `provided_native_methods::get_provided_methods`.
 
