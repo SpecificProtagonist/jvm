@@ -28,9 +28,6 @@ const OFFSET_ARRAY_ITEMS: usize = OFFSET_ARRAY_LENGTH + size_of::<i32>();
 pub const OBJ_FLAG_BITS: u32 = 4;
 pub const MONITOR_LOCKED_BIT: u32 = 1;
 pub const MONITOR_CONTENDED_BIT: u32 = 2;
-// TODO: Allocate monitor on-demand, only store 2 bits in object.
-// Store hash code status in another two bits in the same byte.
-// First byte (on little endian) of object is available for this.
 
 const _: () = assert!(OFFSET_ARRAY_ITEMS % 8 == 0);
 

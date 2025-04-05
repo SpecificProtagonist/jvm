@@ -19,7 +19,6 @@ use core::{
 
 pub const OBJECT_ALIGN: usize = 8;
 const CLASS_ALIGN: usize = 32;
-const MAX_CLASS_ADDR: usize = (1 << 24) * CLASS_ALIGN;
 
 // TODO: keep a thread-local buffer to reduce locking
 pub struct Heap {
@@ -81,7 +80,7 @@ impl Heap {
                 }
                 #[cfg(target_pointer_width = "64")]
                 {
-                    if new_bottom - self.heap_bottom > MAX_CLASS_ADDR {
+                    if new_bottom - self.heap_bottom > (1 << 24) * CLASS_ALIGN {
                         panic!("Max permanent gen size exceeded");
                     }
                 }
@@ -158,6 +157,8 @@ mod memory_map {
 #[cfg(target_pointer_width = "64")]
 mod ptrs {
 
+    use core::ops::{Shl, Shr};
+
     use super::{CompressedPtr, Heap, CLASS_ALIGN, OBJECT_ALIGN};
     use crate::object::OBJ_FLAG_BITS;
 
@@ -197,8 +198,10 @@ mod ptrs {
 
         #[inline(always)]
         pub fn decode_class(&self, ptr: CompressedPtr) -> usize {
-            let relevant = ptr & !((1 << OBJ_FLAG_BITS) - 1);
-            ((relevant as usize) << (CLASS_ALIGN.trailing_zeros() - OBJ_FLAG_BITS)) + self.base_ptr
+            self.base_ptr
+                + (ptr as usize)
+                    .shr(OBJ_FLAG_BITS)
+                    .shl(CLASS_ALIGN.trailing_zeros())
         }
     }
 }
@@ -207,6 +210,7 @@ mod ptrs {
 mod ptrs {
     use super::{CompressedPtr, Heap, CLASS_ALIGN};
     use crate::object::OBJ_FLAG_BITS;
+    use core::ops::{Shl, Shr};
 
     pub const HEAP_SIZE_LIMIT: usize = usize::MAX;
 
@@ -235,12 +239,14 @@ mod ptrs {
 
         #[inline(always)]
         pub fn encode_class(&self, ptr: usize) -> CompressedPtr {
-            (ptr as u32) << (OBJ_FLAG_BITS - CLASS_ALIGN.trailing_zeros())
+            (ptr as u32) >> (CLASS_ALIGN.trailing_zeros() - OBJ_FLAG_BITS)
         }
 
         #[inline(always)]
         pub fn decode_class(&self, ptr: CompressedPtr) -> usize {
-            (ptr as usize) >> (OBJ_FLAG_BITS - CLASS_ALIGN.trailing_zeros())
+            (ptr as usize)
+                .shr(OBJ_FLAG_BITS)
+                .shl(CLASS_ALIGN.trailing_zeros())
         }
     }
 }
