@@ -49,7 +49,10 @@ struct Map {
 struct Bucket {
     object: UnsafeCell<Option<NonZeroUsize>>,
     lock: RawMutex,
-    waiting_threads: SyncUnsafeCell<ThreadQueue>,
+    /// Queue of threads waiting to take the lock
+    lock_queue: SyncUnsafeCell<ThreadQueue>,
+    /// Queue of threads waiting to be notified
+    notify_queue: SyncUnsafeCell<ThreadQueue>,
 }
 
 impl Default for Bucket {
@@ -57,7 +60,8 @@ impl Default for Bucket {
         Self {
             object: default(),
             lock: RawMutex::INIT,
-            waiting_threads: default(),
+            lock_queue: default(),
+            notify_queue: default(),
         }
     }
 }
@@ -80,8 +84,14 @@ impl Bucket {
 
     /// SAFETY: Must have locked bucket and no references are held
     #[allow(clippy::mut_from_ref)]
-    unsafe fn thread_queue(&self) -> &mut ThreadQueue {
-        (&self.waiting_threads as *const _ as *mut ThreadQueue).as_mut_unchecked()
+    unsafe fn lock_queue(&self) -> &mut ThreadQueue {
+        (&self.lock_queue as *const _ as *mut ThreadQueue).as_mut_unchecked()
+    }
+
+    /// SAFETY: Must have locked bucket and no references are held
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn notify_queue(&self) -> &mut ThreadQueue {
+        (&self.notify_queue as *const _ as *mut ThreadQueue).as_mut_unchecked()
     }
 }
 
@@ -136,8 +146,10 @@ impl ParkingLot {
         if should_park() {
             // SAFETY: Bucket is locked
             unsafe {
-                ThreadQueue::park(&map.buckets[index].waiting_threads, unlock_bucket);
+                ThreadQueue::enqueue(map.buckets[index].lock_queue());
+                unlock_bucket();
             }
+            ThreadQueue::park();
         } else {
             unlock_bucket();
         }
@@ -146,7 +158,12 @@ impl ParkingLot {
     /// Unparks one thread.
     /// Runs the provided function after bucket locking but before unparking,
     /// if there is only one thread waiting.
-    pub(super) fn unpark_one(&self, object: NonZeroUsize, on_cleared: impl FnOnce()) {
+    pub(super) fn unpark_one(
+        &self,
+        object: NonZeroUsize,
+        park_till_notified: bool,
+        on_cleared: impl FnOnce(),
+    ) {
         // SAFETY: We always store a valid map and never take a mutable reference to it
         let map = unsafe { (self.map.load(Acquire) as *const Map).as_ref_unchecked() };
 
@@ -161,21 +178,51 @@ impl ParkingLot {
             unsafe {
                 map.buckets[index].lock.unlock();
             }
-            return self.unpark_one(object, on_cleared);
+            return self.unpark_one(object, park_till_notified, on_cleared);
         }
 
         // SAFETY: Bucket locked
         unsafe {
-            bucket.thread_queue().wake_one(|| {
+            if park_till_notified {
+                ThreadQueue::enqueue(bucket.notify_queue());
+            }
+            bucket.lock_queue().wake_one(|| {
                 on_cleared();
                 // Remove entry
                 *map.buckets[index].object() = None;
-            })
+            });
+        }
+        if park_till_notified {
+            ThreadQueue::park();
         }
 
         // SAFETY: Bucket is locked
         unsafe {
             map.buckets[index].lock.unlock();
+        }
+    }
+
+    pub(super) fn notify_one(&self, object: NonZeroUsize) {
+        // SAFETY: We always store a valid map and never take a mutable reference to it
+        let map = unsafe { (self.map.load(Acquire) as *const Map).as_ref_unchecked() };
+
+        let index = map.index(object);
+        let bucket = &map.buckets[index];
+        bucket.lock.lock();
+        unsafe {
+            bucket.notify_queue().wake_one(|| {});
+        }
+    }
+
+    pub(super) fn notify_all(&self, object: NonZeroUsize) {
+        // SAFETY: We always store a valid map and never take a mutable reference to it
+        let map = unsafe { (self.map.load(Acquire) as *const Map).as_ref_unchecked() };
+
+        let index = map.index(object);
+        let bucket = &map.buckets[index];
+        bucket.lock.lock();
+        unsafe {
+            bucket.notify_queue().wake_all();
         }
     }
 
@@ -234,7 +281,7 @@ impl ParkingLot {
                 let index = new_map.index(object);
                 let new_bucket = &new_map.buckets[index];
                 unsafe {
-                    *new_bucket.thread_queue() = core::mem::take(old_bucket.thread_queue());
+                    *new_bucket.lock_queue() = core::mem::take(old_bucket.lock_queue());
                 }
             }
         }

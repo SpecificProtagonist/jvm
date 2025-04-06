@@ -1,4 +1,4 @@
-use core::cell::{SyncUnsafeCell, UnsafeCell};
+use core::cell::UnsafeCell;
 
 use super::*;
 use crate::miri_println;
@@ -32,26 +32,24 @@ struct ThreadData {
     woken: AtomicBool,
     next: UnsafeCell<*const ThreadData>,
 }
+thread_local! {
+    static THREAD_DATA: ThreadData = ThreadData{
+        thread: thread::current(),
+        woken: AtomicBool::new(false),
+        next: UnsafeCell::new(core::ptr::null_mut()),
+    };
+}
 
 impl ThreadQueue {
-    /// Parks the current thread on this queue.
+    /// Adds the thread to the queue.
     ///
-    /// SAFETY: Must have exclusive access to queue until `pre_park` is called.
-    pub(super) unsafe fn park(queue: &SyncUnsafeCell<ThreadQueue>, pre_park: impl FnOnce()) {
-        thread_local! {
-            static THREAD_DATA: ThreadData = ThreadData{
-                thread: thread::current(),
-                woken: AtomicBool::new(false),
-                next: UnsafeCell::new(core::ptr::null_mut()),
-            };
-        }
-
+    /// SAFETY: `ThreadQueue::park` must be called before the next time `enqueue` is called.
+    pub(super) unsafe fn enqueue(queue: &mut ThreadQueue) {
         THREAD_DATA.with(|current| {
             {
                 // SAFETY: Not in any queue
                 unsafe { *current.next.get() = core::ptr::null_mut() }
                 // SAFETY: Function precondition
-                let queue = unsafe { &mut *queue.get() };
                 if queue.head.is_null() {
                     queue.head = current as _;
                 } else {
@@ -60,13 +58,15 @@ impl ThreadQueue {
                 }
                 queue.tail = current as _;
             }
+        });
+    }
 
-            // We no longer hold the &mut to the queue here.
-            pre_park();
-
-            // Consume unpark token if thread has been unparked between bucket unlock
-            // and now, otherwise wait for unpark token.
-            // To guard against wakeups not caused by `Self::wake_one`, we use out own token.
+    /// Parks this thread. Only makes sense when this thread has been enqueued.
+    pub(super) fn park() {
+        // Consume unpark token if thread has been unparked between bucket unlock
+        // and now, otherwise wait for unpark token.
+        // To guard against wakeups not caused by `Self::wake_one`, we use out own token.
+        THREAD_DATA.with(|current| {
             while !current.woken.swap(false, Acquire) {
                 miri_println!("[{:?}] calling park", thread::current().id());
                 thread::park();
@@ -89,6 +89,15 @@ impl ThreadQueue {
         miri_println!("waking {:?}", thread_to_wake.thread);
         thread_to_wake.thread.unpark();
     }
+
+    pub(super) fn wake_all(&mut self) {
+        let mut cleared = false;
+        while !cleared {
+            self.wake_one(|| {
+                cleared = true;
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -108,11 +117,11 @@ mod tests {
         std::thread::scope(|s| {
             let thread = s.spawn(|| {
                 unsafe {
-                    ThreadQueue::park(&queue, || {
-                        state.store(1, Ordering::SeqCst);
-                    });
-                    assert_eq!(state.load(Ordering::SeqCst), 2);
+                    ThreadQueue::enqueue(&mut *queue.get());
+                    state.store(1, Ordering::SeqCst);
+                    ThreadQueue::park();
                 };
+                assert_eq!(state.load(Ordering::SeqCst), 2);
             });
 
             while state.load(Ordering::SeqCst) == 0 {}

@@ -246,47 +246,39 @@ impl Object {
     ///
     /// Throws `IllegalMonitorStateException` is the object is not locked by this thread.
     pub fn exit_monitor(self, jvm: &Jvm) -> JvmResult<()> {
-        if jvm
-            .parking_lot
+        jvm.parking_lot
             .monitor_exit(self.into_inner(jvm.id).mark_word())
-            .is_err()
-        {
-            error(jvm, "IllegalMonitorStateException", "");
-        }
-        Ok(())
+            .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
     }
 
-    // /// Wait on this object until notified by [`notify`](Object::notify) or [`notify_all`](Object::notify_all),
-    // /// or until spuriously woken up.
-    // ///
-    // /// This thread must hold the object's lock beforehand (otherwise `IllegalMonitorStateException` will be thrown).
-    // /// and will reäquire the lock when woken.
-    // pub fn wait(self, jvm: &Jvm) -> JvmResult<()> {
-    //     self.into_inner(jvm.id)
-    //         .monitor()
-    //         .wait()
-    //         .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
-    // }
+    /// Wait on this object until notified by [`notify`](Object::notify) or [`notify_all`](Object::notify_all),
+    /// or until spuriously woken up.
+    ///
+    /// This thread must hold the object's lock beforehand (otherwise `IllegalMonitorStateException` will be thrown)
+    /// and will reäquire the lock when woken.
+    pub fn wait(self, jvm: &Jvm) -> JvmResult<()> {
+        jvm.parking_lot
+            .monitor_wait(self.into_inner(jvm.id).mark_word())
+            .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
+    }
 
-    // /// Notifies a thread [`wait`ing](Object::wait) on this object.
-    // ///
-    // /// This thread must hold the object's lock (otherwise `IllegalMonitorStateException` will be thrown).
-    // pub fn notify(self, jvm: &Jvm) -> JvmResult<()> {
-    //     self.into_inner(jvm.id)
-    //         .monitor()
-    //         .notify_one()
-    //         .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
-    // }
+    /// Notifies a thread [`wait`ing](Object::wait) on this object.
+    ///
+    /// This thread must hold the object's lock (otherwise `IllegalMonitorStateException` will be thrown).
+    pub fn notify(self, jvm: &Jvm) -> JvmResult<()> {
+        jvm.parking_lot
+            .monitor_notify(self.into_inner(jvm.id).mark_word())
+            .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
+    }
 
-    // /// Notifies all threads [`wait`ing](Object::wait) on this object.
-    // ///
-    // /// This thread must hold the object's lock (otherwise `IllegalMonitorStateException` will be thrown).
-    // pub fn notify_all(self, jvm: &Jvm) -> JvmResult<()> {
-    //     self.into_inner(jvm.id)
-    //         .monitor()
-    //         .notify_all()
-    //         .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
-    // }
+    /// Notifies all threads [`wait`ing](Object::wait) on this object.
+    ///
+    /// This thread must hold the object's lock (otherwise `IllegalMonitorStateException` will be thrown).
+    pub fn notify_all(self, jvm: &Jvm) -> JvmResult<()> {
+        jvm.parking_lot
+            .monitor_notify_all(self.into_inner(jvm.id).mark_word())
+            .map_err(|_| Object::new(jvm.id, error(jvm, "IllegalMonitorStateException", "")))
+    }
 
     /// Creates a debug representation of the object. For a full object tree, use `Debug`.
     pub fn format_short(self, jvm: &Jvm) -> String {

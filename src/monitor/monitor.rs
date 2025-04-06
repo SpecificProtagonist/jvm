@@ -63,8 +63,7 @@ thread_local! {
 
 impl ParkingLot {
     pub fn monitor_enter(&self, mark_ref: &AtomicU32) {
-        let _tid = current().id();
-        miri_println!("[{_tid:?}] enter {:?}", mark_ref as *const _);
+        miri_println!("[{:?}] enter {:?}", current().id(), mark_ref as *const _);
         LOCK_COUNT.with(|cell| {
             match cell
                 .borrow_mut()
@@ -73,72 +72,17 @@ impl ParkingLot {
                 Entry::Occupied(mut count) => {
                     // Already locked
                     *count.get_mut() = count.get_mut().saturating_add(1);
-                    miri_println!("[{_tid:?}] reentrant → {}", count.get_mut());
+                    miri_println!("[{:?}] reentrant → {}", current().id(), count.get_mut());
                 }
                 Entry::Vacant(vacant_entry) => {
                     vacant_entry.insert(1);
-                    // We don't know the target content of the mark word as it's
-                    // shared with other functionality, so load it.
-                    let mark = mark_ref.load(Relaxed);
-                    let unlocked = mark & !MONITOR_LOCKED_BIT;
-                    let locked = mark | MONITOR_LOCKED_BIT;
-                    if mark_ref
-                        .compare_exchange(unlocked, locked, Acquire, Relaxed)
-                        .is_ok()
-                    {
-                        miri_println!("[{_tid:?}] locked without parking");
-                    } else {
-                        miri_println!("[{_tid:?}] failed to aquire lock");
-                        // TODO: Add utility method for ref → NonZeroUsize to rust
-                        let addr =
-                            NonZeroUsize::new((mark_ref as *const AtomicU32).addr()).unwrap();
-                        // Failed to acquire the lock,
-                        // either because it was already locked or because the other data changed.
-                        self.park_on_lock(addr, || loop {
-                            // We have the lock on the bucket, so no other thread can set the contended bit,
-                            // but the monitor may have already been unlocked.
-                            let mark = mark_ref.load(Relaxed);
-                            miri_println!("[{_tid:?}] loaded {mark}");
-                            match mark_ref.compare_exchange(
-                                mark | MONITOR_LOCKED_BIT,
-                                mark | MONITOR_LOCKED_BIT | MONITOR_CONTENDED_BIT,
-                                Acquire,
-                                Acquire,
-                            ) {
-                                Ok(_) => {
-                                    miri_println!("[{_tid:?}] set contended bit, going to park");
-                                    // Successfully set contended bit, go park
-                                    return true;
-                                }
-                                Err(_) => {
-                                    // Either the monitor was unlocked, or the hash flags changed
-                                    if mark_ref
-                                        .compare_exchange(
-                                            mark & !MONITOR_LOCKED_BIT,
-                                            mark | MONITOR_LOCKED_BIT,
-                                            Acquire,
-                                            Acquire,
-                                        )
-                                        .is_ok()
-                                    {
-                                        miri_println!("[{_tid:?}] acquired lock, no need to park");
-                                        // We have the lock, no need to park
-                                        return false;
-                                    }
-                                }
-                            }
-                            // Failed to set the contended bit or take the lock, so try again
-                        });
-                        // We only get unparked when we get passed the lock
-                        miri_println!("[{_tid:?}] unparked if parked → lock aquired");
-                    }
+                    self.lock(mark_ref);
                 }
             };
         });
     }
 
     pub fn monitor_exit(&self, mark_ref: &AtomicU32) -> Result<(), LockNotHeld> {
-        let _tid = current().id();
         LOCK_COUNT.with(|cell| {
             let mut map = cell.borrow_mut();
             let Entry::Occupied(mut entry) = map.entry((mark_ref as *const AtomicU32).addr())
@@ -146,50 +90,135 @@ impl ParkingLot {
                 return Err(LockNotHeld);
             };
             *entry.get_mut() -= 1;
-            miri_println!("[{_tid:?}] exit {:?}", mark_ref as *const _);
+            miri_println!("[{:?}] exit {:?}", current().id(), mark_ref as *const _);
             if *entry.get() == 0 {
-                miri_println!("[{_tid:?}] trying to unlock");
+                miri_println!("[{:?}] trying to unlock", current().id());
                 entry.remove_entry();
-                loop {
-                    // Load because there is other data in the mark word
-                    let mark = mark_ref.load(Relaxed);
-                    if (mark & MONITOR_CONTENDED_BIT) == 0 {
-                        if mark_ref
-                            .compare_exchange(mark, mark & !MONITOR_LOCKED_BIT, AcqRel, Relaxed)
-                            .is_ok()
-                        {
-                            miri_println!("[{_tid:?}] uncontended, unlocking");
-                            return Ok(());
-                        }
-                    } else {
-                        miri_println!("[{_tid:?}] contended → unpark one");
-                        let addr =
-                            NonZeroUsize::new((mark_ref as *const AtomicU32).addr()).unwrap();
-                        self.unpark_one(addr, || {
-                            // We hold a lock on the bucket, so no other thread can simultaneously set the contended bit
-                            miri_println!("[{_tid:?}] queue empty, unsetting contended bit");
-                            loop {
-                                let mark = mark_ref.load(Relaxed);
-                                if mark_ref
-                                    .compare_exchange(
-                                        mark,
-                                        mark & !MONITOR_CONTENDED_BIT,
-                                        Relaxed,
-                                        Relaxed,
-                                    )
-                                    .is_ok()
-                                {
-                                    return;
-                                }
-                            }
-                        });
-                        return Ok(());
-                    }
-                }
+                self.unlock(mark_ref, false);
             }
-            drop(map);
             Ok(())
         })
+    }
+
+    pub fn monitor_wait(&self, mark_ref: &AtomicU32) -> Result<(), LockNotHeld> {
+        let addr = (mark_ref as *const AtomicU32).addr();
+        if !LOCK_COUNT.with_borrow(|map| map.contains_key(&addr)) {
+            return Err(LockNotHeld);
+        }
+        self.unlock(mark_ref, true);
+        self.lock(mark_ref);
+        Ok(())
+    }
+
+    pub fn monitor_notify(&self, mark_ref: &AtomicU32) -> Result<(), LockNotHeld> {
+        let addr = (mark_ref as *const AtomicU32).addr();
+        if !LOCK_COUNT.with_borrow(|map| map.contains_key(&addr)) {
+            return Err(LockNotHeld);
+        }
+        self.notify_one(NonZeroUsize::new(addr).unwrap());
+        Ok(())
+    }
+
+    pub fn monitor_notify_all(&self, mark_ref: &AtomicU32) -> Result<(), LockNotHeld> {
+        let addr = (mark_ref as *const AtomicU32).addr();
+        if !LOCK_COUNT.with_borrow(|map| map.contains_key(&addr)) {
+            return Err(LockNotHeld);
+        }
+        self.notify_all(NonZeroUsize::new(addr).unwrap());
+        Ok(())
+    }
+
+    fn lock(&self, mark_ref: &AtomicU32) {
+        // We don't know the target content of the mark word as it's
+        // shared with other functionality, so load it.
+        let mark = mark_ref.load(Relaxed);
+        let unlocked = mark & !MONITOR_LOCKED_BIT;
+        let locked = mark | MONITOR_LOCKED_BIT;
+        if mark_ref
+            .compare_exchange(unlocked, locked, Acquire, Relaxed)
+            .is_ok()
+        {
+            miri_println!("[{:?}] locked without parking", current().id());
+        } else {
+            miri_println!("[{:?}] failed to aquire lock", current().id());
+            // TODO: Add utility method for ref → NonZeroUsize to rust
+            let addr = NonZeroUsize::new((mark_ref as *const AtomicU32).addr()).unwrap();
+            // Failed to acquire the lock,
+            // either because it was already locked or because the other data changed.
+            self.park_on_lock(addr, || loop {
+                // We have the lock on the bucket, so no other thread can set the contended bit,
+                // but the monitor may have already been unlocked.
+                let mark = mark_ref.load(Relaxed);
+                miri_println!("[{:?}] loaded {mark}", current().id());
+                match mark_ref.compare_exchange(
+                    mark | MONITOR_LOCKED_BIT,
+                    mark | MONITOR_LOCKED_BIT | MONITOR_CONTENDED_BIT,
+                    Acquire,
+                    Acquire,
+                ) {
+                    Ok(_) => {
+                        miri_println!("[{:?}] set contended bit, going to park", current().id());
+                        // Successfully set contended bit, go park
+                        return true;
+                    }
+                    Err(_) => {
+                        // Either the monitor was unlocked, or the hash flags changed
+                        if mark_ref
+                            .compare_exchange(
+                                mark & !MONITOR_LOCKED_BIT,
+                                mark | MONITOR_LOCKED_BIT,
+                                Acquire,
+                                Acquire,
+                            )
+                            .is_ok()
+                        {
+                            miri_println!("[{:?}] acquired lock, no need to park", current().id());
+                            // We have the lock, no need to park
+                            return false;
+                        }
+                    }
+                }
+                // Failed to set the contended bit or take the lock, so try again
+            });
+            // We only get unparked when we get passed the lock
+            miri_println!("[{:?}] unparked if parked → lock aquired", current().id());
+        }
+    }
+
+    fn unlock(&self, mark_ref: &AtomicU32, park_till_notified: bool) {
+        loop {
+            // Load because there is other data in the mark word
+            let mark = mark_ref.load(Relaxed);
+            if (mark & MONITOR_CONTENDED_BIT) == 0 {
+                if mark_ref
+                    .compare_exchange(mark, mark & !MONITOR_LOCKED_BIT, AcqRel, Relaxed)
+                    .is_ok()
+                {
+                    miri_println!("[{:?}] uncontended, unlocking", current().id());
+                    return;
+                }
+            } else {
+                miri_println!("[{:?}] contended → unpark one", current().id());
+                let addr = NonZeroUsize::new((mark_ref as *const AtomicU32).addr()).unwrap();
+                self.unpark_one(addr, park_till_notified, || {
+                    // We hold a lock on the bucket, so no other thread can simultaneously set the contended bit
+                    miri_println!(
+                        "[{:?}] queue empty, unsetting contended bit",
+                        current().id()
+                    );
+                    loop {
+                        let mark = mark_ref.load(Relaxed);
+                        if mark_ref
+                            .compare_exchange(mark, mark & !MONITOR_CONTENDED_BIT, Relaxed, Relaxed)
+                            .is_ok()
+                        {
+                            return;
+                        }
+                    }
+                });
+                return;
+            }
+        }
     }
 }
 
@@ -203,19 +232,9 @@ mod test {
 
     use crate::monitor::ParkingLot;
 
-    fn model<F>(fun: F)
-    where
-        F: Fn() + Sync + Send + 'static,
-    {
-        #[cfg(not(loom))]
-        fun();
-        #[cfg(loom)]
-        loom::model(fun);
-    }
-
     #[test]
     fn new_monitor_reentrancy() {
-        model(|| {
+        loom_model(|| {
             let parking_lot = ParkingLot::default();
             let mark_ref = &AtomicU32::new(0);
             parking_lot.monitor_enter(mark_ref);
@@ -227,7 +246,7 @@ mod test {
 
     #[test]
     fn new_monitor_contention() {
-        model(|| {
+        loom_model(|| {
             let threads = 16;
             let objects = 8;
             let each = 8;

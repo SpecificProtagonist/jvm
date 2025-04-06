@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 #[cfg(loom)]
 pub(crate) use loom::{
     lock_api::RawMutex,
@@ -10,3 +12,14 @@ pub(crate) use {
     core::sync::atomic::{Ordering::*, *},
     std::thread::{self, current, Thread},
 };
+
+#[allow(unused)]
+pub(crate) fn loom_model<F>(fun: F)
+where
+    F: Fn() + Sync + Send + 'static,
+{
+    #[cfg(not(loom))]
+    fun();
+    #[cfg(loom)]
+    loom::model(fun);
+}
