@@ -206,15 +206,7 @@ impl ParkingLot {
                         "[{:?}] queue empty, unsetting contended bit",
                         current().id()
                     );
-                    loop {
-                        let mark = mark_ref.load(Relaxed);
-                        if mark_ref
-                            .compare_exchange(mark, mark & !MONITOR_CONTENDED_BIT, Relaxed, Relaxed)
-                            .is_ok()
-                        {
-                            return;
-                        }
-                    }
+                    mark_ref.fetch_and(!MONITOR_CONTENDED_BIT, Relaxed);
                 });
                 return;
             }

@@ -2,8 +2,6 @@
 // Can't use loom as it doesn't mock atomic-wait
 use core::sync::atomic::{AtomicU32, Ordering::*};
 
-use crate::miri_println;
-
 // TODO: Use atomic version of ThreadQueue instead of atomic_wait?
 
 pub(super) struct RawMutex {

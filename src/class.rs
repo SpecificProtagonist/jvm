@@ -38,6 +38,8 @@ pub(crate) struct Class {
     pub(crate) methods: HashMap<MethodNaT, MethodRef>,
     /// Data of all static fields
     pub(crate) static_storage: FieldStorage,
+    /// Monitor used for static synchronized methods.
+    // TODO: We only need a statically allocated reentrant mutex here, which would be faster.
     pub(crate) static_monitor: maybe_loom::AtomicU32,
     /// Combined size of instance fields in normal class, 0 if array
     pub(crate) object_size: usize,
