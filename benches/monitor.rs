@@ -3,10 +3,10 @@ use std::thread;
 use criterion::{criterion_group, criterion_main, Bencher, Criterion};
 use jvm::*;
 
-criterion_group!(benches, criterion_benchmark);
-criterion_main!(benches);
+criterion_group!(monitor, benches);
+criterion_main!(monitor);
 
-pub fn criterion_benchmark(c: &mut Criterion) {
+pub fn benches(c: &mut Criterion) {
     c.bench_function("with_1_thread", |b| bench(b, 1));
     c.bench_function("with_4_threads", |b| bench(b, 4));
     c.bench_function("with_32_threads", |b| bench(b, 32));

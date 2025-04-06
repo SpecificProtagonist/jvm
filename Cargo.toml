@@ -3,6 +3,7 @@ name = "jvm"
 version = "0.1.0"
 authors = ["SpecificProtagonist <specificprotagonist@posteo.net>"]
 edition = "2021"
+autobenches = false
 
 [lib]
 bench = false
@@ -33,6 +34,10 @@ tracing = "0.1"
 
 [dev-dependencies]
 criterion = "0.3"
+
+[[bench]]
+name = "interpreter"
+harness = false
 
 [[bench]]
 name = "monitor"
