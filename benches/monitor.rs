@@ -8,8 +8,8 @@ criterion_main!(monitor);
 
 pub fn benches(c: &mut Criterion) {
     c.bench_function("with_1_thread", |b| bench(b, 1));
+    c.bench_function("with_2_threads", |b| bench(b, 2));
     c.bench_function("with_4_threads", |b| bench(b, 4));
-    c.bench_function("with_32_threads", |b| bench(b, 32));
 }
 
 fn make_jvm() -> Jvm {

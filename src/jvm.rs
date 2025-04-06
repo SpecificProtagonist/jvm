@@ -224,10 +224,12 @@ impl Jvm {
         check_circular.push(name.to_owned());
 
         // We want to load a normal class
-        let bytes = self
-            .bootstrap_class_loader
-            .load(name)
-            .ok_or_else(|| error(self, "NoClassDefFoundError", name))?;
+        let bytes = self.bootstrap_class_loader.load(name).ok_or_else(|| {
+            if name == "java.lang.NoClassDefFoundError" {
+                panic!("Required base classes missing");
+            }
+            error(self, "NoClassDefFoundError", name)
+        })?;
 
         let mut class_desc = parse::read_class_file(&bytes, self)?;
 
