@@ -810,7 +810,7 @@ bitflags::bitflags! {
     }
 }
 
-#[inline]
+#[inline(always)]
 #[track_caller]
 fn unreachable_verified() -> ! {
     #[cfg(debug_assertions)]
