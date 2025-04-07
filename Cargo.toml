@@ -8,6 +8,9 @@ autobenches = false
 [lib]
 bench = false
 
+[profile.release]
+debug = 1
+
 [dependencies]
 # AccessFlags
 bitflags = "1.3"

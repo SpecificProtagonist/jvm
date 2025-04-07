@@ -546,9 +546,9 @@ fn run_until_exception_or_return(
                 let b = frame.pop().as_int();
                 let a = frame.pop().as_int();
                 let result = match frame.read_previous_byte() {
-                    IADD => a + b,
-                    ISUB => a - b,
-                    IMUL => a * b,
+                    IADD => a.wrapping_add(b),
+                    ISUB => a.wrapping_sub(b),
+                    IMUL => a.wrapping_mul(b),
                     IDIV => a
                         .checked_div(b)
                         .ok_or_else(|| throwable(jvm, "ArithmeticException"))?,
@@ -573,9 +573,9 @@ fn run_until_exception_or_return(
                 let b = frame.pop_long();
                 let a = frame.pop_long();
                 let result = match frame.read_previous_byte() {
-                    LADD => a + b,
-                    LSUB => a - b,
-                    LMUL => a * b,
+                    LADD => a.wrapping_add(b),
+                    LSUB => a.wrapping_sub(b),
+                    LMUL => a.wrapping_mul(b),
                     LDIV => a
                         .checked_div(b)
                         .ok_or_else(|| throwable(jvm, "ArithmeticException"))?,
