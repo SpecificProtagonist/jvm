@@ -50,6 +50,7 @@ fn default<T: Default>() -> T {
 /// Guard types ensure values can't be used without the vm they belong to / be used with the wrong vm.
 // TODO: Either split guard object into id and lifetimed object, or use Arc/Weak everywhere.
 // If using lifetimes, also add a module that reexports everything with a static lifetime.
+// When unsafe binder types are available, try using them instead.
 macro_rules! define_guard {
     ($(#[$doc:meta])* $guard_typ:ident, $impl_typ:ty) => {
         $(#[$doc])*

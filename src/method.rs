@@ -9,6 +9,7 @@ use hashbrown::Equivalent;
 
 use crate::{
     class::{Class, ClassRef},
+    interpreter::TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES,
     typ::Type,
     AccessFlags, Jvm,
 };
@@ -58,13 +59,17 @@ pub struct MethodDescriptor {
 
 impl MethodDescriptor {
     pub(crate) fn arg_slots(&self) -> usize {
-        self.args
-            .iter()
-            .map(|typ| match typ {
-                Type::Long | Type::Double => 2,
-                _ => 1,
-            })
-            .sum()
+        if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+            self.args
+                .iter()
+                .map(|typ| match typ {
+                    Type::Long | Type::Double => 2,
+                    _ => 1,
+                })
+                .sum()
+        } else {
+            self.args.len()
+        }
     }
 }
 

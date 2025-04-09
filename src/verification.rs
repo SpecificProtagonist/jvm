@@ -1,5 +1,6 @@
 use alloc::collections::BTreeMap;
 use core::{cell::SyncUnsafeCell, ops::Deref};
+use core::{mem::transmute, ops::DerefMut};
 
 use crate::{
     class::{Class, ClassRef},
@@ -212,7 +213,7 @@ impl StackMapFrame {
         &mut self,
         jvm: &Jvm,
         stack_map_table: &BTreeMap<u16, StackMapFrame>,
-        bytes: &[SyncUnsafeCell<u8>],
+        bytes: &[u8],
         pc: &mut u16,
         wide: bool,
     ) -> JvmResult<()> {
@@ -284,7 +285,7 @@ pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) 
     }
 
     let ptrs = jvm.heap.ptrs();
-    match &*method.code.read().unwrap() {
+    match &mut *method.code.write().unwrap() {
         Code::None => {
             verify!(
                 jvm,
@@ -315,12 +316,13 @@ pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) 
     Ok(())
 }
 
-/// Verification by type checking (verification by type inference is not planned)
+/// Verification by type checking (verification by type inference is not planned).
+/// This also adjusts longs and doubles to only take up one slot on 64-bit machines.
 fn verify_bytecode(
     jvm: &Jvm,
     const_pool: &ConstPool,
     method: &Method,
-    code: &Bytecode,
+    code: &mut Bytecode,
 ) -> JvmResult<()> {
     // The initial typestate is not stored in the class file but derive from the method signature
     let initial_locals = {
@@ -375,6 +377,11 @@ fn verify_bytecode(
     let mut pc = 0;
 
     let pc = &mut pc;
+    // SAFETY: We have exclusive access
+    let bytes: &mut [u8] = unsafe {
+        let slice: &mut [SyncUnsafeCell<u8>] = code.bytes.deref_mut();
+        transmute(slice)
+    };
 
     // Iterate over all instructions
     while (*pc as usize) < code.bytes.len() {
@@ -450,7 +457,7 @@ fn verify_bytecode(
             }
             LLOAD => {
                 let index = read_code_u8(jvm, bytes, pc)? as u16;
-                type_state.load(jvm, index, VerificationType::Long)?;
+                type_state.load(jvm, index, VerificationType::Long)?
             }
             FLOAD => {
                 let index = read_code_u8(jvm, bytes, pc)? as u16;
@@ -458,7 +465,7 @@ fn verify_bytecode(
             }
             DLOAD => {
                 let index = read_code_u8(jvm, bytes, pc)? as u16;
-                type_state.load(jvm, index, VerificationType::Double)?;
+                type_state.load(jvm, index, VerificationType::Double)?
             }
             ALOAD => {
                 let index = read_code_u8(jvm, bytes, pc)? as u16;
@@ -468,35 +475,21 @@ fn verify_bytecode(
             ILOAD_1 => type_state.load(jvm, 1, VerificationType::Integer)?,
             ILOAD_2 => type_state.load(jvm, 2, VerificationType::Integer)?,
             ILOAD_3 => type_state.load(jvm, 3, VerificationType::Integer)?,
-            LLOAD_0 => {
-                type_state.load(jvm, 0, VerificationType::Long)?;
-            }
-            LLOAD_1 => {
-                type_state.load(jvm, 1, VerificationType::Long)?;
-            }
-            LLOAD_2 => {
-                type_state.load(jvm, 2, VerificationType::Long)?;
-            }
-            LLOAD_3 => {
-                type_state.load(jvm, 3, VerificationType::Long)?;
-            }
+            LLOAD_0 => type_state.load(jvm, 0, VerificationType::Long)?,
+            LLOAD_1 => type_state.load(jvm, 1, VerificationType::Long)?,
+            LLOAD_2 => type_state.load(jvm, 2, VerificationType::Long)?,
+            FLOAD_3 => type_state.load(jvm, 3, VerificationType::Float)?,
             FLOAD_0 => type_state.load(jvm, 0, VerificationType::Float)?,
             FLOAD_1 => type_state.load(jvm, 1, VerificationType::Float)?,
             FLOAD_2 => type_state.load(jvm, 2, VerificationType::Float)?,
-            FLOAD_3 => type_state.load(jvm, 3, VerificationType::Float)?,
-            DLOAD_0 => {
-                type_state.load(jvm, 0, VerificationType::Double)?;
+            LLOAD_3 => type_state.load(jvm, 3, VerificationType::Long)?,
+            DLOAD_0 => type_state.load(jvm, 0, VerificationType::Double)?,
+            DLOAD_1 => type_state.load(jvm, 1, VerificationType::Double)?,
+            DLOAD_2 => type_state.load(jvm, 2, VerificationType::Double)?,
+            DLOAD_3 => type_state.load(jvm, 3, VerificationType::Double)?,
+            ALOAD_0 => {
+                type_state.load(jvm, 0, VerificationType::Reference)?;
             }
-            DLOAD_1 => {
-                type_state.load(jvm, 1, VerificationType::Double)?;
-            }
-            DLOAD_2 => {
-                type_state.load(jvm, 2, VerificationType::Double)?;
-            }
-            DLOAD_3 => {
-                type_state.load(jvm, 3, VerificationType::Double)?;
-            }
-            ALOAD_0 => type_state.load(jvm, 0, VerificationType::Reference)?,
             ALOAD_1 => type_state.load(jvm, 1, VerificationType::Reference)?,
             ALOAD_2 => type_state.load(jvm, 2, VerificationType::Reference)?,
             ALOAD_3 => type_state.load(jvm, 3, VerificationType::Reference)?,
@@ -1406,21 +1399,18 @@ fn small_array_type(typ: VerificationType) -> bool {
     }
 }
 
-fn read_code_u8(jvm: &Jvm, bytes: &[SyncUnsafeCell<u8>], pc: &mut u16) -> JvmResult<u8> {
+fn read_code_u8(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JvmResult<u8> {
     *pc += 1;
     bytes
         .get(*pc as usize - 1)
-        .map(|b| unsafe {
-            // SAFETY: Code does not get modified during verification
-            *b.get()
-        })
+        .copied()
         .ok_or_else(|| error!(jvm))
 }
 
-fn read_code_u16(jvm: &Jvm, bytes: &[SyncUnsafeCell<u8>], pc: &mut u16) -> JvmResult<u16> {
+fn read_code_u16(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JvmResult<u16> {
     Ok(((read_code_u8(jvm, bytes, pc)? as u16) << 8) + read_code_u8(jvm, bytes, pc)? as u16)
 }
 
-fn read_code_u32(jvm: &Jvm, bytes: &[SyncUnsafeCell<u8>], pc: &mut u16) -> JvmResult<u32> {
+fn read_code_u32(jvm: &Jvm, bytes: &[u8], pc: &mut u16) -> JvmResult<u32> {
     Ok(((read_code_u16(jvm, bytes, pc)? as u32) << 8) + read_code_u16(jvm, bytes, pc)? as u32)
 }

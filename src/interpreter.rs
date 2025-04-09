@@ -1,3 +1,4 @@
+use core::ops::Not;
 use core::{
     cell::SyncUnsafeCell,
     ops::Deref,
@@ -52,15 +53,23 @@ pub(crate) fn invoke(
                 Value::Int(value),
             ) => arg_values.push(value.into()),
             (Type::Long, Value::Long(value)) => {
-                let (low, high) = IVal::from_long(value);
-                arg_values.push(low);
-                arg_values.push(high);
+                if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+                    let (low, high) = IVal::from_long(value);
+                    arg_values.push(low);
+                    arg_values.push(high);
+                } else {
+                    arg_values.push(IVal(value as u64 as usize));
+                }
             }
             (Type::Float, Value::Float(value)) => arg_values.push(value.into()),
             (Type::Double, Value::Double(value)) => {
-                let (low, high) = IVal::from_double(value);
-                arg_values.push(low);
-                arg_values.push(high);
+                if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+                    let (low, high) = IVal::from_double(value);
+                    arg_values.push(low);
+                    arg_values.push(high);
+                } else {
+                    arg_values.push(IVal(value.to_bits() as usize));
+                }
             }
             _ => panic!("Invoked {method} with values of wrong type"),
         }
@@ -75,10 +84,23 @@ pub(crate) fn invoke_initializer(jvm: &Jvm, initializer: &Method) -> JvmResult<(
 
 /// Stack or local entry.
 /// Doesn't store type information as it was already checked during verification.
-// TODO: On 64bit targets, rewrite long/double to only take one slot
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// While in the specification longs and doubles always take two slots,
+/// on 64-bit systems, we only use one stack slot or them.
+/// When stored in local variables they currently always take two slots
+/// (though on 64 bit they only use the first one), as readjusting locals
+/// is a bit tricky because slots can change type.
+#[derive(Clone, Copy, PartialEq)]
 #[repr(transparent)]
 struct IVal(usize);
+
+impl core::fmt::Debug for IVal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+pub const TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES: bool = cfg!(target_pointer_width = "32");
 
 /// Requires that the class is already initialized, or method is the initializer
 fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Option<Value>> {
@@ -180,16 +202,26 @@ fn native(
                 i += 1;
             }
             Type::Long => {
-                values.push(crate::Value::Long(IVal::as_long(args[i], args[i + 1])));
-                i += 2;
+                if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+                    values.push(crate::Value::Long(IVal::as_long(args[i], args[i + 1])));
+                    i += 2;
+                } else {
+                    values.push(crate::Value::Long(args[i].0 as u64 as i64));
+                    i += 1;
+                }
             }
             Type::Float => {
                 values.push(crate::Value::Float(args[i].as_float()));
                 i += 1;
             }
             Type::Double => {
-                values.push(crate::Value::Double(IVal::as_double(args[i], args[i + 1])));
-                i += 2;
+                if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+                    values.push(crate::Value::Double(IVal::as_double(args[i], args[i + 1])));
+                    i += 2;
+                } else {
+                    values.push(crate::Value::Double(f64::from_bits(args[i].0 as u64)));
+                    i += 1;
+                }
             }
             Type::Ref(_) => {
                 values.push(crate::Value::Ref(
@@ -236,7 +268,32 @@ fn interpret(
 
     let vars_len = code.max_locals as usize + code.max_stack as usize;
     let mut locals_and_stack = Vec::with_capacity(vars_len);
-    locals_and_stack.extend_from_slice(args);
+    // On 64 bit systems, longs & doubles take 1 slot on the stack but two slots on the local variables.
+    if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+        locals_and_stack.extend_from_slice(args);
+    } else {
+        for (long_or_double, &value) in method
+            .access_flags
+            .contains(AccessFlags::STATIC)
+            .not()
+            .then_some(false)
+            .into_iter()
+            .chain(
+                method
+                    .nat
+                    .typ
+                    .args
+                    .iter()
+                    .map(|typ| matches!(typ, Type::Long | Type::Double)),
+            )
+            .zip(args)
+        {
+            locals_and_stack.push(value);
+            if long_or_double {
+                locals_and_stack.push(IVal(0));
+            }
+        }
+    }
     while locals_and_stack.len() < vars_len {
         locals_and_stack.push(IVal(0));
     }
@@ -255,7 +312,9 @@ fn interpret(
 
     'run: loop {
         match run_until_exception_or_return(jvm, method, &const_pool, &mut frame) {
-            Ok(result) => return Ok(result),
+            Ok(result) => {
+                return Ok(result);
+            }
             Err(thrown) => {
                 // Check whether the exception gets caught or rethrown
                 for handler in &code.exception_table {
@@ -392,30 +451,51 @@ fn run_until_exception_or_return(
             }
             LSTORE | DSTORE => {
                 let index = frame.read_code_u8() as u16;
-                let value_1 = frame.pop();
-                let value_2 = frame.pop();
-                frame.set_local(index as usize + 1, value_1);
-                frame.set_local(index as usize, value_2);
+                if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+                    let value_1 = frame.pop();
+                    let value_2 = frame.pop();
+                    frame.set_local(index as usize + 1, value_1);
+                    frame.set_local(index as usize, value_2);
+                } else {
+                    let value = frame.pop();
+                    frame.set_local(index as usize, value);
+                }
             }
             ISTORE_0 | FSTORE_0 | ASTORE_0 => frame.locals[0] = frame.pop(),
             ISTORE_1 | FSTORE_1 | ASTORE_1 => frame.locals[1] = frame.pop(),
             ISTORE_2 | FSTORE_2 | ASTORE_2 => frame.locals[2] = frame.pop(),
             ISTORE_3 | FSTORE_3 | ASTORE_3 => frame.locals[3] = frame.pop(),
             LSTORE_0 | DSTORE_0 => {
-                frame.locals[1] = frame.pop();
-                frame.locals[0] = frame.pop();
+                if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+                    frame.locals[1] = frame.pop();
+                    frame.locals[0] = frame.pop();
+                } else {
+                    frame.locals[0] = frame.pop();
+                }
             }
             LSTORE_1 | DSTORE_1 => {
-                frame.locals[2] = frame.pop();
-                frame.locals[1] = frame.pop();
+                if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+                    frame.locals[2] = frame.pop();
+                    frame.locals[1] = frame.pop();
+                } else {
+                    frame.locals[1] = frame.pop();
+                }
             }
             LSTORE_2 | DSTORE_2 => {
-                frame.locals[3] = frame.pop();
-                frame.locals[2] = frame.pop();
+                if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+                    frame.locals[3] = frame.pop();
+                    frame.locals[2] = frame.pop();
+                } else {
+                    frame.locals[2] = frame.pop();
+                }
             }
             LSTORE_3 | DSTORE_3 => {
-                frame.locals[4] = frame.pop();
-                frame.locals[3] = frame.pop();
+                if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+                    frame.locals[4] = frame.pop();
+                    frame.locals[3] = frame.pop();
+                } else {
+                    frame.locals[3] = frame.pop();
+                }
             }
             IASTORE | FASTORE => {
                 let value = frame.pop().as_int();
@@ -880,7 +960,9 @@ fn run_until_exception_or_return(
                 let field = const_pool.get_field_verified(index);
                 // Stack has object ref first, then value on top
                 // So maybe inline `put_field`?
-                let object = if matches!(field.nat.typ, Type::Long | Type::Double) {
+                let object = if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES
+                    && matches!(field.nat.typ, Type::Long | Type::Double)
+                {
                     let high = frame.pop();
                     let low = frame.pop();
                     let obj = frame.pop().as_obj();
@@ -1339,18 +1421,22 @@ impl Frame<'_> {
         self.pc = (base as i32 + target_offset) as u16;
     }
 
+    #[inline(always)]
     fn clear_stack(&mut self) {
         self.stack_depth = 0;
     }
 
+    #[inline(always)]
     fn truncate_stack_by(&mut self, by: usize) {
         self.stack_depth -= by;
     }
 
+    #[inline(always)]
     fn peek(&mut self) -> IVal {
         unsafe { *self.stack.get_unchecked(self.stack_depth - 1) }
     }
 
+    #[inline(always)]
     fn push(&mut self, val: IVal) {
         if let Some(slot) = self.stack.get_mut(self.stack_depth) {
             *slot = val;
@@ -1360,31 +1446,41 @@ impl Frame<'_> {
         }
     }
 
+    #[inline(always)]
     fn pop(&mut self) -> IVal {
         self.stack_depth -= 1;
         unsafe { *self.stack.get_unchecked(self.stack_depth) }
     }
 
+    #[inline(always)]
     fn pop_long(&mut self) -> i64 {
-        let (high, low) = (self.pop(), self.pop());
-        IVal::as_long(low, high)
+        if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+            let (high, low) = (self.pop(), self.pop());
+            IVal::as_long(low, high)
+        } else {
+            self.pop().0 as i64
+        }
     }
 
+    #[inline(always)]
     fn pop_double(&mut self) -> f64 {
-        let (high, low) = (self.pop(), self.pop());
-        IVal::as_double(low, high)
+        f64::from_bits(self.pop_long() as u64)
     }
 
+    #[inline(always)]
     fn push_long(&mut self, value: i64) {
-        let (low, high) = IVal::from_long(value);
-        self.push(low);
-        self.push(high);
+        if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+            let (low, high) = IVal::from_long(value);
+            self.push(low);
+            self.push(high);
+        } else {
+            self.push(IVal(value as usize));
+        }
     }
 
+    #[inline(always)]
     fn push_double(&mut self, value: f64) {
-        let (low, high) = IVal::from_double(value);
-        self.push(low);
-        self.push(high);
+        self.push_long(value.to_bits() as i64)
     }
 
     fn load_local(&mut self, index: usize) {
@@ -1393,7 +1489,9 @@ impl Frame<'_> {
 
     fn load_local_2(&mut self, index: usize) {
         self.push(self.local(index));
-        self.push(self.local(index + 1));
+        if TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES {
+            self.push(self.local(index + 1));
+        }
     }
 
     #[inline(always)]

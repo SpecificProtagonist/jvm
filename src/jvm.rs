@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering::*};
+use std::num::NonZeroUsize;
 use std::sync::{Mutex, RwLock};
 
 use crate::heap::Heap;
@@ -47,6 +48,7 @@ pub struct Jvm {
     pub(crate) classes: RwLock<HashMap<Arc<str>, ClassRef>>,
     pub(crate) identity_hashes: IdentityHashes,
     pub(crate) parking_lot: ParkingLot,
+    pub(crate) stackoverflow_error: Object,
 }
 
 impl Jvm {
@@ -60,7 +62,7 @@ impl Jvm {
         if id.0 == u32::MAX {
             panic!("You've created 4294967296 jvm instances. You've had your fun but that's enough for today.")
         }
-        let jvm = Self {
+        let mut jvm = Self {
             id,
             bootstrap_class_loader: base_class_loader,
             heap: Heap::new(max_heap),
@@ -68,13 +70,10 @@ impl Jvm {
             classes: default(),
             identity_hashes: default(),
             parking_lot: default(),
+            // Dummy object
+            stackoverflow_error: Object(NonZeroUsize::new(1).unwrap()),
         };
-        if let Err(err) = jvm
-            .resolve_class("java.lang.StackOverflowError")
-            .and_then(|c| c.ensure_init(&jvm))
-        {
-            panic!("{err:?}");
-        }
+        jvm.stackoverflow_error = error(&jvm, "StackOverflowError", "");
         jvm
     }
 
