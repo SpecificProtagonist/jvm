@@ -2,6 +2,7 @@
 use core::sync::atomic::{AtomicBool, Ordering::*};
 use std::thread::scope;
 
+use class_loader::FolderClassLoader;
 use vm::*;
 
 fn make_jvm() -> Jvm {

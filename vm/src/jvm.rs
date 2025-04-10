@@ -3,12 +3,12 @@ use core::num::NonZeroUsize;
 use core::sync::atomic::{AtomicU32, Ordering::*};
 use std::sync::{Mutex, RwLock};
 
+use crate::AccessFlags;
 use crate::heap::Heap;
-use crate::hot_reloading::{reload_method_bytecodes_for_class, ReloadErr};
+use crate::hot_reloading::{ReloadErr, reload_method_bytecodes_for_class};
 use crate::identity_hash::IdentityHashes;
-use crate::monitor::{maybe_loom, ParkingLot};
+use crate::monitor::{ParkingLot, maybe_loom};
 use crate::provided_native_methods::get_provided_methods;
-use crate::{class_loader::ClassLoader, AccessFlags};
 use fixed_typed_arena::ManuallyDropArena;
 // TODO: posibly exchange for different hasher (benchmark)
 use hashbrown::HashMap;
@@ -26,6 +26,12 @@ pub(crate) type JvmResult<T> = Result<T, Object>;
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct JvmId(u32);
+
+/// Provides class files.
+pub trait ClassLoader: Send + Sync {
+    /// Get the bytes of the classfile representing the class.
+    fn load(&self, name: &str) -> Option<Vec<u8>>;
+}
 
 /// Creates & manages classes and objects, which borrow from the Jvm.
 /// Multiple independent `Jvm`s may exist.
@@ -60,7 +66,9 @@ impl Jvm {
         static NEXT_ID: AtomicU32 = AtomicU32::new(0);
         let id = JvmId(NEXT_ID.fetch_add(1, SeqCst));
         if id.0 == u32::MAX {
-            panic!("You've created 4294967296 jvm instances. You've had your fun but that's enough for today.")
+            panic!(
+                "You've created 4294967296 jvm instances. You've had your fun but that's enough for today."
+            )
         }
         let mut jvm = Self {
             id,

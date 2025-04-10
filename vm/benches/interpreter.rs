@@ -1,5 +1,6 @@
-use criterion::{criterion_group, criterion_main};
+use class_loader::FolderClassLoader;
 use criterion::{Bencher, Criterion};
+use criterion::{criterion_group, criterion_main};
 use vm::*;
 
 criterion_group!(interpreter, benches);

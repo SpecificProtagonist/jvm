@@ -1,6 +1,7 @@
 use std::thread;
 
-use criterion::{criterion_group, criterion_main, Bencher, Criterion};
+use class_loader::FolderClassLoader;
+use criterion::{Bencher, Criterion, criterion_group, criterion_main};
 use vm::*;
 
 criterion_group!(monitor, benches);

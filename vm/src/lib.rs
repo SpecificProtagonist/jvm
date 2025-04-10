@@ -7,7 +7,6 @@
 extern crate alloc;
 
 mod class;
-mod class_loader;
 mod const_pool;
 mod fake_variadics;
 mod field;
@@ -35,11 +34,10 @@ use core::{
     marker::PhantomData,
 };
 
-pub use class_loader::{ClassLoader, FolderClassLoader};
 use fake_variadics::{NativeBindError, NativeFn};
 use heap::Ptrs;
-pub use jvm::Jvm;
-use jvm::{throwable, JvmId};
+pub use jvm::{ClassLoader, Jvm};
+use jvm::{JvmId, throwable};
 pub use method::MethodDescriptor;
 use method::MethodNaTBorrow;
 pub use method::NativeCode;

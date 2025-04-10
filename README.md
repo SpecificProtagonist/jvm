@@ -9,9 +9,8 @@ Goals:
 Non-goals:
 - providing a standard library
 - loading pre-Java 8 classes
-- performance on par with HotSpot
 
-This JVM is unsuitable for serious use because, aside from still missing features, it is severely undertested! It also uses large amounts of unsafe scoped to the entire crate (though the interface it provides is safe) – for example, operating on an object pointer requires that it points to a valid object, but the object pointer may come from runtime-typed memory depending on the loaded classes, which get verified in a seperate verification step. Oh, and it also lacks comments.
+This JVM is unsuitable for serious use because, aside from still missing features, it is severely undertested! It also uses large amounts of unsafe scoped to the entire crate (though the interface it provides is safe) – for example, operating on an object pointer requires that it points to a valid object, but the object pointer may come from runtime-typed memory depending on the loaded classes, which get verified in a seperate verification step. Oh, and it is also lacking in comments.
 
 ```rust,ignore
 // Create a new JVM that loads classes from a folder called `classes`

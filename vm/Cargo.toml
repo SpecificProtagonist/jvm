@@ -37,6 +37,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 criterion = "0.3"
+class_loader = {path = "../class_loader"}
 
 [[bench]]
 name = "interpreter"
