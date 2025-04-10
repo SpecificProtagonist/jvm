@@ -28,7 +28,7 @@ let field = class.field(&jvm, "baz", Typ::Boolean)?;
 let value = field.static_get(&jvm);
 // Bind a native method
 class.method(&jvm, "add", [Typ::Float, Typ::Float], Some(Typ::Float))?
-  .bind_native_code(&jvm, |a: f32, b: f32| Ok(a + b)).unwrap();
+  .bind_native_code(&jvm, f32::add).unwrap();
 ```
 
 Some current features:

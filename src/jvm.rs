@@ -84,7 +84,7 @@ impl Jvm {
     ///
     /// This panics if any of the methods don't match.
     pub fn bind_provided_native_methods(&self) {
-        for native in get_provided_methods() {
+        for native in get_provided_methods().values().flatten() {
             native.bind(self);
         }
     }
@@ -444,9 +444,6 @@ pub(crate) fn throwable<'a>(jvm: &Jvm, name: &str, msg: impl Into<Option<&'a str
     } else {
         name.to_owned()
     };
-    if name != "StackOverflowError" {
-        panic!("{name} | {message}");
-    }
     let object = match jvm.resolve_class_internal(&format!("java.lang.{name}")) {
         Ok(class) => {
             if let Err(thrown) = class.ensure_init(jvm) {

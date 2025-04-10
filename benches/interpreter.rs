@@ -27,8 +27,12 @@ fn nbody(b: &mut Bencher) {
         FolderClassLoader::new_boxed(["classes", "benches/classes"]),
         200_000,
     );
-    jvm.bind_provided_native_methods();
     let class = jvm.resolve_class("nbody").unwrap();
+    class
+        .method(&jvm, "sqrt", [Type::Double], Some(Type::Double))
+        .unwrap()
+        .bind_native_code(&jvm, f64::sqrt)
+        .unwrap();
     let method = class
         .method(&jvm, "nbody", [Type::Int], Some(Type::Double))
         .unwrap();

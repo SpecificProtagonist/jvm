@@ -1,4 +1,6 @@
-use crate::{fake_variadics::NativeBindError, Jvm, Method, Object, Type};
+use hashbrown::HashMap;
+
+use crate::{fake_variadics::NativeBindError, jvm, Jvm, Method, Object, Type};
 
 /// A native method provided by this crate
 pub struct ProvidedMethod {
@@ -34,9 +36,9 @@ impl ProvidedMethod {
 }
 
 macro_rules! provide {
-    ($class:literal, $method:literal, [$($args:expr),*], $returns:expr, $native:expr) => {
+    ($method:literal, [$($args:expr),*], $returns:expr, $native:expr) => {
         ProvidedMethod {
-            class: $class.into(),
+            class: String::default(),
             method: $method.into(),
             args: vec![$($args),*],
             returns: $returns,
@@ -54,49 +56,51 @@ macro_rules! throw {
     };
 }
 
-pub fn get_provided_methods() -> Vec<ProvidedMethod> {
-    vec![
-        provide!(
-            "java.lang.Object",
-            "hashCode",
-            [],
-            Some(Type::Int),
-            |jvm: &Jvm, this: Object| Ok(this.identity_hash(jvm))
-        ),
-        provide!(
-            "java.lang.Object",
-            "wait",
-            [],
-            None,
-            |jvm: &Jvm, this: Object| this.wait(jvm)
-        ),
-        provide!(
-            "java.lang.Object",
-            "notify",
-            [],
-            None,
-            |jvm: &Jvm, this: Object| this.notify(jvm)
-        ),
-        provide!(
-            "java.lang.Object",
-            "notifyAll",
-            [],
-            None,
-            |jvm: &Jvm, this: Object| this.notify_all(jvm)
-        ),
-        provide!(
-            "java.lang.System",
+pub fn get_provided_methods() -> HashMap<&'static str, Vec<ProvidedMethod>> {
+    let mut map = HashMap::new();
+    map.insert(
+        "java.lang.Object",
+        vec![
+            provide!(
+                "hashCode",
+                [],
+                Some(Type::Int),
+                |jvm: &Jvm, this: Object| Ok(this.identity_hash(jvm))
+            ),
+            provide!(
+                "hashCode",
+                [],
+                Some(Type::Int),
+                |jvm: &Jvm, this: Object| Ok(this.identity_hash(jvm))
+            ),
+            provide!("wait", [], None, |jvm: &Jvm, this: Object| this.wait(jvm)),
+            provide!("notify", [], None, |jvm: &Jvm, this: Object| this
+                .notify(jvm)),
+            provide!("notifyAll", [], None, |jvm: &Jvm, this: Object| this
+                .notify_all(jvm)),
+        ],
+    );
+
+    map.insert(
+        "java.lang.System",
+        vec![provide!(
             "identityHashCode",
             ["java.lang.Object".into()],
             Some(Type::Int),
             |jvm: &Jvm, x: Option<Object>| Ok(x.map(|x| x.identity_hash(jvm)).unwrap_or(0))
-        ),
-        provide!(
-            "java.lang.Math",
-            "sqrt",
-            [Type::Double],
-            Some(Type::Double),
-            |a: f64| Ok(a.sqrt())
-        ),
-    ]
+        )],
+    );
+
+    map.into_iter()
+        .map(|(class, mut methods)| {
+            for method in &mut methods {
+                method.class = class.to_owned();
+            }
+            (class, methods)
+        })
+        .collect()
+}
+
+fn _throwable<'a>(jvm: &Jvm, name: &str, msg: impl Into<Option<&'a str>>) -> Object {
+    Object::new(jvm.id, jvm::throwable(jvm, name, msg))
 }

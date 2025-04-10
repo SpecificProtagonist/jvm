@@ -1,3 +1,5 @@
+// These features are not strictly neccessary
+// and can be exchanged for already stable code if necessary.
 #![feature(ptr_as_ref_unchecked)]
 #![feature(sync_unsafe_cell)]
 #![doc = include_str!("../README.md")]
@@ -598,7 +600,7 @@ impl Method {
     /// `code` must be a function of the following form:
     /// - optionally, a first argument of type &Jvm
     /// - the remaining arguments consist of either `&[Value]` or up to 16 arguments of a translateable type
-    /// - the return type must be `JvmResult<T>` where `T` is a translatable type
+    /// - the return type must be a translatable type, optionally wrapped in a `JvmResult`
     ///
     /// Translatable types:  
     /// `bool`, `i8`, `i16`, `u16`, `i32`, `i64`, `f32`, `f64`, `()` (only for return type), `Option<Object>`, `Object` (only for `this`)

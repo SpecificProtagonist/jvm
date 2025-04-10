@@ -56,7 +56,7 @@ public final class nbody {
                 double dy = b.y - bodies[j].y;
                 double dz = b.z - bodies[j].z;
                 double dsq = dx * dx + dy * dy + dz * dz;
-                e -= (b.mass * bodies[j].mass) / Math.sqrt(dsq);
+                e -= (b.mass * bodies[j].mass) / sqrt(dsq);
             }
         }
         return e;
@@ -70,7 +70,7 @@ public final class nbody {
                 double dy = bodies[i].y - bodies[j].y;
                 double dz = bodies[i].z - bodies[j].z;
                 double dsq = dx*dx + dy*dy + dz*dz;
-                double mag = dt / (dsq * Math.sqrt(dsq));
+                double mag = dt / (dsq * sqrt(dsq));
 
                 double mj = bodies[j].mass * mag;
                 bodies[i].vx -= dx * mj;
@@ -143,5 +143,7 @@ public final class nbody {
         }
         return energy(bodies);
     }
+
+    native static double sqrt(double a);
 }
 

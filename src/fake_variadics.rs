@@ -1,3 +1,5 @@
+//! This module implements the binding of native methods;
+//! available format of native functions is documented on `Method::bind_native_code`.
 #![allow(private_interfaces)]
 
 // TODO: Directly use &[IVal]
@@ -256,12 +258,12 @@ impl Arg for Object {
     }
 }
 
-trait Return {
+trait ReturnSuccess {
     fn typ() -> Option<ArgTyp>;
     fn value(self) -> Option<Value>;
 }
 
-impl Return for () {
+impl ReturnSuccess for () {
     fn typ() -> Option<ArgTyp> {
         None
     }
@@ -271,7 +273,7 @@ impl Return for () {
     }
 }
 
-impl Return for bool {
+impl ReturnSuccess for bool {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Boolean)
     }
@@ -281,7 +283,7 @@ impl Return for bool {
     }
 }
 
-impl Return for i8 {
+impl ReturnSuccess for i8 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Byte)
     }
@@ -291,7 +293,7 @@ impl Return for i8 {
     }
 }
 
-impl Return for i16 {
+impl ReturnSuccess for i16 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Short)
     }
@@ -300,7 +302,8 @@ impl Return for i16 {
         Some(self.into())
     }
 }
-impl Return for u16 {
+
+impl ReturnSuccess for u16 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Char)
     }
@@ -309,7 +312,8 @@ impl Return for u16 {
         Some(self.into())
     }
 }
-impl Return for i32 {
+
+impl ReturnSuccess for i32 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Int)
     }
@@ -318,7 +322,8 @@ impl Return for i32 {
         Some(self.into())
     }
 }
-impl Return for i64 {
+
+impl ReturnSuccess for i64 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Long)
     }
@@ -327,7 +332,8 @@ impl Return for i64 {
         Some(self.into())
     }
 }
-impl Return for f32 {
+
+impl ReturnSuccess for f32 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Float)
     }
@@ -336,7 +342,8 @@ impl Return for f32 {
         Some(self.into())
     }
 }
-impl Return for f64 {
+
+impl ReturnSuccess for f64 {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Double)
     }
@@ -345,7 +352,8 @@ impl Return for f64 {
         Some(self.into())
     }
 }
-impl Return for Option<Object> {
+
+impl ReturnSuccess for Option<Object> {
     fn typ() -> Option<ArgTyp> {
         Some(ArgTyp::Object)
     }
@@ -355,9 +363,34 @@ impl Return for Option<Object> {
     }
 }
 
+trait Return {
+    fn typ() -> Option<ArgTyp>;
+    fn value(self) -> JvmResult<Option<Value>>;
+}
+
+impl<T: ReturnSuccess> Return for T {
+    fn typ() -> Option<ArgTyp> {
+        <T as ReturnSuccess>::typ()
+    }
+
+    fn value(self) -> JvmResult<Option<Value>> {
+        Ok(ReturnSuccess::value(self))
+    }
+}
+
+impl<T: ReturnSuccess> Return for JvmResult<T> {
+    fn typ() -> Option<ArgTyp> {
+        <T as ReturnSuccess>::typ()
+    }
+
+    fn value(self) -> JvmResult<Option<Value>> {
+        self.map(|inner| ReturnSuccess::value(inner))
+    }
+}
+
 impl<F, R> NativeFn<(R, &'static ())> for F
 where
-    F: Fn(&[Value]) -> JvmResult<R> + Send + Sync + 'static,
+    F: Fn(&[Value]) -> R + Send + Sync + 'static,
     R: Return,
 {
     fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)> {
@@ -365,13 +398,13 @@ where
     }
 
     fn invoke(&self, _: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
-        self(args).map(|r| r.value())
+        self(args).value()
     }
 }
 
 impl<F, R> NativeFn<(Jvm, R, &'static ())> for F
 where
-    F: for<'a> Fn(&'a Jvm, &[Value]) -> JvmResult<R> + Send + Sync + 'static,
+    F: for<'a> Fn(&'a Jvm, &[Value]) -> R + Send + Sync + 'static,
     R: Return,
 {
     fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)> {
@@ -379,7 +412,7 @@ where
     }
 
     fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
-        self(jvm, args).map(|r| r.value())
+        self(jvm, args).value()
     }
 }
 
@@ -387,7 +420,7 @@ macro_rules! impl_args {
     ($($param: ident),*) => {
         impl<F, $($param,)* R> NativeFn<(R,$($param,)*)> for F
         where
-            F: Fn($($param),*) -> JvmResult<R>
+            F: Fn($($param),*) -> R
                 + Send
                 + Sync
                 + 'static,
@@ -401,13 +434,13 @@ macro_rules! impl_args {
             #[allow(unused_variables, unused_mut)]
             fn invoke(&self, _: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
                 let mut i = 0;
-                self($($param::get(args, &mut i)),*).map(|r| r.value())
+                self($($param::get(args, &mut i)),*).value()
             }
         }
 
         impl<F, $($param,)* R> NativeFn<(Jvm, R,$($param,)*)> for F
         where
-            F: Fn(&Jvm, $($param),*) -> JvmResult<R>
+            F: Fn(&Jvm, $($param),*) -> R
                 + Send
                 + Sync
                 + 'static,
@@ -421,7 +454,7 @@ macro_rules! impl_args {
             #[allow(unused_variables, unused_mut)]
             fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
                 let mut i = 0;
-                self(jvm, $($param::get(args, &mut i)),*).map(|r| r.value())
+                self(jvm, $($param::get(args, &mut i)),*).value()
             }
         }
     }
