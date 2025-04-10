@@ -3,11 +3,12 @@ use hashbrown::HashMap;
 use std::sync::{Condvar, Mutex, RwLock};
 use std::thread::ThreadId;
 
+use crate::jvm::throwable;
 use crate::monitor::maybe_loom;
 use crate::{
     const_pool::ConstPool,
     field::{Field, FieldNaT, FieldNaTBorrow},
-    jvm::{error, JvmResult},
+    jvm::JvmResult,
     method::{MethodDescriptor, MethodNaT, MethodNaTBorrow, MethodRef},
     object::{self, FieldStorage, Object},
     typ::Type,
@@ -338,10 +339,10 @@ impl Class {
                                 true,
                             )
                         } else {
-                            return Err(error(
+                            return Err(throwable(
                                 jvm,
                                 "ClassFormatError",
-                                &format!("{}: preparation failed", self.name),
+                                &*format!("{}: preparation failed", self.name),
                             ));
                         }
                     }

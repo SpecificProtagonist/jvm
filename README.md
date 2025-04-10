@@ -90,7 +90,7 @@ java
 ```
 </details>
 
-Optional implementations for some native methods are provided. You can bind all of them via `Jvm::bind_provided_native_methods`, or get a list via `provided_native_methods::get_provided_methods`.
+Optional implementations for some native methods are provided. You can get a list via `provided_native_methods::get_provided_methods` or bind all of them via `Jvm::bind_provided_native_methods`.
 
 ## Architecture
 The core type is the `Jvm` struct, which contains all data relevant to the VM, such as the heap and the list of loaded classes. Internally handles to this data are not lifetimed, however these handles are not obtainable by users of this crate directly but are wrapped in guard types that require a reference to the JVM in order to access data. The design of these handles will change when garbage collection is implemented.

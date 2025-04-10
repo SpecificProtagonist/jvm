@@ -107,7 +107,7 @@ impl Object {
         if let Some(item) = self.array_item::<T>(index) {
             Ok(T::read(jvm.heap.ptrs(), item, Relaxed))
         } else {
-            Err(throwable(jvm, "ArrayIndexOutOfBoundsException"))
+            Err(throwable(jvm, "ArrayIndexOutOfBoundsException", None))
         }
     }
 
@@ -116,7 +116,7 @@ impl Object {
             T::write(jvm.heap.ptrs(), item, value, Relaxed);
             Ok(())
         } else {
-            Err(throwable(jvm, "ArrayIndexOutOfBoundsException"))
+            Err(throwable(jvm, "ArrayIndexOutOfBoundsException", None))
         }
     }
 

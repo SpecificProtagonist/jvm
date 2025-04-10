@@ -5,7 +5,7 @@ use core::{mem::transmute, ops::DerefMut};
 use crate::{
     class::{Class, ClassRef},
     const_pool::{ConstPool, ConstPoolItem},
-    jvm::{error, str_to_java, Jvm, JvmResult},
+    jvm::{str_to_java, throwable, Jvm, JvmResult},
     method::{Bytecode, Code, Method},
     opcodes::*,
     parse,
@@ -16,7 +16,7 @@ use crate::{
 
 macro_rules! error {
     ($jvm:expr) => {
-        error($jvm, "VerifyError", &format!("verify error {}", line!()))
+        throwable($jvm, "VerifyError", &*format!("verify error {}", line!()))
     };
 }
 

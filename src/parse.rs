@@ -7,7 +7,7 @@ use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     default,
     field::{Field, FieldNaT},
-    jvm::{error, Jvm, JvmResult},
+    jvm::{throwable, Jvm, JvmResult},
     method::{
         Bytecode, Code, ExceptionHandler, LocalVariable, LocalVariableType, Method,
         MethodDescriptor, MethodNaT,
@@ -19,10 +19,10 @@ use crate::{
 
 macro_rules! error {
     ($jvm:expr) => {
-        error(
+        throwable(
             $jvm,
             "ClassFormatError",
-            &format!("class format error {}", line!()),
+            &*format!("class format error {}", line!()),
         )
     };
 }
@@ -623,10 +623,10 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
     let major_version = read_u16(jvm, input)?;
 
     if major_version < 50 {
-        return Err(error(
+        return Err(throwable(
             jvm,
             "UnsupportedClassVersionError",
-            &format!("{major_version}"),
+            &*format!("{major_version}"),
         ));
     }
 

@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
+use core::num::NonZeroUsize;
 use core::sync::atomic::{AtomicU32, Ordering::*};
-use std::num::NonZeroUsize;
 use std::sync::{Mutex, RwLock};
 
 use crate::heap::Heap;
@@ -73,7 +73,7 @@ impl Jvm {
             // Dummy object
             stackoverflow_error: Object(NonZeroUsize::new(1).unwrap()),
         };
-        jvm.stackoverflow_error = error(&jvm, "StackOverflowError", "");
+        jvm.stackoverflow_error = throwable(&jvm, "StackOverflowError", None);
         jvm
     }
 
@@ -120,10 +120,10 @@ impl Jvm {
             .methods
             .get(&nat)
             .ok_or_else(|| {
-                error(
+                throwable(
                     self,
                     "NoSuchMethodError",
-                    &format!("{class}.{method}:{nat:?}"),
+                    &*format!("{class}.{method}:{nat:?}"),
                 )
             })
             .map(|value| crate::Method::new(self.id, value))
@@ -218,7 +218,7 @@ impl Jvm {
         let package = name.rsplit_once('.').map(|(p, _)| p).unwrap_or_default();
 
         if check_circular.iter().any(|c| c == name) {
-            return Err(error(self, "ClassCircularityError", name));
+            return Err(throwable(self, "ClassCircularityError", name));
         }
         check_circular.push(name.to_owned());
 
@@ -227,7 +227,7 @@ impl Jvm {
             if name == "java.lang.NoClassDefFoundError" {
                 panic!("Required base classes missing");
             }
-            error(self, "NoClassDefFoundError", name)
+            throwable(self, "NoClassDefFoundError", name)
         })?;
 
         let mut class_desc = parse::read_class_file(&bytes, self)?;
@@ -239,10 +239,10 @@ impl Jvm {
         }
 
         if name != class_desc.name.as_ref() {
-            return Err(error(
+            return Err(throwable(
                 self,
                 "NoClassDefFoundError",
-                &format!("{name} != {}", class_desc.name.as_ref()),
+                &*format!("{name} != {}", class_desc.name.as_ref()),
             ));
         }
 
@@ -257,7 +257,7 @@ impl Jvm {
                     .access_flags
                     .intersects(AccessFlags::FINAL | AccessFlags::INTERFACE)
             {
-                return Err(error(self, "IncompatibleClassChangeError", name));
+                return Err(throwable(self, "IncompatibleClassChangeError", name));
             }
 
             // Method resolution
@@ -279,7 +279,7 @@ impl Jvm {
         for interface in class_desc.interfaces {
             let interface = self.resolve_class_impl(&interface, check_circular)?;
             if !interface.is_interface() {
-                return Err(error(self, "IncompatibleClassChangeError", name));
+                return Err(throwable(self, "IncompatibleClassChangeError", name));
             }
             interfaces.push(interface);
 
@@ -298,7 +298,7 @@ impl Jvm {
         if class_desc.access_flags.contains(AccessFlags::INTERFACE)
             & (super_class.map(|c| &*c.name) != Some("java.lang.Object"))
         {
-            return Err(error(self, "IncompatibleClassChangeError", name));
+            return Err(throwable(self, "IncompatibleClassChangeError", name));
         }
 
         let (fields, static_size, object_size) = Class::set_layouts(super_class, class_desc.fields);
@@ -385,7 +385,7 @@ impl Jvm {
             .ok_or_else(|| {
                 crate::Object::new(
                     self.id,
-                    error(self, "NoSuchMethodError", &format!("{class} <init> …")),
+                    throwable(self, "NoSuchMethodError", &*format!("{class} <init> …")),
                 )
             })?;
         constructor.invoke(self, &args)?;
@@ -436,15 +436,27 @@ impl Drop for Jvm {
     }
 }
 
-/// For errors thrown by the JVM (instead of by athrow).
+/// For exceptions and errors thrown by the JVM (instead of by athrow).
 /// `name` is unqualified.
-pub(crate) fn error(jvm: &Jvm, name: &str, message: &str) -> Object {
-    let message = if message.is_empty() {
-        name.to_owned()
+pub(crate) fn throwable<'a>(jvm: &Jvm, name: &str, msg: impl Into<Option<&'a str>>) -> Object {
+    let message = if let Some(msg) = msg.into() {
+        format!("{name}: {msg}")
     } else {
-        format!("{name}: {message}")
+        name.to_owned()
     };
-    let object = throwable(jvm, name);
+    if name != "StackOverflowError" {
+        panic!("{name} | {message}");
+    }
+    let object = match jvm.resolve_class_internal(&format!("java.lang.{name}")) {
+        Ok(class) => {
+            if let Err(thrown) = class.ensure_init(jvm) {
+                thrown
+            } else {
+                jvm.create_object_uninitialized(class)
+            }
+        }
+        Err(thrown) => thrown,
+    };
     let field = object
         .class(jvm.heap.ptrs())
         .field("message", Type::Ref("java.lang.String".into()))
@@ -455,21 +467,6 @@ pub(crate) fn error(jvm: &Jvm, name: &str, message: &str) -> Object {
         Value::Ref(Some(str_to_java(jvm, &message))),
     );
     object
-}
-
-/// For exceptions and errors thrown by the JVM (instead of by athrow).
-/// `name` is unqualified.
-pub(crate) fn throwable(jvm: &Jvm, name: &str) -> Object {
-    match jvm.resolve_class_internal(&format!("java.lang.{name}")) {
-        Ok(class) => {
-            if let Err(thrown) = class.ensure_init(jvm) {
-                thrown
-            } else {
-                jvm.create_object_uninitialized(class)
-            }
-        }
-        Err(thrown) => thrown,
-    }
 }
 
 pub(crate) fn str_to_java(jvm: &Jvm, utf8: &str) -> Object {

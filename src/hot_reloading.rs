@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering;
 
 use crate::{
     class::{Class, ClassState},
-    jvm::{error, JvmResult},
+    jvm::{throwable, JvmResult},
     method::Code,
     parse::read_class_file,
     verification::verify_method,
@@ -27,7 +27,7 @@ pub(crate) fn reload_method_bytecodes_for_class(jvm: &Jvm, name: &str) -> Result
     let bytes = jvm
         .bootstrap_class_loader
         .load(&name)
-        .ok_or_else(|| map_exception(error(jvm, "NoClassDefFoundError", &name)))?;
+        .ok_or_else(|| map_exception(throwable(jvm, "NoClassDefFoundError", &*name)))?;
     let mut new_class = read_class_file(&bytes, jvm).map_err(map_exception)?;
 
     // Check for incompatibilities
