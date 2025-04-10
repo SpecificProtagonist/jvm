@@ -2,7 +2,7 @@
 // and can be exchanged for already stable code if necessary.
 #![feature(ptr_as_ref_unchecked)]
 #![feature(sync_unsafe_cell)]
-#![doc = include_str!("../README.md")]
+#![doc = include_str!("../../README.md")]
 
 extern crate alloc;
 

@@ -1,7 +1,7 @@
 use std::thread;
 
 use criterion::{criterion_group, criterion_main, Bencher, Criterion};
-use jvm::*;
+use vm::*;
 
 criterion_group!(monitor, benches);
 criterion_main!(monitor);

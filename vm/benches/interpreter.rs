@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main};
 use criterion::{Bencher, Criterion};
-use jvm::*;
+use vm::*;
 
 criterion_group!(interpreter, benches);
 criterion_main!(interpreter);

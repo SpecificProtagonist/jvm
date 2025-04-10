@@ -2,7 +2,7 @@
 use core::sync::atomic::{AtomicBool, Ordering::*};
 use std::thread::scope;
 
-use jvm::*;
+use vm::*;
 
 fn make_jvm() -> Jvm {
     let jvm = Jvm::new(
