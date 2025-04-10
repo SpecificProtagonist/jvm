@@ -79,19 +79,19 @@ impl Bucket {
     /// SAFETY: Must have locked bucket and no references are held
     #[allow(clippy::mut_from_ref)]
     unsafe fn object(&self) -> &mut Option<NonZeroUsize> {
-        (&self.object as *const _ as *mut Option<NonZeroUsize>).as_mut_unchecked()
+        unsafe { (&self.object as *const _ as *mut Option<NonZeroUsize>).as_mut_unchecked() }
     }
 
     /// SAFETY: Must have locked bucket and no references are held
     #[allow(clippy::mut_from_ref)]
     unsafe fn lock_queue(&self) -> &mut ThreadQueue {
-        (&self.lock_queue as *const _ as *mut ThreadQueue).as_mut_unchecked()
+        unsafe { (&self.lock_queue as *const _ as *mut ThreadQueue).as_mut_unchecked() }
     }
 
     /// SAFETY: Must have locked bucket and no references are held
     #[allow(clippy::mut_from_ref)]
     unsafe fn notify_queue(&self) -> &mut ThreadQueue {
-        (&self.notify_queue as *const _ as *mut ThreadQueue).as_mut_unchecked()
+        unsafe { (&self.notify_queue as *const _ as *mut ThreadQueue).as_mut_unchecked() }
     }
 }
 

@@ -2,7 +2,7 @@
 name = "vm"
 version = "0.1.0"
 authors = ["SpecificProtagonist <specificprotagonist@posteo.net>"]
-edition = "2021"
+edition = "2024"
 autobenches = false
 
 [lib]

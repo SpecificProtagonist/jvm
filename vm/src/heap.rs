@@ -143,8 +143,10 @@ mod memory_map {
 
     #[cfg(not(target_os = "windows"))]
     pub unsafe fn unmap(base: *mut u8, size: usize) {
-        // We can't do anything useful about errors here
-        libc::munmap(base as _, size);
+        unsafe {
+            // We can't do anything useful about errors here
+            libc::munmap(base as _, size);
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -159,7 +161,7 @@ mod ptrs {
 
     use core::ops::{Shl, Shr};
 
-    use super::{CompressedPtr, Heap, CLASS_ALIGN, OBJECT_ALIGN};
+    use super::{CLASS_ALIGN, CompressedPtr, Heap, OBJECT_ALIGN};
     use crate::object::OBJ_FLAG_BITS;
 
     pub const HEAP_SIZE_LIMIT: usize = 1 << 35;
@@ -208,7 +210,7 @@ mod ptrs {
 
 #[cfg(target_pointer_width = "32")]
 mod ptrs {
-    use super::{CompressedPtr, Heap, CLASS_ALIGN};
+    use super::{CLASS_ALIGN, CompressedPtr, Heap};
     use crate::object::OBJ_FLAG_BITS;
     use core::ops::{Shl, Shr};
 
