@@ -30,6 +30,7 @@ pub(crate) struct JvmId(u32);
 /// Provides class files.
 pub trait ClassLoader: Send + Sync {
     /// Get the bytes of the classfile representing the class.
+    // TODO: Return result for better error message
     fn load(&self, name: &str) -> Option<Vec<u8>>;
 }
 
@@ -81,7 +82,7 @@ impl Jvm {
             // Dummy object
             stackoverflow_error: Object(NonZeroUsize::new(1).unwrap()),
         };
-        jvm.stackoverflow_error = throwable(&jvm, "StackOverflowError", None);
+        jvm.stackoverflow_error = new_throwable(&jvm, "StackOverflowError", None);
         jvm
     }
 
@@ -128,7 +129,7 @@ impl Jvm {
             .methods
             .get(&nat)
             .ok_or_else(|| {
-                throwable(
+                throw(
                     self,
                     "NoSuchMethodError",
                     &*format!("{class}.{method}:{nat:?}"),
@@ -226,7 +227,7 @@ impl Jvm {
         let package = name.rsplit_once('.').map(|(p, _)| p).unwrap_or_default();
 
         if check_circular.iter().any(|c| c == name) {
-            return Err(throwable(self, "ClassCircularityError", name));
+            return Err(throw(self, "ClassCircularityError", name));
         }
         check_circular.push(name.to_owned());
 
@@ -235,7 +236,7 @@ impl Jvm {
             if name == "java.lang.NoClassDefFoundError" {
                 panic!("Required base classes missing");
             }
-            throwable(self, "NoClassDefFoundError", name)
+            throw(self, "NoClassDefFoundError", name)
         })?;
 
         let mut class_desc = parse::read_class_file(&bytes, self)?;
@@ -247,7 +248,7 @@ impl Jvm {
         }
 
         if name != class_desc.name.as_ref() {
-            return Err(throwable(
+            return Err(throw(
                 self,
                 "NoClassDefFoundError",
                 &*format!("{name} != {}", class_desc.name.as_ref()),
@@ -265,7 +266,7 @@ impl Jvm {
                     .access_flags
                     .intersects(AccessFlags::FINAL | AccessFlags::INTERFACE)
             {
-                return Err(throwable(self, "IncompatibleClassChangeError", name));
+                return Err(throw(self, "IncompatibleClassChangeError", name));
             }
 
             // Method resolution
@@ -287,7 +288,7 @@ impl Jvm {
         for interface in class_desc.interfaces {
             let interface = self.resolve_class_impl(&interface, check_circular)?;
             if !interface.is_interface() {
-                return Err(throwable(self, "IncompatibleClassChangeError", name));
+                return Err(throw(self, "IncompatibleClassChangeError", name));
             }
             interfaces.push(interface);
 
@@ -306,7 +307,7 @@ impl Jvm {
         if class_desc.access_flags.contains(AccessFlags::INTERFACE)
             & (super_class.map(|c| &*c.name) != Some("java.lang.Object"))
         {
-            return Err(throwable(self, "IncompatibleClassChangeError", name));
+            return Err(throw(self, "IncompatibleClassChangeError", name));
         }
 
         let (fields, static_size, object_size) = Class::set_layouts(super_class, class_desc.fields);
@@ -393,7 +394,7 @@ impl Jvm {
             .ok_or_else(|| {
                 crate::Object::new(
                     self.id,
-                    throwable(self, "NoSuchMethodError", &*format!("{class} <init> …")),
+                    throw(self, "NoSuchMethodError", &*format!("{class} <init> …")),
                 )
             })?;
         constructor.invoke(self, &args)?;
@@ -446,7 +447,12 @@ impl Drop for Jvm {
 
 /// For exceptions and errors thrown by the JVM (instead of by athrow).
 /// `name` is unqualified.
-pub(crate) fn throwable<'a>(jvm: &Jvm, name: &str, msg: impl Into<Option<&'a str>>) -> Object {
+pub(crate) fn throw<'a>(jvm: &Jvm, name: &str, msg: impl Into<Option<&'a str>>) -> Object {
+    panic!();
+    new_throwable(jvm, name, msg)
+}
+
+pub(crate) fn new_throwable<'a>(jvm: &Jvm, name: &str, msg: impl Into<Option<&'a str>>) -> Object {
     let message = if let Some(msg) = msg.into() {
         format!("{name}: {msg}")
     } else {

@@ -4,22 +4,22 @@ use core::cell::SyncUnsafeCell;
 use hashbrown::HashMap;
 
 use crate::{
+    AccessFlags,
     const_pool::{ConstPool, ConstPoolItem},
     default,
     field::{Field, FieldNaT},
-    jvm::{throwable, Jvm, JvmResult},
+    jvm::{Jvm, JvmResult, throw},
     method::{
         Bytecode, Code, ExceptionHandler, LocalVariable, LocalVariableType, Method,
         MethodDescriptor, MethodNaT,
     },
     typ::Type,
     verification::{StackMapFrame, VerificationType},
-    AccessFlags,
 };
 
 macro_rules! error {
     ($jvm:expr) => {
-        throwable(
+        throw(
             $jvm,
             "ClassFormatError",
             &*format!("class format error {}", line!()),
@@ -623,7 +623,7 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
     let major_version = read_u16(jvm, input)?;
 
     if major_version < 50 {
-        return Err(throwable(
+        return Err(throw(
             jvm,
             "UnsupportedClassVersionError",
             &*format!("{major_version}"),

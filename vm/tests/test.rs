@@ -2,14 +2,11 @@
 use core::sync::atomic::{AtomicBool, Ordering::*};
 use std::thread::scope;
 
-use class_loader::FolderClassLoader;
+use class_loader::file_loaders;
 use vm::*;
 
 fn make_jvm() -> Jvm {
-    let jvm = Jvm::new(
-        FolderClassLoader::new_boxed(["classes", "tests/classes"]),
-        2_000_000,
-    );
+    let jvm = Jvm::new(file_loaders(["classes", "tests/classes"]), 2_000_000);
     jvm.bind_provided_native_methods();
     jvm
 }
@@ -311,7 +308,7 @@ fn hot_reloading() {
                     name = "HotReloading1"
                 }
             }
-            let loader = FolderClassLoader::new_boxed(["classes", "tests/classes"]);
+            let loader = file_loaders(["classes", "tests/classes"]);
             loader.load(name)
         }
     }

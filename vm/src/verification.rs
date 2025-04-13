@@ -3,20 +3,20 @@ use core::{cell::SyncUnsafeCell, ops::Deref};
 use core::{mem::transmute, ops::DerefMut};
 
 use crate::{
+    AccessFlags,
     class::{Class, ClassRef},
     const_pool::{ConstPool, ConstPoolItem},
-    jvm::{str_to_java, throwable, Jvm, JvmResult},
+    jvm::{Jvm, JvmResult, str_to_java, throw},
     method::{Bytecode, Code, Method},
     opcodes::*,
     parse,
     typ::Type,
     value::Value,
-    AccessFlags,
 };
 
 macro_rules! error {
     ($jvm:expr) => {
-        throwable($jvm, "VerifyError", &*format!("verify error {}", line!()))
+        throw($jvm, "VerifyError", &*format!("verify error {}", line!()))
     };
 }
 

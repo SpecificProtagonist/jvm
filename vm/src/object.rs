@@ -8,7 +8,7 @@ use core::{
 use crate::{
     class::{Class, ClassRef},
     heap::{AtomicCompressedPtr, CompressedPtr, Heap, Ptrs},
-    jvm::{throwable, JvmResult},
+    jvm::{throw, JvmResult},
     monitor::maybe_loom,
     typ::Type,
     value::Value,
@@ -107,7 +107,7 @@ impl Object {
         if let Some(item) = self.array_item::<T>(index) {
             Ok(T::read(jvm.heap.ptrs(), item, Relaxed))
         } else {
-            Err(throwable(jvm, "ArrayIndexOutOfBoundsException", None))
+            Err(throw(jvm, "ArrayIndexOutOfBoundsException", None))
         }
     }
 
@@ -116,7 +116,7 @@ impl Object {
             T::write(jvm.heap.ptrs(), item, value, Relaxed);
             Ok(())
         } else {
-            Err(throwable(jvm, "ArrayIndexOutOfBoundsException", None))
+            Err(throw(jvm, "ArrayIndexOutOfBoundsException", None))
         }
     }
 

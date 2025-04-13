@@ -1,6 +1,6 @@
 use hashbrown::HashMap;
 
-use crate::{fake_variadics::NativeBindError, jvm, Jvm, Method, Object, Type};
+use crate::{Jvm, Method, Object, Type, fake_variadics::NativeBindError, jvm};
 
 /// A native method provided by this crate
 pub struct ProvidedMethod {
@@ -102,5 +102,5 @@ pub fn get_provided_methods() -> HashMap<&'static str, Vec<ProvidedMethod>> {
 }
 
 fn _throwable<'a>(jvm: &Jvm, name: &str, msg: impl Into<Option<&'a str>>) -> Object {
-    Object::new(jvm.id, jvm::throwable(jvm, name, msg))
+    Object::new(jvm.id, jvm::throw(jvm, name, msg))
 }

@@ -3,9 +3,10 @@ use hashbrown::HashMap;
 use std::sync::{Condvar, Mutex, RwLock};
 use std::thread::ThreadId;
 
-use crate::jvm::throwable;
+use crate::jvm::throw;
 use crate::monitor::maybe_loom;
 use crate::{
+    AccessFlags, Jvm,
     const_pool::ConstPool,
     field::{Field, FieldNaT, FieldNaTBorrow},
     jvm::JvmResult,
@@ -13,7 +14,6 @@ use crate::{
     object::{self, FieldStorage, Object},
     typ::Type,
     verification::verify,
-    AccessFlags, Jvm,
 };
 
 /// Represents an interface, regular class, array class or enum.
@@ -339,7 +339,7 @@ impl Class {
                                 true,
                             )
                         } else {
-                            return Err(throwable(
+                            return Err(throw(
                                 jvm,
                                 "ClassFormatError",
                                 &*format!("{}: preparation failed", self.name),

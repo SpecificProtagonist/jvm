@@ -1,4 +1,4 @@
-use class_loader::FolderClassLoader;
+use class_loader::file_loaders;
 use criterion::{Bencher, Criterion};
 use criterion::{criterion_group, criterion_main};
 use vm::*;
@@ -12,10 +12,7 @@ pub fn benches(c: &mut Criterion) {
 }
 
 fn fibonacci(b: &mut Bencher) {
-    let jvm = Jvm::new(
-        FolderClassLoader::new_boxed(["classes", "benches/classes"]),
-        20_000,
-    );
+    let jvm = Jvm::new(file_loaders(["classes", "benches/classes"]), 20_000);
     let class = jvm.resolve_class("Interpreter").unwrap();
     let method = class.method(&jvm, "fibonacci", [Type::Int], None).unwrap();
     b.iter(|| {
@@ -24,10 +21,7 @@ fn fibonacci(b: &mut Bencher) {
 }
 
 fn nbody(b: &mut Bencher) {
-    let jvm = Jvm::new(
-        FolderClassLoader::new_boxed(["classes", "benches/classes"]),
-        200_000,
-    );
+    let jvm = Jvm::new(file_loaders(["classes", "benches/classes"]), 200_000);
     let class = jvm.resolve_class("nbody").unwrap();
     class
         .method(&jvm, "sqrt", [Type::Double], Some(Type::Double))

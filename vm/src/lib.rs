@@ -37,7 +37,7 @@ use core::{
 use fake_variadics::{NativeBindError, NativeFn};
 use heap::Ptrs;
 pub use jvm::{ClassLoader, Jvm};
-use jvm::{JvmId, throwable};
+use jvm::{JvmId, throw};
 pub use method::MethodDescriptor;
 use method::MethodNaTBorrow;
 pub use method::NativeCode;
@@ -248,7 +248,7 @@ impl Object {
     pub fn exit_monitor(self, jvm: &Jvm) -> JvmResult<()> {
         jvm.parking_lot
             .monitor_exit(self.into_inner(jvm.id).mark_word())
-            .map_err(|_| Object::new(jvm.id, throwable(jvm, "IllegalMonitorStateException", None)))
+            .map_err(|_| Object::new(jvm.id, throw(jvm, "IllegalMonitorStateException", None)))
     }
 
     /// Wait on this object until notified by [`notify`](Object::notify) or [`notify_all`](Object::notify_all),
@@ -259,7 +259,7 @@ impl Object {
     pub fn wait(self, jvm: &Jvm) -> JvmResult<()> {
         jvm.parking_lot
             .monitor_wait(self.into_inner(jvm.id).mark_word())
-            .map_err(|_| Object::new(jvm.id, throwable(jvm, "IllegalMonitorStateException", None)))
+            .map_err(|_| Object::new(jvm.id, throw(jvm, "IllegalMonitorStateException", None)))
     }
 
     /// Notifies a thread [`wait`ing](Object::wait) on this object.
@@ -268,7 +268,7 @@ impl Object {
     pub fn notify(self, jvm: &Jvm) -> JvmResult<()> {
         jvm.parking_lot
             .monitor_notify(self.into_inner(jvm.id).mark_word())
-            .map_err(|_| Object::new(jvm.id, throwable(jvm, "IllegalMonitorStateException", None)))
+            .map_err(|_| Object::new(jvm.id, throw(jvm, "IllegalMonitorStateException", None)))
     }
 
     /// Notifies all threads [`wait`ing](Object::wait) on this object.
@@ -277,7 +277,7 @@ impl Object {
     pub fn notify_all(self, jvm: &Jvm) -> JvmResult<()> {
         jvm.parking_lot
             .monitor_notify_all(self.into_inner(jvm.id).mark_word())
-            .map_err(|_| Object::new(jvm.id, throwable(jvm, "IllegalMonitorStateException", None)))
+            .map_err(|_| Object::new(jvm.id, throw(jvm, "IllegalMonitorStateException", None)))
     }
 
     /// Creates a debug representation of the object. For a full object tree, use `Debug`.
@@ -451,7 +451,7 @@ impl Class {
         let constructor = self.method(jvm, "<init>", arg_types, None).ok_or_else(|| {
             crate::Object::new(
                 jvm.id,
-                throwable(
+                throw(
                     jvm,
                     "NoSuchMethodError",
                     &*format!("{} <init> …", self.into_inner(jvm.id)),

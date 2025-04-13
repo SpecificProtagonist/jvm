@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use crate::{
     class::ClassRef,
     field::{Field, FieldNaT},
-    jvm::{throwable, JvmResult},
+    jvm::{throw, JvmResult},
     method::{MethodNaT, MethodNaTBorrow, MethodRef},
     object::Object,
     parse,
@@ -47,7 +47,7 @@ pub(crate) enum ConstPoolItem {
 }
 
 fn cfe(jvm: &Jvm) -> Object {
-    throwable(jvm, "ClassFormatError", "const pool")
+    throw(jvm, "ClassFormatError", "const pool")
 }
 
 impl ConstPool {
@@ -58,7 +58,7 @@ impl ConstPool {
                 let name = self.get_unresolved_class(jvm, i as u16)?;
                 let resolved = jvm.resolve_class_internal(&name)?;
                 if !this_class.can_access_class(resolved) {
-                    return Err(throwable(
+                    return Err(throw(
                         jvm,
                         "IllegalAccessError",
                         &*format!("can't access {name} from {this_class}"),
@@ -73,7 +73,7 @@ impl ConstPool {
                     // Arrays inherit methods from Object
                     let class = self.get_class(jvm, class)?;
                     if class.is_interface() {
-                        return Err(throwable(jvm, "IncompatibleClassChangeError", None));
+                        return Err(throw(jvm, "IncompatibleClassChangeError", None));
                     }
                     let (name, descriptor) = self.get_raw_nat(jvm, nat)?;
                     let typ = parse::parse_method_descriptor(jvm, &descriptor)?;
@@ -87,9 +87,9 @@ impl ConstPool {
                             name: &nat.name,
                             typ: &nat.typ,
                         })
-                        .ok_or_else(|| throwable(jvm, "NoSuchMethodError", &*format!("{nat:?}")))?;
+                        .ok_or_else(|| throw(jvm, "NoSuchMethodError", &*format!("{nat:?}")))?;
                     if !class.is_member_accessible_from(method.access_flags, this_class) {
-                        return Err(throwable(jvm, "IllegalAccessError", None));
+                        return Err(throw(jvm, "IllegalAccessError", None));
                     }
                     if method.access_flags.contains(AccessFlags::STATIC) {
                         self.items[i] = ConstPoolItem::StaticMethod(method);
@@ -102,7 +102,7 @@ impl ConstPool {
                     // TODO: Do full resolution now (5.4.3.4)
                     let class = self.get_class(jvm, class)?;
                     if !class.is_interface() {
-                        return Err(throwable(jvm, "IncompatibleClassChangeError", None));
+                        return Err(throw(jvm, "IncompatibleClassChangeError", None));
                     }
                     let (name, descriptor) = self.get_raw_nat(jvm, nat)?;
                     let typ = parse::parse_method_descriptor(jvm, &descriptor)?;
@@ -115,11 +115,11 @@ impl ConstPool {
                     let nat = FieldNaT { name, typ };
                     if let Some(field) = class.fields.get(&nat) {
                         if !class.is_member_accessible_from(field.access_flags, this_class) {
-                            return Err(throwable(jvm, "IllegalAccessError", None));
+                            return Err(throw(jvm, "IllegalAccessError", None));
                         }
                         self.items[i] = ConstPoolItem::Field(field);
                     } else {
-                        return Err(throwable(jvm, "NoSuchFieldError", &*format!("{nat:?}")));
+                        return Err(throw(jvm, "NoSuchFieldError", &*format!("{nat:?}")));
                     }
                 }
                 ConstPoolItem::RawString(index) => {
@@ -196,7 +196,7 @@ impl ConstPool {
                 while name.starts_with('[') {
                     let (component, end) = parse::parse_typ_descriptor(jvm, name.as_str(), 1)?;
                     if end != name.len() {
-                        return Err(throwable(jvm, "ClassFormatError", &*name));
+                        return Err(throw(jvm, "ClassFormatError", &*name));
                     }
                     name = format!("{component}[]");
                 }

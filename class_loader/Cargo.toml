@@ -6,3 +6,4 @@ edition = "2024"
 
 [dependencies]
 vm = {path = "../vm"}
+zip = { version = "2.6.1", features = ["deflate"] }

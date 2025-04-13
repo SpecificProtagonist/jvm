@@ -10,7 +10,7 @@ use crate::{
     const_pool::{ConstPool, ConstPoolItem},
     field::Field,
     heap::Ptrs,
-    jvm::{throwable, Jvm, JvmResult},
+    jvm::{throw, Jvm, JvmResult},
     method::{Bytecode, Code, Method, MethodNaT, NativeCode},
     object::{FieldStorage, Object},
     opcodes::*,
@@ -112,7 +112,7 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
         // TODO: Figure out what value is reliable without being too big
         const STACK_CHECK: usize = 30_000;
         if stacker::remaining_stack().unwrap_or(usize::MAX) < STACK_CHECK {
-            return Err(throwable(jvm, "StackOverflowError", None));
+            return Err(throw(jvm, "StackOverflowError", None));
         }
     }
 
@@ -134,13 +134,13 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
     let ret = match &*code {
         Code::None => {
             if method.access_flags.contains(AccessFlags::ABSTRACT) {
-                Err(throwable(
+                Err(throw(
                     jvm,
                     "AbstractMethodError",
                     &*format!("{}", method.nat),
                 ))
             } else if method.access_flags.contains(AccessFlags::NATIVE) {
-                Err(throwable(
+                Err(throw(
                     jvm,
                     "UnsatisfiedLinkError",
                     &*format!("{}", method.nat),
@@ -155,7 +155,7 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
 
     if let Some(m) = method_monitor {
         if jvm.parking_lot.monitor_exit(m).is_err() {
-            return Err(throwable(jvm, "IllegalMonitorStateException", None));
+            return Err(throw(jvm, "IllegalMonitorStateException", None));
         }
     }
 
@@ -307,7 +307,7 @@ fn interpret(
     };
 
     if !method.access_flags.contains(AccessFlags::STATIC) && args[0].0 == 0 {
-        return Err(throwable(jvm, "NullPointerException", None));
+        return Err(throw(jvm, "NullPointerException", None));
     }
 
     'run: loop {
@@ -400,7 +400,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 frame.push(obj.array_read::<i32>(jvm, index)?.into());
             }
             LALOAD | DALOAD => {
@@ -408,7 +408,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 frame.push_long(obj.array_read::<i64>(jvm, index)?);
             }
             AALOAD => {
@@ -416,7 +416,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 frame.push(IVal(obj.array_read::<usize>(jvm, index)?));
             }
             BALOAD => {
@@ -424,7 +424,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 frame.push((obj.array_read::<i8>(jvm, index)? as i32).into());
             }
             CALOAD => {
@@ -432,7 +432,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 let tmp = obj.array_read::<i16>(jvm, index)?;
                 frame.push((tmp as u16 as i32).into());
             }
@@ -441,7 +441,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 frame.push((obj.array_read::<i16>(jvm, index)? as i32).into());
             }
             ISTORE | FSTORE | ASTORE => {
@@ -503,7 +503,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 obj.array_write::<i32>(jvm, index, value)?
             }
             LASTORE | DASTORE => {
@@ -512,7 +512,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 obj.array_write::<i64>(jvm, index, value)?
             }
             AASTORE => {
@@ -521,7 +521,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 let Some(Type::Ref(component)) = &obj.class(ptrs).element_type else {
                     unreachable_verified()
                 };
@@ -531,7 +531,7 @@ fn run_until_exception_or_return(
                     .map(|element| !element.class(ptrs).assignable_to(component))
                     .unwrap_or(false)
                 {
-                    return Err(throwable(
+                    return Err(throw(
                         jvm,
                         "ArrayStoreException",
                         &*format!(
@@ -548,7 +548,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 obj.array_write::<i8>(jvm, index, value as u8 as i8)?
             }
             CASTORE => {
@@ -557,7 +557,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 obj.array_write::<i16>(jvm, index, value as u16 as i16)?
             }
             SASTORE => {
@@ -566,7 +566,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 obj.array_write::<i16>(jvm, index, value as u16 as i16)?
             }
             POP => {
@@ -642,12 +642,12 @@ fn run_until_exception_or_return(
                     IMUL => a.wrapping_mul(b),
                     IDIV => a
                         .checked_div(b)
-                        .ok_or_else(|| throwable(jvm, "ArithmeticException", "division by zero"))?,
+                        .ok_or_else(|| throw(jvm, "ArithmeticException", "division by zero"))?,
                     IREM => {
                         if b != 0 {
                             a % b
                         } else {
-                            return Err(throwable(jvm, "ArithmeticException", "division by zero"));
+                            return Err(throw(jvm, "ArithmeticException", "division by zero"));
                         }
                     }
                     ISHL => a << (b & 0x1f),
@@ -669,12 +669,12 @@ fn run_until_exception_or_return(
                     LMUL => a.wrapping_mul(b),
                     LDIV => a
                         .checked_div(b)
-                        .ok_or_else(|| throwable(jvm, "ArithmeticException", "division by zero"))?,
+                        .ok_or_else(|| throw(jvm, "ArithmeticException", "division by zero"))?,
                     LREM => {
                         if b != 0 {
                             a % b
                         } else {
-                            return Err(throwable(jvm, "ArithmeticException", "division by zero"));
+                            return Err(throw(jvm, "ArithmeticException", "division by zero"));
                         }
                     }
                     LSHL => a << (b & 0x3f),
@@ -963,7 +963,7 @@ fn run_until_exception_or_return(
                 let object = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 get_field(ptrs, frame, field, object.fields());
             }
             PUTFIELD => {
@@ -986,7 +986,7 @@ fn run_until_exception_or_return(
                     frame.push(value);
                     obj
                 }
-                .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 put_field(ptrs, frame, field, object.fields());
             }
             INVOKEVIRTUAL => {
@@ -995,15 +995,15 @@ fn run_until_exception_or_return(
                 let obj_index = frame.stack_depth - nat.typ.arg_slots() - 1;
                 let obj = frame.stack[obj_index]
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 // TODO: move method linking (incl NoSuchMethodError and IncompatibleClassChangeError) to class init
                 let invoke_method = obj
                     .class(ptrs)
                     .methods
                     .get(nat)
-                    .ok_or_else(|| throwable(jvm, "NoSuchMethodError", None))?;
+                    .ok_or_else(|| throw(jvm, "NoSuchMethodError", None))?;
                 if invoke_method.access_flags.contains(AccessFlags::STATIC) {
-                    return Err(throwable(jvm, "IncompatibleClassChangeError", None));
+                    return Err(throw(jvm, "IncompatibleClassChangeError", None));
                 }
                 execute_invoke_instr(jvm, frame, invoke_method)?;
             }
@@ -1024,12 +1024,12 @@ fn run_until_exception_or_return(
                 let invoke_method = class
                     .methods
                     .get(nat)
-                    .ok_or_else(|| throwable(jvm, "NoSuchMethodError", None))?;
+                    .ok_or_else(|| throw(jvm, "NoSuchMethodError", None))?;
                 if is_instance_init && invoke_method.class() != named_class {
-                    return Err(throwable(jvm, "NoSuchMethodError", None));
+                    return Err(throw(jvm, "NoSuchMethodError", None));
                 }
                 if invoke_method.access_flags.contains(AccessFlags::STATIC) {
-                    return Err(throwable(jvm, "IncompatibleClassChangeError", None));
+                    return Err(throw(jvm, "IncompatibleClassChangeError", None));
                 }
                 execute_invoke_instr(jvm, frame, invoke_method)?;
             }
@@ -1051,9 +1051,9 @@ fn run_until_exception_or_return(
                 let obj_index = frame.stack_depth - nat.typ.arg_slots() - 1;
                 let obj = frame.stack[obj_index]
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 if !obj.class(ptrs).interfaces.contains(&interface) {
-                    return Err(throwable(jvm, "IncompatibleClassChangeError", None));
+                    return Err(throw(jvm, "IncompatibleClassChangeError", None));
                 }
                 if let Some(invoke_method) = obj.class(ptrs).methods.get(nat) {
                     execute_invoke_instr(jvm, frame, invoke_method)?;
@@ -1090,9 +1090,9 @@ fn run_until_exception_or_return(
                         execute_invoke_instr(jvm, frame, default)?;
                     }
                     _ if multiple_found => {
-                        return Err(throwable(jvm, "IncompatibleClassChangeError", None))
+                        return Err(throw(jvm, "IncompatibleClassChangeError", None))
                     }
-                    _ => return Err(throwable(jvm, "AbstractMethodError", None)),
+                    _ => return Err(throw(jvm, "AbstractMethodError", None)),
                 }
             }
             NEW => {
@@ -1110,7 +1110,7 @@ fn run_until_exception_or_return(
             NEWARRAY => {
                 let length = frame.pop().as_int();
                 if length < 0 {
-                    return Err(throwable(jvm, "NegativeArraySizeException", None));
+                    return Err(throw(jvm, "NegativeArraySizeException", None));
                 }
                 let component = match frame.read_code_u8() {
                     4 => Type::Boolean,
@@ -1131,7 +1131,7 @@ fn run_until_exception_or_return(
                 let component = const_pool.get_class_verified(index);
                 let class = jvm.resolve_array_of(&Type::Ref(component.name.clone()))?;
                 if length < 0 {
-                    return Err(throwable(jvm, "NegativeArraySizeException", None));
+                    return Err(throw(jvm, "NegativeArraySizeException", None));
                 }
                 frame.push(Object::new_array(&jvm.heap, class, length).into());
             }
@@ -1139,14 +1139,14 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 frame.push(obj.array_length().into());
             }
             ATHROW => {
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 return Err(obj);
             }
             CHECKCAST => {
@@ -1155,7 +1155,7 @@ fn run_until_exception_or_return(
                 if let Some(object) = frame.peek().as_obj() {
                     if !object.class(ptrs).assignable_to(&check_class.name) {
                         frame.pop();
-                        return Err(throwable(jvm, "ClassCastException", None));
+                        return Err(throw(jvm, "ClassCastException", None));
                     }
                 }
             }
@@ -1176,7 +1176,7 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
 
                 jvm.parking_lot.monitor_enter(obj.mark_word());
             }
@@ -1184,9 +1184,9 @@ fn run_until_exception_or_return(
                 let obj = frame
                     .pop()
                     .as_obj()
-                    .ok_or_else(|| throwable(jvm, "NullPointerException", None))?;
+                    .ok_or_else(|| throw(jvm, "NullPointerException", None))?;
                 if jvm.parking_lot.monitor_exit(obj.mark_word()).is_err() {
-                    return Err(throwable(jvm, "IllegalMonitorStateException", None));
+                    return Err(throw(jvm, "IllegalMonitorStateException", None));
                 }
             }
             WIDE => {

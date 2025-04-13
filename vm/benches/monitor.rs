@@ -1,6 +1,6 @@
 use std::thread;
 
-use class_loader::FolderClassLoader;
+use class_loader::file_loaders;
 use criterion::{Bencher, Criterion, criterion_group, criterion_main};
 use vm::*;
 
@@ -14,10 +14,7 @@ pub fn benches(c: &mut Criterion) {
 }
 
 fn make_jvm() -> Jvm {
-    Jvm::new(
-        FolderClassLoader::new_boxed(["classes", "benches/classes"]),
-        20_000,
-    )
+    Jvm::new(file_loaders(["classes", "benches/classes"]), 20_000)
 }
 
 fn bench(b: &mut Bencher, threads: i32) {
