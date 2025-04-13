@@ -81,7 +81,6 @@ impl VerificationType {
         matches!(self, VerificationType::Long | VerificationType::Double)
     }
 
-    // TODO: Does this need to do subtyping?
     fn matches(self, typ: &Type) -> bool {
         matches!(
             (self, typ),
@@ -92,7 +91,7 @@ impl VerificationType {
                 | (Self::Float, Type::Float)
                 | (Self::Double, Type::Double)
                 | (Self::Null, Type::Ref(_))
-        ) | matches!((self,typ), (Self::ObjectVariable(class), Type::Ref(classname)) if &class.name == classname
+        ) | matches!((self,typ), (Self::ObjectVariable(class), Type::Ref(classname)) if class.assignable_to(classname)
         )
     }
 }
@@ -152,6 +151,7 @@ impl StackMapFrame {
                 (Type::Double, Some(VerificationType::Top)) => {
                     matches!(self.stack.pop(), Some(VerificationType::Double))
                 }
+                (Type::Ref(_), Some(VerificationType::Null)) => true,
                 (Type::Ref(ref_type), Some(VerificationType::ObjectVariable(obj))) => {
                     obj.assignable_to(ref_type)
                 }
@@ -417,8 +417,10 @@ fn verify_bytecode(
                             jvm.resolve_class_internal("java.lang.String")?,
                         ))
                     }
-                    Some(ConstPoolItem::Class(class)) => {
-                        type_state.push(VerificationType::ObjectVariable(class))
+                    Some(ConstPoolItem::Class(_)) => {
+                        type_state.push(VerificationType::ObjectVariable(
+                            jvm.resolve_class_internal("java.lang.Class")?,
+                        ))
                     }
                     _ => verify_failed!(jvm),
                 }
@@ -1043,6 +1045,13 @@ fn verify_bytecode(
                 verify!(jvm, type_state.pop(jvm)? == VerificationType::Double);
                 connected_to_previous_block = false
             }
+            ARETURN => {
+                let Some(ret_type) = &method.nat.typ.returns else {
+                    return Err(error!(jvm));
+                };
+                type_state.pop_type(jvm, ret_type)?;
+                connected_to_previous_block = false
+            }
             RETURN => {
                 verify!(jvm, method.nat.typ.returns.is_none());
                 verify!(
@@ -1111,7 +1120,9 @@ fn verify_bytecode(
                 }
                 verify!(
                     jvm,
-                    type_state.pop(jvm)? == VerificationType::ObjectVariable(invoke_class)
+                    type_state
+                        .pop(jvm)?
+                        .is_assignable_to(VerificationType::ObjectVariable(invoke_class))
                 );
                 if let Some(return_type) = &invoke_nat.typ.returns {
                     push_type(jvm, &mut type_state.stack, return_type)?
@@ -1189,14 +1200,15 @@ fn verify_bytecode(
                 );
                 let stack_in = type_state.stack.len();
                 for arg in invoke_nat.typ.args.iter().rev() {
-                    verify!(jvm, type_state.pop(jvm)?.matches(arg));
+                    let popped = type_state.pop(jvm)?;
+                    verify!(jvm, popped.matches(arg));
                 }
-                verify!(jvm, type_state.stack.len() + count as usize == stack_in);
                 if let VerificationType::ObjectVariable(invoke_class) = type_state.pop(jvm)? {
                     verify!(jvm, invoke_class.assignable_to(&interface.name));
                 } else {
                     verify_failed!(jvm)
                 }
+                verify!(jvm, type_state.stack.len() + count as usize == stack_in);
                 if let Some(return_type) = &invoke_nat.typ.returns {
                     push_type(jvm, &mut type_state.stack, return_type)?
                 }

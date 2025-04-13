@@ -70,7 +70,8 @@ fn read_magic(jvm: &Jvm, input: &mut &[u8]) -> JvmResult<()> {
 
 fn read_const_pool_item(input: &mut &[u8], jvm: &Jvm) -> JvmResult<ConstPoolItem> {
     use ConstPoolItem::*;
-    match read_u8(jvm, input)? {
+    let tag = read_u8(jvm, input)?;
+    match tag {
         1 => {
             let length = read_u16(jvm, input)?;
             let mut bytes = Vec::with_capacity(length as usize);
@@ -101,6 +102,17 @@ fn read_const_pool_item(input: &mut &[u8], jvm: &Jvm) -> JvmResult<ConstPoolItem
         12 => Ok(NameAndType {
             name: read_u16(jvm, input)?,
             descriptor: read_u16(jvm, input)?,
+        }),
+        15 => Ok(MethodHandle {
+            _reference_kind: read_u8(jvm, input)?,
+            _reference_index: read_u16(jvm, input)?,
+        }),
+        16 => Ok(MethodType {
+            _descriptor: read_u16(jvm, input)?,
+        }),
+        18 => Ok(InvokeDynamic {
+            _bootstrap_method_attr: read_u16(jvm, input)?,
+            _nat: read_u16(jvm, input)?,
         }),
         _ => Err(error!(jvm)),
     }
@@ -526,6 +538,8 @@ pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JvmResult<
 
 fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmResult<Method> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
+    //* each method of a class may have at most one of its ACC_PUBLIC, ACC_PRIVATE,
+    //* and ACC_PROTECTED flags set
     enforce!(
         jvm,
         access_flags
@@ -534,6 +548,9 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
             .count_ones()
             <= 1
     );
+    //* If a method of a class or interface has its ACC_ABSTRACT flag set, it must not
+    //* have any of its ACC_PRIVATE, ACC_STATIC, ACC_FINAL, ACC_SYNCHRONIZED,
+    //* ACC_NATIVE, or ACC_STRICT flags set.
     if access_flags.contains(AccessFlags::ABSTRACT) {
         enforce!(
             jvm,
@@ -549,6 +566,10 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
     }
 
     let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
+    //* Each instance initialization method (§2.9) may have at most one of its
+    //* ACC_PUBLIC, ACC_PRIVATE, and ACC_PROTECTED flags set, and may also have
+    //* its ACC_VARARGS, ACC_STRICT, and ACC_SYNTHETIC flags set, but must not have
+    //* any of the other flags in Table 4.6-A set.
     if *name == *"<init>" {
         enforce!(
             jvm,
@@ -557,7 +578,6 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
                     | AccessFlags::FINAL
                     | AccessFlags::NATIVE
                     | AccessFlags::BRIDGE
-                    | AccessFlags::SYNTHETIC
                     | AccessFlags::SYNCHRONIZED
                     | AccessFlags::ABSTRACT
             )
@@ -586,6 +606,10 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
             access_flags.intersects(AccessFlags::ABSTRACT | AccessFlags::NATIVE)
         );
     }
+
+    //* All bits of the access_flags item not assigned in Table 4.6-A are reserved for
+    //* future use. They should be set to zero in generated class files and should be
+    //* ignored by Java Virtual Machine implementations.
 
     Ok(Method {
         nat: MethodNaT {

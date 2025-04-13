@@ -6,18 +6,18 @@ use core::{
 };
 
 use crate::{
+    AccessFlags,
     class::{ClassRef, ClassState},
     const_pool::{ConstPool, ConstPoolItem},
     field::Field,
     heap::Ptrs,
-    jvm::{throw, Jvm, JvmResult},
+    jvm::{Jvm, JvmResult, throw},
     method::{Bytecode, Code, Method, MethodNaT, NativeCode},
     object::{FieldStorage, Object},
     opcodes::*,
     typ::Type,
     unreachable_verified,
     value::Value,
-    AccessFlags,
 };
 
 pub(crate) fn invoke(
@@ -134,17 +134,9 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
     let ret = match &*code {
         Code::None => {
             if method.access_flags.contains(AccessFlags::ABSTRACT) {
-                Err(throw(
-                    jvm,
-                    "AbstractMethodError",
-                    &*format!("{}", method.nat),
-                ))
+                Err(throw(jvm, "AbstractMethodError", &*format!("{method}")))
             } else if method.access_flags.contains(AccessFlags::NATIVE) {
-                Err(throw(
-                    jvm,
-                    "UnsatisfiedLinkError",
-                    &*format!("{}", method.nat),
-                ))
+                Err(throw(jvm, "UnsatisfiedLinkError", &*format!("{method}")))
             } else {
                 unreachable!()
             }
@@ -1090,7 +1082,7 @@ fn run_until_exception_or_return(
                         execute_invoke_instr(jvm, frame, default)?;
                     }
                     _ if multiple_found => {
-                        return Err(throw(jvm, "IncompatibleClassChangeError", None))
+                        return Err(throw(jvm, "IncompatibleClassChangeError", None));
                     }
                     _ => return Err(throw(jvm, "AbstractMethodError", None)),
                 }

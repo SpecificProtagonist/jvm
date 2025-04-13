@@ -6,13 +6,13 @@ use core::{
 };
 
 use crate::{
+    AccessFlags, Jvm,
     class::{Class, ClassRef},
     heap::{AtomicCompressedPtr, CompressedPtr, Heap, Ptrs},
-    jvm::{throw, JvmResult},
+    jvm::{JvmResult, throw},
     monitor::maybe_loom,
     typ::Type,
     value::Value,
-    AccessFlags, Jvm,
 };
 
 // Object layout (little endian):
@@ -224,8 +224,8 @@ pub(crate) fn fmt_object(
     // Prettier printing for strings
     if class.name.deref() == "java.lang.String" {
         let Value::Ref(chars) = class
-            .field("chars", Type::Ref("char[]".into()))
-            .expect("java.lang.String missing field char[] chars")
+            .field("value", Type::Ref("char[]".into()))
+            .expect("java.lang.String missing field char[] value")
             .instance_get(ptrs, object)
         else {
             unreachable!()

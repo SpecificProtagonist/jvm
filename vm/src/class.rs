@@ -335,7 +335,7 @@ impl Class {
                             self.static_storage.write::<usize>(
                                 ptrs,
                                 field.byte_offset,
-                                const_pool.get_string(jvm, index)?.0.get(),
+                                const_pool.get_string_unresolved(jvm, index)?.0.get(),
                                 true,
                             )
                         } else {

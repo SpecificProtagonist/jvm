@@ -8,10 +8,10 @@ use std::sync::RwLock;
 use hashbrown::Equivalent;
 
 use crate::{
+    AccessFlags, Jvm,
     class::{Class, ClassRef},
     interpreter::TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES,
     typ::Type,
-    AccessFlags, Jvm,
 };
 
 pub(crate) struct Method {

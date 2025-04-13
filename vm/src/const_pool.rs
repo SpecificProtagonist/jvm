@@ -1,14 +1,15 @@
 use alloc::sync::Arc;
 
 use crate::{
+    AccessFlags, Jvm,
     class::ClassRef,
     field::{Field, FieldNaT},
-    jvm::{throw, JvmResult},
+    jvm::{JvmResult, throw},
     method::{MethodNaT, MethodNaTBorrow, MethodRef},
     object::Object,
     parse,
     typ::Type,
-    unreachable_verified, AccessFlags, Jvm,
+    unreachable_verified,
 };
 
 // Differentiating runtime- and on-disk const pool shouldn't be neccessary
@@ -18,7 +19,7 @@ pub(crate) struct ConstPool {
     pub items: Vec<ConstPoolItem>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) enum ConstPoolItem {
     Utf8(Arc<str>),
     Integer(i32),
@@ -32,13 +33,36 @@ pub(crate) enum ConstPoolItem {
     // Class is neccessary for invoke_special
     VirtualMethod(ClassRef, MethodNaT),
     InterfaceMethod(ClassRef, MethodNaT),
-    NameAndType { name: u16, descriptor: u16 },
+    NameAndType {
+        name: u16,
+        descriptor: u16,
+    },
+    InvokeDynamic {
+        _bootstrap_method_attr: u16,
+        _nat: u16,
+    },
+    MethodHandle {
+        _reference_kind: u8,
+        _reference_index: u16,
+    },
+    MethodType {
+        _descriptor: u16,
+    },
     // Only present before resolve
-    FieldRef { class: u16, nat: u16 },
+    FieldRef {
+        class: u16,
+        nat: u16,
+    },
     // Only present before resolve
-    MethodRef { class: u16, nat: u16 },
+    MethodRef {
+        class: u16,
+        nat: u16,
+    },
     // Only present before resolve
-    InterfaceMethodRef { class: u16, nat: u16 },
+    InterfaceMethodRef {
+        class: u16,
+        nat: u16,
+    },
     // Only present before resolve
     RawString(u16),
     RawClass(u16),
@@ -122,20 +146,8 @@ impl ConstPool {
                         return Err(throw(jvm, "NoSuchFieldError", &*format!("{nat:?}")));
                     }
                 }
-                ConstPoolItem::RawString(index) => {
-                    // The spec doesn't describe when these strings should get instantiated, so let's just do it here
-                    let string = self.get_utf8(jvm, index)?;
-                    // TODO: move string object creation routine to jvm (for interning)
-                    let length = string.encode_utf16().count();
-                    let backing_array = jvm.create_array_of(&Type::Char, length as i32);
-                    for (index, char) in string.encode_utf16().enumerate() {
-                        backing_array.array_write::<i16>(jvm, index as i32, char as i16)?
-                    }
-                    let string_class = jvm.resolve_class_internal("java.lang.String")?;
-                    let obj = jvm.create_object_uninitialized(string_class);
-                    let field =
-                        string_class.field("chars", Type::Ref("char[]".into())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
-                    field.instance_set(jvm.heap.ptrs(), obj, Some(backing_array).into());
+                ConstPoolItem::RawString(_) => {
+                    let obj = self.get_string_unresolved(jvm, i as u16)?;
                     self.items[i] = ConstPoolItem::String(obj)
                 }
                 _ => (),
@@ -179,9 +191,33 @@ impl ConstPool {
         }
     }
 
-    pub fn get_string(&self, jvm: &Jvm, index: u16) -> JvmResult<Object> {
+    /// Requires the class pool to be resolved.
+    // TODO: Remove this?
+    pub fn _get_string(&self, jvm: &Jvm, index: u16) -> JvmResult<Object> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::String(string)) => Ok(*string),
+            _ => Err(cfe(jvm)),
+        }
+    }
+
+    pub fn get_string_unresolved(&self, jvm: &Jvm, index: u16) -> JvmResult<Object> {
+        match self.items.get(index as usize) {
+            Some(&ConstPoolItem::RawString(index)) => {
+                // The spec doesn't describe when these strings should get instantiated, so let's just do it here
+                let string = self.get_utf8(jvm, index)?;
+                // TODO: move string object creation routine to jvm (for interning)
+                let length = string.encode_utf16().count();
+                let backing_array = jvm.create_array_of(&Type::Char, length as i32);
+                for (index, char) in string.encode_utf16().enumerate() {
+                    backing_array.array_write::<i16>(jvm, index as i32, char as i16)?
+                }
+                let string_class = jvm.resolve_class_internal("java.lang.String")?;
+                let obj = jvm.create_object_uninitialized(string_class);
+                let field =
+                    string_class.field("value", Type::Ref("char[]".into())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
+                field.instance_set(jvm.heap.ptrs(), obj, Some(backing_array).into());
+                Ok(obj)
+            }
             _ => Err(cfe(jvm)),
         }
     }

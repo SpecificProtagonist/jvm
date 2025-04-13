@@ -767,9 +767,9 @@ bitflags::bitflags! {
     pub struct AccessFlags: u16 {
         /// May be accessed from outside its package.
         const PUBLIC = 0x0001;
-        /// May be accessed only from inside its defining class. (TODO)
+        /// May be accessed only from inside its defining class.
         const PRIVATE = 0x0002;
-        /// May be accessed only from inside its defining class or subclasses. (TODO)
+        /// May be accessed only from inside its defining class or subclasses.
         const PROTECTED = 0x0004;
         /// Declared static.
         const STATIC = 0x0008;

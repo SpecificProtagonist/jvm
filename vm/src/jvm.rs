@@ -448,12 +448,11 @@ impl Drop for Jvm {
 /// For exceptions and errors thrown by the JVM (instead of by athrow).
 /// `name` is unqualified.
 pub(crate) fn throw<'a>(jvm: &Jvm, name: &str, msg: impl Into<Option<&'a str>>) -> Object {
-    panic!();
-    new_throwable(jvm, name, msg)
+    new_throwable(jvm, name, msg.into())
 }
 
-pub(crate) fn new_throwable<'a>(jvm: &Jvm, name: &str, msg: impl Into<Option<&'a str>>) -> Object {
-    let message = if let Some(msg) = msg.into() {
+pub(crate) fn new_throwable(jvm: &Jvm, name: &str, msg: Option<&str>) -> Object {
+    let message = if let Some(msg) = msg {
         format!("{name}: {msg}")
     } else {
         name.to_owned()
@@ -491,8 +490,8 @@ pub(crate) fn str_to_java(jvm: &Jvm, utf8: &str) -> Object {
         .expect("java.lang.String missing");
     let object = jvm.create_object_uninitialized(string_class);
     let field = string_class
-        .field("chars", Type::Ref("char[]".into()))
-        .expect("java.lang.String missing field char[] chars");
+        .field("value", Type::Ref("char[]".into()))
+        .expect("java.lang.String missing field char[] value");
     field.instance_set(jvm.heap.ptrs(), object, Value::Ref(Some(chars_object)));
     object
 }

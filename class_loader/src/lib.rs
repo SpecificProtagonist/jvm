@@ -3,6 +3,7 @@ use std::{
     fs::File,
     io::Read,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 use vm::ClassLoader;
@@ -12,11 +13,7 @@ pub fn file_loaders<P: AsRef<Path>>(paths: impl IntoIterator<Item = P>) -> Box<d
     Box::new(ChainedClassLoader {
         loaders: paths
             .into_iter()
-            .map(|path| {
-                Box::new(FileClassLoader {
-                    path: path.as_ref().into(),
-                }) as Box<dyn ClassLoader>
-            })
+            .map(|path| Box::new(FileClassLoader::new(path.as_ref())) as Box<dyn ClassLoader>)
             .collect(),
     })
 }
@@ -35,20 +32,46 @@ impl ClassLoader for ChainedClassLoader {
 /// Class loader that loads classes from a folder or jar.
 /// Does not respect META_INF.
 pub struct FileClassLoader {
-    pub path: PathBuf,
+    path: PathBuf,
+    /// We don't want to read in the whole jar when we only
+    /// need some of it.
+    /// But opening the jar anew for each class is expensive,
+    /// and we need to be able to load classes with via a
+    /// shared reference.
+    jar_buffers: Mutex<Vec<ZipArchive<File>>>,
+}
+
+impl FileClassLoader {
+    pub fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_owned(),
+            jar_buffers: Mutex::default(),
+        }
+    }
 }
 
 impl ClassLoader for FileClassLoader {
     fn load(&self, name: &str) -> Option<Vec<u8>> {
         let name = name.replace('.', "/") + ".class";
         if self.path.extension() == Some(OsStr::new("jar")) {
-            // TODO: Cache zip lookup
-            let jar_file = File::open(&self.path).ok()?;
-            let mut jar = ZipArchive::new(jar_file).ok()?;
-            let mut class_file = jar.by_name(&name).ok()?;
-            let mut bytes = Vec::new();
-            class_file.read_to_end(&mut bytes).ok()?;
-            Some(bytes)
+            let mut guard = self.jar_buffers.lock().unwrap();
+            let mut jar = if let Some(jar) = guard.pop() {
+                jar
+            } else {
+                let jar_file = File::open(&self.path).ok()?;
+                ZipArchive::new(jar_file).ok()?
+            };
+            drop(guard);
+
+            let bytes = jar.by_name(&name).ok().and_then(|mut class_file| {
+                let mut bytes = Vec::new();
+                class_file.read_to_end(&mut bytes).ok()?;
+                Some(bytes)
+            });
+
+            let mut guard = self.jar_buffers.lock().unwrap();
+            guard.push(jar);
+            bytes
         } else if self.path.is_dir() {
             let mut bytes = Vec::new();
             let mut file = std::fs::File::open(self.path.join(name)).ok()?;
