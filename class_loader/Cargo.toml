@@ -1,5 +1,6 @@
 [package]
 name = "class_loader"
+description = "Helper for loading classes"
 version = "0.1.0"
 authors = ["SpecificProtagonist <specificprotagonist@posteo.net>"]
 edition = "2024"

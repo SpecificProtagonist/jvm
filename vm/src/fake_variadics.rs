@@ -5,8 +5,8 @@
 // TODO: Directly use &[IVal]
 
 use crate::{
-    method::{Code, Method},
     AccessFlags, Jvm, JvmResult, Object, Type, Value,
+    method::{Code, Method},
 };
 
 #[derive(Debug)]
@@ -87,8 +87,27 @@ enum ArgTyp {
     This,
 }
 
-#[allow(private_interfaces)]
-pub(crate) trait NativeFn<T>: Send + Sync + 'static {
+/// Implemented for functions of the following form:
+/// - optionally, a first argument of type `&Jvm`
+/// - the remaining arguments consist of either `&[Value]` or up to 16 arguments of a translateable type
+/// - the return type must be a translatable type, optionally wrapped in a `JvmResult`
+///
+/// Translatable types:  
+/// `bool`, `i8`, `i16`, `u16`, `i32`, `i64`, `f32`, `f64`, `()` (only for return type), `Option<Object>`, `Object` (only for `this`)
+///
+/// # Examples
+/// `static native int add(short a, short b)` can be bound to:
+/// - `fn(i16, i16) -> i32`
+/// - `fn(&Jvm, i16, i16) -> i32`
+/// - `fn(i16, i16) -> JvmResult<i32>`
+/// - `fn(&[Value]) -> i32`
+/// - etc
+///
+/// `native void run(Runner runner)` can be bound to:
+/// - `fn(Object, Option<Object>)`
+/// - `fn(&Jvm, Object, Option<Object>) -> JvmResult<()>`
+/// - etc
+pub trait NativeFn<T>: Send + Sync + 'static {
     fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)>;
     fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Option<Value>>;
 }
@@ -475,5 +494,9 @@ impl_args!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
 impl_args!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 impl_args!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
 impl_args!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
-impl_args!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
-impl_args!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
+impl_args!(
+    T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15
+);
+impl_args!(
+    T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16
+);

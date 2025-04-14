@@ -22,7 +22,6 @@ mod monitor;
 mod object;
 mod opcodes;
 mod parse;
-pub mod provided_native_methods;
 mod raw_mutex;
 mod typ;
 mod value;
@@ -34,10 +33,10 @@ use core::{
     marker::PhantomData,
 };
 
-use fake_variadics::{NativeBindError, NativeFn};
+pub use fake_variadics::{NativeBindError, NativeFn};
 use heap::Ptrs;
 pub use jvm::{ClassLoader, Jvm};
-use jvm::{JvmId, throw};
+use jvm::{JvmId, UnboundNativeMethods, throw};
 pub use method::MethodDescriptor;
 use method::MethodNaTBorrow;
 pub use method::NativeCode;
@@ -593,20 +592,18 @@ impl Method {
         .map_err(|e| Object::new(self.jvm, e))
     }
 
-    /// Register code for a native method. If called multiple times for the same method, the previous registration will be replaced.
-    ///
-    /// `code` must be a function of the following form:
-    /// - optionally, a first argument of type &Jvm
-    /// - the remaining arguments consist of either `&[Value]` or up to 16 arguments of a translateable type
-    /// - the return type must be a translatable type, optionally wrapped in a `JvmResult`
-    ///
-    /// Translatable types:  
-    /// `bool`, `i8`, `i16`, `u16`, `i32`, `i64`, `f32`, `f64`, `()` (only for return type), `Option<Object>`, `Object` (only for `this`)
+    /// Register code for a native method.
     ///
     /// The method must be marked as native and match the signature of `code`.
     /// If it is an instance method, its first argument will be the object it is invoked on.
+    /// If called multiple times for the same method, the previous registration will be replaced.
     ///
     /// The callback returning a value of wrong type will result in a panic.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// method.bind_native_code(&jvm, f32::add)
+    /// ```
     // TODO: Note guarantees about available stack size
     #[allow(private_bounds)]
     pub fn bind_native_code<F: NativeFn<T>, T>(
@@ -819,5 +816,77 @@ fn unreachable_verified() -> ! {
     #[cfg(not(debug_assertions))]
     unsafe {
         std::hint::unreachable_unchecked();
+    }
+}
+
+/// An implementation for a native method.
+pub struct NativeMethod {
+    pub class: String,
+    pub method: String,
+    pub args: Vec<Type>,
+    pub returns: Option<Type>,
+    #[allow(clippy::type_complexity)]
+    bind: Box<dyn Fn(&method::Method) -> Result<(), NativeBindError> + Send>,
+}
+
+impl NativeMethod {
+    pub fn new<N>(
+        class: impl Into<String>,
+        method: impl Into<String>,
+        args: impl Into<Vec<Type>>,
+        returns: impl Into<Option<Type>>,
+        native: impl NativeFn<N> + Copy,
+    ) -> Self {
+        Self {
+            class: class.into(),
+            method: method.into(),
+            args: args.into(),
+            returns: returns.into(),
+            bind: Box::new(move |method| fake_variadics::bind_native_code(method, native)),
+        }
+    }
+
+    /// Makes this method available to its class.
+    ///
+    /// This doesn't cause the method's class to get loaded if it isn't.
+    /// Because of this, no errors are returned if the methods mismatch.
+    pub fn make_available(self, jvm: &Jvm) {
+        let mut lock = jvm.unbound_native_methods.lock().unwrap();
+        let entry = lock
+            .entry_ref(&self.class)
+            .or_insert(UnboundNativeMethods::Available(Vec::new()));
+        match entry {
+            UnboundNativeMethods::Available(native_methods) => native_methods.push(self),
+            UnboundNativeMethods::ClassAlreadyInitialized => {
+                let class = jvm.resolve_class_internal(&self.class).unwrap();
+                if let Some(method) = class.method(&self.method, self.args, self.returns) {
+                    let _ = (self.bind)(method);
+                }
+            }
+        }
+    }
+
+    /// Loads the method's class and binds the method.
+    ///
+    /// # Panics
+    /// Panics if it couldn't be found or doesn't match.
+    pub fn bind(&self, jvm: &Jvm) {
+        let fail = || {
+            panic!(
+                "Failed to bind native method {}:{}",
+                self.class, self.method
+            )
+        };
+        let method = jvm
+            .resolve_method(
+                &self.class,
+                &self.method,
+                self.args.iter().cloned(),
+                self.returns.clone(),
+            )
+            .unwrap_or_else(|_| fail());
+        if (self.bind)(method.into_inner(jvm.id)).is_err() {
+            fail();
+        }
     }
 }

@@ -3,12 +3,11 @@ use core::num::NonZeroUsize;
 use core::sync::atomic::{AtomicU32, Ordering::*};
 use std::sync::{Mutex, RwLock};
 
-use crate::AccessFlags;
 use crate::heap::Heap;
 use crate::hot_reloading::{ReloadErr, reload_method_bytecodes_for_class};
 use crate::identity_hash::IdentityHashes;
 use crate::monitor::{ParkingLot, maybe_loom};
-use crate::provided_native_methods::get_provided_methods;
+use crate::{AccessFlags, NativeMethod};
 use fixed_typed_arena::ManuallyDropArena;
 // TODO: posibly exchange for different hasher (benchmark)
 use hashbrown::HashMap;
@@ -55,6 +54,7 @@ pub struct Jvm {
     pub(crate) classes: RwLock<HashMap<Arc<str>, ClassRef>>,
     pub(crate) identity_hashes: IdentityHashes,
     pub(crate) parking_lot: ParkingLot,
+    pub(crate) unbound_native_methods: Mutex<HashMap<String, UnboundNativeMethods>>,
     pub(crate) stackoverflow_error: Object,
 }
 
@@ -79,23 +79,12 @@ impl Jvm {
             classes: default(),
             identity_hashes: default(),
             parking_lot: default(),
+            unbound_native_methods: default(),
             // Dummy object
             stackoverflow_error: Object(NonZeroUsize::new(1).unwrap()),
         };
         jvm.stackoverflow_error = new_throwable(&jvm, "StackOverflowError", None);
         jvm
-    }
-
-    /// This crate provides some native methods useful for implementing the Java class library.
-    /// This method binds them. You may want to only bind some
-    /// (see [`get_provided_methods`](crate::provided_native_methods::get_provided_methods))
-    /// or none of them if you're doing your own library.
-    ///
-    /// This panics if any of the methods don't match.
-    pub fn bind_provided_native_methods(&self) {
-        for native in get_provided_methods().values().flatten() {
-            native.bind(self);
-        }
     }
 
     /// Returns the class, loading it if it wasn't already loaded.
@@ -501,4 +490,9 @@ fn _assert_jvm_is_send_sync<T: Send + Sync>() {
     if false {
         _assert_jvm_is_send_sync::<Jvm>()
     }
+}
+
+pub(crate) enum UnboundNativeMethods {
+    Available(Vec<NativeMethod>),
+    ClassAlreadyInitialized,
 }

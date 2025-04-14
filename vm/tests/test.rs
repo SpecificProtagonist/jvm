@@ -7,7 +7,7 @@ use vm::*;
 
 fn make_jvm() -> Jvm {
     let jvm = Jvm::new(file_loaders(["classes", "tests/classes"]), 2_000_000);
-    jvm.bind_provided_native_methods();
+    classpath_support::make_available(&jvm);
     jvm
 }
 

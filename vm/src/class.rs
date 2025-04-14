@@ -3,7 +3,7 @@ use hashbrown::HashMap;
 use std::sync::{Condvar, Mutex, RwLock};
 use std::thread::ThreadId;
 
-use crate::jvm::throw;
+use crate::jvm::{UnboundNativeMethods, throw};
 use crate::monitor::maybe_loom;
 use crate::{
     AccessFlags, Jvm,
@@ -362,6 +362,21 @@ impl Class {
 
     /// Requires class to be verified, may only be called from self.ensure_init
     fn init(&'static self, jvm: &Jvm) -> JvmResult<()> {
+        // Bind available native methods
+        let mut unbound = jvm.unbound_native_methods.lock().unwrap();
+        if let Some(UnboundNativeMethods::Available(available)) = unbound.remove(&*self.name) {
+            for native in available {
+                if let Some(method) = self.method(&native.method, native.args, native.returns) {
+                    let _ = (native.bind)(method);
+                }
+            }
+        }
+        unbound.insert(
+            self.name.to_string(),
+            UnboundNativeMethods::ClassAlreadyInitialized,
+        );
+        drop(unbound);
+
         // Initialization
         if let Some(initializer) = self.method("<clinit>", vec![], None) {
             crate::interpreter::invoke_initializer(jvm, initializer)?;

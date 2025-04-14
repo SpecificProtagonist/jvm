@@ -1,5 +1,6 @@
 [package]
 name = "vm"
+description = "JVM engine"
 version = "0.1.0"
 authors = ["SpecificProtagonist <specificprotagonist@posteo.net>"]
 edition = "2024"
@@ -38,6 +39,7 @@ tracing = "0.1"
 [dev-dependencies]
 criterion = "0.3"
 class_loader = {path = "../class_loader"}
+classpath_support = {path = "../classpath_support"}
 
 [[bench]]
 name = "interpreter"

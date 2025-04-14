@@ -1,0 +1,9 @@
+[package]
+name = "classpath_support"
+description = "Native methods needed to run OpenJDK's classpath library"
+version = "0.1.0"
+authors = ["SpecificProtagonist <specificprotagonist@posteo.net>"]
+edition = "2024"
+
+[dependencies]
+vm = {path = "../vm"}
