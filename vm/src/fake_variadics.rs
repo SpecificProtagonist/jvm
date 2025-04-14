@@ -96,14 +96,14 @@ enum ArgTyp {
 /// `bool`, `i8`, `i16`, `u16`, `i32`, `i64`, `f32`, `f64`, `()` (only for return type), `Option<Object>`, `Object` (only for `this`)
 ///
 /// # Examples
-/// `static native int add(short a, short b)` can be bound to:
+/// `static native int add(short a, short b);` can be bound to:
 /// - `fn(i16, i16) -> i32`
 /// - `fn(&Jvm, i16, i16) -> i32`
 /// - `fn(i16, i16) -> JvmResult<i32>`
 /// - `fn(&[Value]) -> i32`
 /// - etc
 ///
-/// `native void run(Runner runner)` can be bound to:
+/// `native void run(Runner runner);` can be bound to:
 /// - `fn(Object, Option<Object>)`
 /// - `fn(&Jvm, Object, Option<Object>) -> JvmResult<()>`
 /// - etc

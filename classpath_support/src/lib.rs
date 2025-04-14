@@ -32,18 +32,13 @@ pub fn get_provided_methods() -> HashMap<&'static str, Vec<NativeMethod>> {
     map.insert(
         "java.lang.Object",
         vec![
-            def(
-                "hashCode",
-                [],
-                Some(Type::Int),
-                |jvm: &Jvm, this: Object| Ok(this.identity_hash(jvm)),
-            ),
-            def(
-                "hashCode",
-                [],
-                Some(Type::Int),
-                |jvm: &Jvm, this: Object| Ok(this.identity_hash(jvm)),
-            ),
+            def("registerNatives", [], None, || ()),
+            def("hashCode", [], Type::Int, |jvm: &Jvm, this: Object| {
+                Ok(this.identity_hash(jvm))
+            }),
+            def("hashCode", [], Type::Int, |jvm: &Jvm, this: Object| {
+                Ok(this.identity_hash(jvm))
+            }),
             def("wait", [], None, |jvm: &Jvm, this: Object| this.wait(jvm)),
             def("notify", [], None, |jvm: &Jvm, this: Object| {
                 this.notify(jvm)
@@ -59,7 +54,7 @@ pub fn get_provided_methods() -> HashMap<&'static str, Vec<NativeMethod>> {
         vec![def(
             "identityHashCode",
             ["java.lang.Object".into()],
-            Some(Type::Int),
+            Type::Int,
             |jvm: &Jvm, x: Option<Object>| Ok(x.map(|x| x.identity_hash(jvm)).unwrap_or(0)),
         )],
     );

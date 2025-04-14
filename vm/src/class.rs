@@ -43,6 +43,7 @@ pub(crate) struct Class {
     // TODO: We only need a statically allocated reentrant mutex here, which would be faster.
     pub(crate) static_monitor: maybe_loom::AtomicU32,
     /// Combined size of instance fields in normal class, 0 if array
+    // TODO: Also include extra data for specific engine classes, such as a pointer to class::Class in Class.class
     pub(crate) object_size: usize,
     pub(crate) init: Mutex<ClassState>,
     pub(crate) init_waiter: Condvar,

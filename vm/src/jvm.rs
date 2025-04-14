@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
-use core::num::NonZeroUsize;
 use core::sync::atomic::{AtomicU32, Ordering::*};
-use std::sync::{Mutex, RwLock};
+use std::alloc::Layout;
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use crate::heap::Heap;
 use crate::hot_reloading::{ReloadErr, reload_method_bytecodes_for_class};
@@ -55,7 +55,7 @@ pub struct Jvm {
     pub(crate) identity_hashes: IdentityHashes,
     pub(crate) parking_lot: ParkingLot,
     pub(crate) unbound_native_methods: Mutex<HashMap<String, UnboundNativeMethods>>,
-    pub(crate) stackoverflow_error: Object,
+    pub(crate) stackoverflow_error: OnceLock<Object>,
 }
 
 impl Jvm {
@@ -71,7 +71,7 @@ impl Jvm {
                 "You've created 4294967296 jvm instances. You've had your fun but that's enough for today."
             )
         }
-        let mut jvm = Self {
+        Self {
             id,
             bootstrap_class_loader: base_class_loader,
             heap: Heap::new(max_heap),
@@ -80,11 +80,8 @@ impl Jvm {
             identity_hashes: default(),
             parking_lot: default(),
             unbound_native_methods: default(),
-            // Dummy object
-            stackoverflow_error: Object(NonZeroUsize::new(1).unwrap()),
-        };
-        jvm.stackoverflow_error = new_throwable(&jvm, "StackOverflowError", None);
-        jvm
+            stackoverflow_error: OnceLock::new(),
+        }
     }
 
     /// Returns the class, loading it if it wasn't already loaded.
@@ -92,6 +89,9 @@ impl Jvm {
     /// Does not initialize this class, nor load any other class referenced.
     /// `name` must be fully qualified and may describe an array.
     pub fn resolve_class(&self, name: &str) -> crate::JvmResult<crate::Class> {
+        self.stackoverflow_error
+            .get_or_init(|| new_throwable(self, "StackOverflowError", None));
+
         self.resolve_class_internal(name)
             .map(|value| crate::Class::new(self.id, value))
             .map_err(|value| crate::Object::new(self.id, value))

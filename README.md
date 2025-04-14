@@ -1,4 +1,4 @@
-# A toy JVM written in Rust.
+# A JVM written in Rust
 
 Goals:
 - embeddable (e.g. sandboxing; multiple JVMs in the same process)
@@ -57,7 +57,7 @@ At minimum, the JVM requires the following classes and interfaces to exist:
 <details>
 <summary>Click to show</summary>
 
-```ignore
+```text
 java
 ├── io
 │   └── Serializable

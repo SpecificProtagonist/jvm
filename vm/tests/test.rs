@@ -6,7 +6,10 @@ use class_loader::file_loaders;
 use vm::*;
 
 fn make_jvm() -> Jvm {
-    let jvm = Jvm::new(file_loaders(["classes", "tests/classes"]), 2_000_000);
+    let jvm = Jvm::new(
+        file_loaders(["../classpath/rt.jar", "tests/classes"]),
+        2_000_000,
+    );
     classpath_support::make_available(&jvm);
     jvm
 }
