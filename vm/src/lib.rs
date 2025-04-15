@@ -2,6 +2,7 @@
 // and can be exchanged for already stable code if necessary.
 #![feature(ptr_as_ref_unchecked)]
 #![feature(sync_unsafe_cell)]
+#![allow(clippy::type_complexity)]
 #![doc = include_str!("../../README.md")]
 
 extern crate alloc;
@@ -27,11 +28,13 @@ mod typ;
 mod value;
 mod verification;
 
+use alloc::alloc::Layout;
 use core::{
     fmt::{Debug, Display},
     hash::Hash,
     marker::PhantomData,
 };
+use std::collections::HashMap;
 
 pub use fake_variadics::{NativeBindError, NativeFn};
 use heap::Ptrs;
@@ -421,14 +424,20 @@ impl Class {
 
     /// Creates an instance of a non-array class on the heap without invoking its constructor.
     ///
+    /// Returns `Err` if initializing the class fails.
+    ///
     /// # Panics
     /// Panics if this is an array class or interface.
     #[track_caller]
-    pub fn create_object_uninitialized(self, jvm: &Jvm) -> Object {
-        Object::new(
+    pub fn create_object_no_constructor(self, jvm: &Jvm) -> JvmResult<Object> {
+        let class = self.into_inner(jvm.id);
+        class
+            .ensure_init(jvm)
+            .map_err(|err| Object::new(jvm.id, err))?;
+        Ok(Object::new(
             self.jvm,
-            jvm.create_object_uninitialized(self.into_inner(jvm.id)),
-        )
+            jvm.create_object_skipping_constructor(class),
+        ))
     }
 
     /// Creates an object via constructor.
@@ -442,9 +451,13 @@ impl Class {
         arg_types: impl IntoIterator<Item = Type>,
         mut args: Vec<Value>,
     ) -> JvmResult<Object> {
+        let class = self.into_inner(jvm.id);
+        class
+            .ensure_init(jvm)
+            .map_err(|err| Object::new(jvm.id, err))?;
         let object = Object::new(
             jvm.id,
-            jvm.create_object_uninitialized(self.into_inner(jvm.id)),
+            jvm.create_object_skipping_constructor(self.into_inner(jvm.id)),
         );
         args.insert(0, Value::Ref(Some(object)));
         let constructor = self.method(jvm, "<init>", arg_types, None).ok_or_else(|| {
@@ -459,6 +472,23 @@ impl Class {
         })?;
         constructor.invoke(jvm, &args)?;
         Ok(object)
+    }
+
+    /// Get a pointer to this class' per-object metadata.
+    /// The layout of this metadata is defined by [`Jvm::define_object_metadata_layout`].
+    ///
+    /// When an object is allocated, its metadata is zero-initialized.
+    ///
+    /// # Safety
+    /// - object must be an instance of this class
+    pub unsafe fn get_metadata(&self, jvm: &Jvm, object: Object) -> *const () {
+        // SAFETY: Same precondition
+        unsafe { class::Class::get_metadata(self.into_inner(jvm.id), object.value) }
+    }
+
+    /// Get the instance of java.lang.Class that represents this class.
+    pub fn class_object(&self, jvm: &Jvm) -> Object {
+        Object::new(jvm.id, self.into_inner(jvm.id).class_object(jvm))
     }
 }
 
@@ -825,8 +855,17 @@ pub struct NativeMethod {
     pub method: String,
     pub args: Vec<Type>,
     pub returns: Option<Type>,
-    #[allow(clippy::type_complexity)]
-    bind: Box<dyn Fn(&method::Method) -> Result<(), NativeBindError> + Send>,
+    bind: Box<dyn Fn(&method::Method) -> Result<(), NativeBindError> + Send + Sync>,
+}
+
+impl Debug for NativeMethod {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NativeMethod")
+            .field("class", &self.class)
+            .field("args", &self.args)
+            .field("returns", &self.returns)
+            .finish()
+    }
 }
 
 impl NativeMethod {
@@ -887,6 +926,34 @@ impl NativeMethod {
             .unwrap_or_else(|_| fail());
         if (self.bind)(method.into_inner(jvm.id)).is_err() {
             fail();
+        }
+    }
+}
+
+/// Tells the vm how to interact with the class library.
+pub struct ClassLibraryIntegration {
+    /// Map from class name to layout of custom per-object metadata.
+    ///
+    /// See [`Jvm::define_object_metadata_layout`].
+    pub metatada_layout: HashMap<String, Layout>,
+    /// Implementation of native methods.
+    ///
+    /// See [NativeMethod::make_available].
+    pub native_methods: Vec<NativeMethod>,
+    /// Constructs a java.lang.Class instance representing the given class.
+    /// May be called multiple times for the same class when multithreading.
+    pub class_object_constructor: Box<dyn Fn(&Jvm, Class) -> Object + Send + Sync>,
+    /// Constructs a java.lang.String instance representing the given string.
+    pub string_constructor: Box<dyn Fn(&Jvm, &str) -> Object + Send + Sync>,
+}
+
+impl Default for ClassLibraryIntegration {
+    fn default() -> Self {
+        Self {
+            metatada_layout: default(),
+            native_methods: default(),
+            class_object_constructor: Box::new(|_, _| unimplemented!()),
+            string_constructor: Box::new(|_, _| unimplemented!()),
         }
     }
 }

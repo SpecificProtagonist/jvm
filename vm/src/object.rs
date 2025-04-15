@@ -1,6 +1,6 @@
 use core::{
     mem::size_of,
-    num::NonZeroUsize,
+    num::{NonZero, NonZeroUsize},
     ops::Deref,
     sync::atomic::{Ordering::*, *},
 };
@@ -447,5 +447,23 @@ impl FieldStorage {
             value,
             if volatile { Release } else { Relaxed },
         )
+    }
+}
+
+/// Convenience struct for holding a single object.
+#[derive(Default)]
+pub(crate) struct ObjectHolder(AtomicUsize);
+
+impl ObjectHolder {
+    pub fn get(&self, init: impl Fn() -> Object) -> Object {
+        let value = self.0.load(Relaxed);
+        if let Some(addr) = NonZero::new(value) {
+            return Object(addr);
+        }
+        let object = init();
+        match self.0.compare_exchange(0, object.0.get(), AcqRel, Acquire) {
+            Ok(_) => object,
+            Err(value) => Object(NonZero::new(value).unwrap()),
+        }
     }
 }

@@ -14,7 +14,11 @@ pub fn benches(c: &mut Criterion) {
 }
 
 fn make_jvm() -> Jvm {
-    Jvm::new(file_loaders(["classes", "benches/classes"]), 20_000)
+    Jvm::new(
+        file_loaders(["classes", "benches/classes"]),
+        ClassLibraryIntegration::default(),
+        20_000,
+    )
 }
 
 fn bench(b: &mut Bencher, threads: i32) {
@@ -25,7 +29,7 @@ fn bench(b: &mut Bencher, threads: i32) {
     let method = class
         .method(&jvm, "stress", [Type::Int, Type::Int], None)
         .unwrap();
-    let instance = class.create_object_uninitialized(&jvm);
+    let instance = class.create_object_no_constructor(&jvm).unwrap();
     b.iter(|| {
         thread::scope(|scope| {
             for _ in 0..threads {

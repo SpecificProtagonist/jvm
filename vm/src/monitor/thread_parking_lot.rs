@@ -104,7 +104,6 @@ impl ParkingLot {
         let map = unsafe { (self.map.load(Acquire) as *const Map).as_ref_unchecked() };
 
         let index = map.index(object);
-        miri_println!("[{:?}] index {index}", current().id());
 
         let bucket = &map.buckets[index];
         bucket.lock.lock();

@@ -1,3 +1,5 @@
+use std::sync::RwLock;
+
 use alloc::sync::Arc;
 
 use crate::{
@@ -7,13 +9,10 @@ use crate::{
     jvm::{JvmResult, throw},
     method::{MethodNaT, MethodNaTBorrow, MethodRef},
     object::Object,
-    parse,
-    typ::Type,
-    unreachable_verified,
+    parse, unreachable_verified,
 };
 
-// Differentiating runtime- and on-disk const pool shouldn't be neccessary
-// although it would allow a speedup
+// TODO: Technically format checking is fully part of loading
 #[derive(Default)]
 pub(crate) struct ConstPool {
     pub items: Vec<ConstPoolItem>,
@@ -33,13 +32,18 @@ pub(crate) enum ConstPoolItem {
     // Class is neccessary for invoke_special
     VirtualMethod(ClassRef, MethodNaT),
     InterfaceMethod(ClassRef, MethodNaT),
+    InvokeDynamic {
+        _bootstrap_method_attr: u16,
+        nat: MethodNaT,
+    },
     NameAndType {
         name: u16,
         descriptor: u16,
     },
-    InvokeDynamic {
-        _bootstrap_method_attr: u16,
-        _nat: u16,
+    // Only present before resolve
+    RawInvokeDynamic {
+        bootstrap_method_attr: u16,
+        nat: u16,
     },
     MethodHandle {
         _reference_kind: u8,
@@ -70,6 +74,7 @@ pub(crate) enum ConstPoolItem {
     PlaceholderAfterLongOrDoubleEntryOrForEntryZero,
 }
 
+#[track_caller]
 fn cfe(jvm: &Jvm) -> Object {
     throw(jvm, "ClassFormatError", "const pool")
 }
@@ -146,11 +151,35 @@ impl ConstPool {
                         return Err(throw(jvm, "NoSuchFieldError", &*format!("{nat:?}")));
                     }
                 }
-                ConstPoolItem::RawString(_) => {
-                    let obj = self.get_string_unresolved(jvm, i as u16)?;
-                    self.items[i] = ConstPoolItem::String(obj)
+                ConstPoolItem::RawInvokeDynamic {
+                    bootstrap_method_attr,
+                    nat,
+                } => {
+                    let (name, descriptor) = self.get_raw_nat(jvm, nat)?;
+                    let typ = parse::parse_method_descriptor(jvm, &descriptor)?;
+                    self.items[i] = ConstPoolItem::InvokeDynamic {
+                        _bootstrap_method_attr: bootstrap_method_attr,
+                        nat: MethodNaT { name, typ },
+                    };
                 }
-                _ => (),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    pub fn create_objects(pool: &RwLock<Self>, jvm: &Jvm) -> JvmResult<()> {
+        let mut guard = pool.write().unwrap();
+        for i in 0..guard.items.len() {
+            if let ConstPoolItem::RawString(index) = guard.items[i] {
+                // The spec doesn't describe when these strings should get instantiated, so let's just do it here
+                // TODO: Interning
+                let string = guard.get_utf8(jvm, index)?;
+                drop(guard);
+                let object = (jvm.class_library_integration.string_constructor)(jvm, &string)
+                    .into_inner(jvm.id);
+                guard = pool.write().unwrap();
+                guard.items[i] = ConstPoolItem::String(object);
             }
         }
         Ok(())
@@ -193,31 +222,9 @@ impl ConstPool {
 
     /// Requires the class pool to be resolved.
     // TODO: Remove this?
-    pub fn _get_string(&self, jvm: &Jvm, index: u16) -> JvmResult<Object> {
+    pub fn get_string(&self, jvm: &Jvm, index: u16) -> JvmResult<Object> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::String(string)) => Ok(*string),
-            _ => Err(cfe(jvm)),
-        }
-    }
-
-    pub fn get_string_unresolved(&self, jvm: &Jvm, index: u16) -> JvmResult<Object> {
-        match self.items.get(index as usize) {
-            Some(&ConstPoolItem::RawString(index)) => {
-                // The spec doesn't describe when these strings should get instantiated, so let's just do it here
-                let string = self.get_utf8(jvm, index)?;
-                // TODO: move string object creation routine to jvm (for interning)
-                let length = string.encode_utf16().count();
-                let backing_array = jvm.create_array_of(&Type::Char, length as i32);
-                for (index, char) in string.encode_utf16().enumerate() {
-                    backing_array.array_write::<i16>(jvm, index as i32, char as i16)?
-                }
-                let string_class = jvm.resolve_class_internal("java.lang.String")?;
-                let obj = jvm.create_object_uninitialized(string_class);
-                let field =
-                    string_class.field("value", Type::Ref("char[]".into())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
-                field.instance_set(jvm.heap.ptrs(), obj, Some(backing_array).into());
-                Ok(obj)
-            }
             _ => Err(cfe(jvm)),
         }
     }
@@ -271,6 +278,17 @@ impl ConstPool {
     pub fn get_interface_method(&self, jvm: &Jvm, index: u16) -> JvmResult<(ClassRef, &MethodNaT)> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::InterfaceMethod(class, nat)) => Ok((class, nat)),
+            _ => Err(cfe(jvm)),
+        }
+    }
+
+    /// Requires resolution first
+    pub fn get_invoke_dynamic(&self, jvm: &Jvm, index: u16) -> JvmResult<(u16, &MethodNaT)> {
+        match self.items.get(index as usize) {
+            Some(ConstPoolItem::InvokeDynamic {
+                _bootstrap_method_attr,
+                nat,
+            }) => Ok((*_bootstrap_method_attr, nat)),
             _ => Err(cfe(jvm)),
         }
     }

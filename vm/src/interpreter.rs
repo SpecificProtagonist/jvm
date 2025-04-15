@@ -4,6 +4,7 @@ use core::{
     ops::Deref,
     sync::atomic::{AtomicU8, Ordering::Relaxed},
 };
+use std::thread;
 
 use crate::{
     AccessFlags,
@@ -26,6 +27,10 @@ pub(crate) fn invoke(
     args: impl IntoIterator<Item = Value>,
 ) -> JvmResult<Option<Value>> {
     method.class().ensure_init(jvm)?;
+
+    // jvm.stackoverflow_error
+    //     .get_or_init(|| new_throwable(jvm, "StackOverflowError", None));
+
     let ptrs = jvm.heap.ptrs();
     let mut args = args.into_iter();
     let mut arg_values = Vec::new();
@@ -102,7 +107,12 @@ impl core::fmt::Debug for IVal {
 
 pub const TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES: bool = cfg!(target_pointer_width = "32");
 
-/// Requires that the class is already initialized, or method is the initializer
+/// Requires that either
+/// - the class is already initialized
+/// - the class is in the process of eeing initialized by the current thread
+/// - or the method is the class initializer
+///
+/// and that the const pool is not write-locked.
 fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Option<Value>> {
     #[cfg(not(miri))]
     {
@@ -115,6 +125,15 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
             return Err(*jvm.stackoverflow_error.get().unwrap());
         }
     }
+
+    debug_assert!(
+        (method.nat.name.deref() == "<clinit>")
+            | {
+                let state = &*method.class().init.lock().unwrap();
+                matches!(state, ClassState::Initialized)
+                    | matches!(state, &ClassState::InitializationInProgress(thread) if thread == thread::current().id())
+            }
+    );
 
     let method_monitor = if method.access_flags.contains(AccessFlags::SYNCHRONIZED) {
         Some(if method.access_flags.contains(AccessFlags::STATIC) {
@@ -241,20 +260,12 @@ fn native(
     }
 }
 
-/// Requires that the class is already initialized, or method is the initializer
 fn interpret(
     jvm: &Jvm,
     method: &Method,
     code: &Bytecode,
     args: &[IVal],
 ) -> JvmResult<Option<Value>> {
-    debug_assert!(
-        (method.nat.name.deref() == "<clinit>")
-            | matches!(
-                *method.class().init.lock().unwrap(),
-                ClassState::Initialized
-            )
-    );
     // The class is already initialized, so we can hold the read lock for as long as we like
     let const_pool = method.class().const_pool.read().unwrap();
 
@@ -365,11 +376,11 @@ fn run_until_exception_or_return(
             }
             LDC => {
                 let index = frame.read_code_u8() as u16;
-                ldc(frame, const_pool, index);
+                ldc(jvm, frame, const_pool, index);
             }
             LDC_W | LDC2_W => {
                 let index = frame.read_code_u16();
-                ldc(frame, const_pool, index);
+                ldc(jvm, frame, const_pool, index);
             }
             ILOAD | FLOAD | ALOAD => {
                 let index = frame.read_code_u8() as u16;
@@ -1087,6 +1098,9 @@ fn run_until_exception_or_return(
                     _ => return Err(throw(jvm, "AbstractMethodError", None)),
                 }
             }
+            INVOKEDYNAMIC => {
+                unimplemented!()
+            }
             NEW => {
                 let index = frame.read_code_u16();
                 let class = const_pool.get_class_verified(index);
@@ -1097,7 +1111,7 @@ fn run_until_exception_or_return(
             NEW_INITIALIZED => {
                 let index = frame.read_code_u16();
                 let class = const_pool.get_class_verified(index);
-                frame.push(jvm.create_object_uninitialized(class).into())
+                frame.push(jvm.create_object_skipping_constructor(class).into())
             }
             NEWARRAY => {
                 let length = frame.pop().as_int();
@@ -1260,14 +1274,14 @@ fn run_until_exception_or_return(
     }
 }
 
-fn ldc(frame: &mut Frame, const_pool: &ConstPool, index: u16) {
+fn ldc(jvm: &Jvm, frame: &mut Frame, const_pool: &ConstPool, index: u16) {
     match const_pool.items.get(index as usize) {
         Some(&ConstPoolItem::Integer(i)) => frame.push(i.into()),
         Some(&ConstPoolItem::Float(f)) => frame.push(f.into()),
         Some(ConstPoolItem::Long(l)) => frame.push_long(*l),
         Some(ConstPoolItem::Double(d)) => frame.push_double(*d),
         Some(&ConstPoolItem::String(object)) => frame.push(object.into()),
-        Some(ConstPoolItem::Class(_)) => todo!("Class objects"),
+        Some(ConstPoolItem::Class(class)) => frame.push(class.class_object(jvm).into()),
         _ => unreachable_verified(),
     }
 }

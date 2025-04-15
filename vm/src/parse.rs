@@ -110,9 +110,9 @@ fn read_const_pool_item(input: &mut &[u8], jvm: &Jvm) -> JvmResult<ConstPoolItem
         16 => Ok(MethodType {
             _descriptor: read_u16(jvm, input)?,
         }),
-        18 => Ok(InvokeDynamic {
-            _bootstrap_method_attr: read_u16(jvm, input)?,
-            _nat: read_u16(jvm, input)?,
+        18 => Ok(RawInvokeDynamic {
+            bootstrap_method_attr: read_u16(jvm, input)?,
+            nat: read_u16(jvm, input)?,
         }),
         _ => Err(error!(jvm)),
     }

@@ -1,7 +1,7 @@
 # A JVM written in Rust
 
 Goals:
-- embeddable (e.g. sandboxing; multiple JVMs in the same process)
+- embeddable (e.g. customizable class library integration; multiple JVMs in the same process)
 - non-terrible performance
 - multithreading-support
 - most importantly: Having fun developing this

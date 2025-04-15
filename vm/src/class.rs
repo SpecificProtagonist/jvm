@@ -1,3 +1,4 @@
+use alloc::alloc::Layout;
 use alloc::sync::Arc;
 use hashbrown::HashMap;
 use std::sync::{Condvar, Mutex, RwLock};
@@ -5,6 +6,7 @@ use std::thread::ThreadId;
 
 use crate::jvm::{UnboundNativeMethods, throw};
 use crate::monitor::maybe_loom;
+use crate::object::ObjectHolder;
 use crate::{
     AccessFlags, Jvm,
     const_pool::ConstPool,
@@ -43,16 +45,19 @@ pub(crate) struct Class {
     // TODO: We only need a statically allocated reentrant mutex here, which would be faster.
     pub(crate) static_monitor: maybe_loom::AtomicU32,
     /// Combined size of instance fields in normal class, 0 if array
-    // TODO: Also include extra data for specific engine classes, such as a pointer to class::Class in Class.class
     pub(crate) object_size: usize,
+    pub(crate) metadata_offset: usize,
     pub(crate) init: Mutex<ClassState>,
     pub(crate) init_waiter: Condvar,
+    pub(crate) class_object: ObjectHolder,
 }
 
+#[derive(Debug)]
 pub(crate) enum ClassState {
     Unverified,
     Verified,
-    InProgress(ThreadId),
+    VerificationInProgress(ThreadId),
+    InitializationInProgress(ThreadId),
     /// Initialization succeeded.
     Initialized,
     /// Initialization failed; holds the exception thrown.
@@ -74,15 +79,19 @@ impl core::hash::Hash for ClassRef {
     }
 }
 
+pub(crate) struct ClassLayout {
+    pub fields: HashMap<FieldNaT, Field>,
+    pub static_size: usize,
+    pub object_size: usize,
+    pub metadata_offset: usize,
+}
+
 impl Class {
     pub(crate) fn set_layouts(
         super_class: Option<&Class>,
         fields: Vec<Field>,
-    ) -> (
-        HashMap<FieldNaT, Field>,
-        /*static size*/ usize,
-        /*instance size*/ usize,
-    ) {
+        metadata: Layout,
+    ) -> ClassLayout {
         let mut static_fields = Vec::new();
         let mut object_fields = Vec::new();
         for field in fields {
@@ -129,8 +138,34 @@ impl Class {
             None => object::OFFSET_FIELDS,
         };
         set_layouts(&mut object_size, object_fields);
+        let (object_layout, metadata_offset) = Layout::from_size_align(object_size, 8)
+            .unwrap()
+            .extend(metadata)
+            .unwrap();
+        let object_size = object_layout.size();
 
-        (fields, static_size, object_size)
+        ClassLayout {
+            fields,
+            static_size,
+            object_size,
+            metadata_offset,
+        }
+    }
+
+    pub(crate) fn class_object(&'static self, jvm: &Jvm) -> Object {
+        self.class_object.get(|| {
+            let class = crate::Class::new(jvm.id, self);
+            let object = (jvm.class_library_integration.class_object_constructor)(jvm, class)
+                .into_inner(jvm.id);
+            debug_assert_eq!(&*object.class(jvm.heap.ptrs()).name, "java.lang.Class");
+            object
+        })
+    }
+
+    /// # Safety
+    /// - object must be an instance of this class
+    pub(crate) unsafe fn get_metadata(&self, object: Object) -> *const () {
+        (object.0.get() + self.metadata_offset) as *const ()
     }
 
     pub(crate) fn is_interface(&self) -> bool {
@@ -220,26 +255,33 @@ impl Class {
 
     /// Ensures this class is initialized. Includes linking, verification, preparation & resolution.
     /// This happens automatically when a method belonging to this class is called.
-    // May only be called by the library consumer or instuctions new, getstatic, putstatic or invokestatic or by being the initial class
+    // May only be called by the library consumer, Jvm::invoke, the instuctions getstatic, putstatic,
+    // and invokestatic, or anything that creates a class instance.
     pub fn ensure_init(&'static self, jvm: &Jvm) -> JvmResult<()> {
         loop {
             let mut guard = self.init.lock().unwrap();
             match *guard {
-                ClassState::InProgress(thread) => {
-                    if thread == std::thread::current().id() {
-                        return Ok(());
-                    } else {
-                        drop(self.init_waiter.wait(guard).unwrap());
-                    }
+                ClassState::VerificationInProgress(thread)
+                    if thread == std::thread::current().id() =>
+                {
+                    // TODO: Can this happen?
+                    todo!()
+                }
+                ClassState::InitializationInProgress(thread)
+                    if thread == std::thread::current().id() =>
+                {
+                    return Ok(());
+                }
+                ClassState::VerificationInProgress(_) | ClassState::InitializationInProgress(_) => {
+                    drop(self.init_waiter.wait(guard).unwrap());
                 }
                 ClassState::Unverified => {
-                    *guard = ClassState::InProgress(std::thread::current().id());
                     drop(guard);
                     self.verify(jvm)?;
                     self.init_waiter.notify_all();
                 }
                 ClassState::Verified => {
-                    *guard = ClassState::InProgress(std::thread::current().id());
+                    *guard = ClassState::InitializationInProgress(std::thread::current().id());
                     drop(guard);
 
                     if let Some(super_class) = self.super_class {
@@ -258,7 +300,9 @@ impl Class {
                     self.init_waiter.notify_all();
                     return result;
                 }
-                ClassState::Initialized => return Ok(()),
+                ClassState::Initialized => {
+                    return Ok(());
+                }
                 ClassState::Error(err) => return Err(err),
             }
         }
@@ -268,28 +312,53 @@ impl Class {
         let mut guard = self.init.lock().unwrap();
         loop {
             match *guard {
-                ClassState::Unverified => break,
-                ClassState::InProgress(thread) => {
-                    if thread == std::thread::current().id() {
-                        break;
-                    } else {
-                        guard = self.init_waiter.wait(guard).unwrap();
-                    }
+                ClassState::VerificationInProgress(thread)
+                    if thread == std::thread::current().id() =>
+                {
+                    unreachable!("recursive verification");
                 }
-                ClassState::Verified | ClassState::Initialized => return Ok(()),
+                // Run verification
+                ClassState::Unverified => {
+                    *guard = ClassState::VerificationInProgress(std::thread::current().id());
+                    drop(guard);
+                    let result = self.verify_impl(jvm);
+                    *self.init.lock().unwrap() = match result {
+                        Ok(()) => ClassState::Verified,
+                        Err(err) => ClassState::Error(err),
+                    };
+                    return result;
+                }
+                // Wait for class to be verified
+                ClassState::VerificationInProgress(_) => {
+                    guard = self.init_waiter.wait(guard).unwrap();
+                }
+                // Already verified
+                ClassState::Verified
+                | ClassState::InitializationInProgress(_)
+                | ClassState::Initialized => return Ok(()),
                 ClassState::Error(err) => return Err(err),
             }
         }
-        let result = self.verify_impl(jvm);
-        *guard = match result {
-            Ok(()) => ClassState::Verified,
-            Err(err) => ClassState::Error(err),
-        };
-        result
     }
 
     pub(crate) fn verify_impl(&'static self, jvm: &Jvm) -> JvmResult<()> {
         let mut const_pool = self.const_pool.write().unwrap();
+
+        // Resolution
+        const_pool.resolve(jvm, self)?;
+        drop(const_pool);
+
+        // Verification
+        verify(jvm, self)?;
+
+        Ok(())
+    }
+
+    fn prepare(&self, jvm: &Jvm) -> JvmResult<()> {
+        ConstPool::create_objects(&self.const_pool, jvm)?;
+
+        let const_pool = self.const_pool.read().unwrap();
+
         let ptrs = jvm.heap.ptrs();
         // Preparation
         for field in self.fields.values() {
@@ -336,7 +405,7 @@ impl Class {
                             self.static_storage.write::<usize>(
                                 ptrs,
                                 field.byte_offset,
-                                const_pool.get_string_unresolved(jvm, index)?.0.get(),
+                                const_pool.get_string(jvm, index)?.0.get(),
                                 true,
                             )
                         } else {
@@ -350,14 +419,6 @@ impl Class {
                 }
             }
         }
-
-        // Resolution
-        const_pool.resolve(jvm, self)?;
-        drop(const_pool);
-
-        // Verification
-        verify(jvm, self)?;
-
         Ok(())
     }
 
@@ -377,6 +438,9 @@ impl Class {
             UnboundNativeMethods::ClassAlreadyInitialized,
         );
         drop(unbound);
+
+        // Preparation
+        self.prepare(jvm)?;
 
         // Initialization
         if let Some(initializer) = self.method("<clinit>", vec![], None) {

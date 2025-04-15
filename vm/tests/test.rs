@@ -6,12 +6,11 @@ use class_loader::file_loaders;
 use vm::*;
 
 fn make_jvm() -> Jvm {
-    let jvm = Jvm::new(
+    Jvm::new(
         file_loaders(["../classpath/rt.jar", "tests/classes"]),
+        unsafe { classpath_support::get_integration() },
         2_000_000,
-    );
-    classpath_support::make_available(&jvm);
-    jvm
+    )
 }
 
 #[test]
@@ -77,7 +76,7 @@ fn field_access_inheritance() {
     let super_class = class.super_class(&jvm).unwrap();
     let a = super_class.field(&jvm, "a", Type::Int).unwrap();
     let b = class.field(&jvm, "b", Type::Int).unwrap();
-    let instance = class.create_object_uninitialized(&jvm);
+    let instance = class.create_object_no_constructor(&jvm).unwrap();
     a.instance_set(&jvm, instance, 1);
     b.instance_set(&jvm, instance, 2);
     assert_eq!(a.instance_get(&jvm, instance), 1);
@@ -266,7 +265,8 @@ fn cross_jvms_field() {
     let object_from_1 = jvm_1
         .resolve_class("java.lang.Object")
         .unwrap()
-        .create_object_uninitialized(&jvm_1);
+        .create_object_no_constructor(&jvm_1)
+        .unwrap();
 
     let class_from_2 = jvm_2.resolve_class("CrossJvm").unwrap();
     let field = class_from_2
@@ -284,7 +284,8 @@ fn cross_jvms_method() {
     let object_from_1 = jvm_1
         .resolve_class("java.lang.Object")
         .unwrap()
-        .create_object_uninitialized(&jvm_1);
+        .create_object_no_constructor(&jvm_1)
+        .unwrap();
 
     let class_from_2 = jvm_2.resolve_class("CrossJvm").unwrap();
     let method = class_from_2
@@ -315,7 +316,11 @@ fn hot_reloading() {
             loader.load(name)
         }
     }
-    let jvm = Jvm::new(Box::new(TestClassloader), 1_000_000);
+    let jvm = Jvm::new(
+        Box::new(TestClassloader),
+        ClassLibraryIntegration::default(),
+        1_000_000,
+    );
 
     let class = jvm.resolve_class("HotReloading").unwrap();
     let field = class.field(&jvm, "static_field", Type::Int).unwrap();
@@ -372,7 +377,7 @@ fn sync() {
 
     let static_method = class.method(&jvm, "static_sync", None, None).unwrap();
     let instance_method = class.method(&jvm, "instance_sync", None, None).unwrap();
-    let instance = class.create_object_uninitialized(&jvm);
+    let instance = class.create_object_no_constructor(&jvm).unwrap();
 
     scope(|scope| {
         for _ in 0..threads {
@@ -407,8 +412,8 @@ fn identity_hash_code() {
     let class = jvm.resolve_class("java.lang.Object").unwrap();
     let hash = class.method(&jvm, "hashCode", [], Some(Type::Int)).unwrap();
 
-    let obj_1 = class.create_object_uninitialized(&jvm);
-    let obj_2 = class.create_object_uninitialized(&jvm);
+    let obj_1 = class.create_object_no_constructor(&jvm).unwrap();
+    let obj_2 = class.create_object_no_constructor(&jvm).unwrap();
     let hash_1 = hash.invoke(&jvm, &[obj_1.into()]).unwrap();
     let hash_2 = hash.invoke(&jvm, &[obj_2.into()]).unwrap();
 
@@ -420,7 +425,7 @@ fn monitor_tmp() {
     let jvm = make_jvm();
     let class = jvm.resolve_class("java.lang.Object").unwrap();
 
-    let obj = class.create_object_uninitialized(&jvm);
+    let obj = class.create_object_no_constructor(&jvm).unwrap();
     obj.enter_monitor(&jvm);
     obj.exit_monitor(&jvm).unwrap();
 }

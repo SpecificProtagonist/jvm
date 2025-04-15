@@ -184,8 +184,7 @@ pub const INVOKEVIRTUAL: u8 = 182;
 pub const INVOKESPECIAL: u8 = 183;
 pub const INVOKESTATIC: u8 = 184;
 pub const INVOKEINTERFACE: u8 = 185;
-#[allow(dead_code)]
-pub const INVOKEDYNAMIC: u8 = 186; // TODO: Interpretation + Verification
+pub const INVOKEDYNAMIC: u8 = 186; // TODO: Interpretation
 pub const NEW: u8 = 187;
 pub const NEWARRAY: u8 = 188;
 pub const ANEWARRAY: u8 = 189;

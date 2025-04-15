@@ -1,12 +1,12 @@
 use core::sync::atomic::Ordering;
 
 use crate::{
+    Jvm,
     class::{Class, ClassState},
-    jvm::{throw, JvmResult},
+    jvm::{JvmResult, throw},
     method::Code,
     parse::read_class_file,
     verification::verify_method,
-    Jvm,
 };
 
 #[derive(Debug)]
@@ -79,7 +79,7 @@ pub(crate) fn reload_method_bytecodes_for_class(jvm: &Jvm, name: &str) -> Result
     let mut guard = class.init.lock().unwrap();
     loop {
         match *guard {
-            ClassState::InProgress(_) => {
+            ClassState::VerificationInProgress(_) | ClassState::InitializationInProgress(_) => {
                 guard = class.init_waiter.wait(guard).unwrap();
             }
             ClassState::Error(_) => {

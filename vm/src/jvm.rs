@@ -1,13 +1,13 @@
+use alloc::alloc::Layout;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering::*};
-use std::alloc::Layout;
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use crate::heap::Heap;
 use crate::hot_reloading::{ReloadErr, reload_method_bytecodes_for_class};
 use crate::identity_hash::IdentityHashes;
 use crate::monitor::{ParkingLot, maybe_loom};
-use crate::{AccessFlags, NativeMethod};
+use crate::{AccessFlags, ClassLibraryIntegration, NativeMethod};
 use fixed_typed_arena::ManuallyDropArena;
 // TODO: posibly exchange for different hasher (benchmark)
 use hashbrown::HashMap;
@@ -56,6 +56,7 @@ pub struct Jvm {
     pub(crate) parking_lot: ParkingLot,
     pub(crate) unbound_native_methods: Mutex<HashMap<String, UnboundNativeMethods>>,
     pub(crate) stackoverflow_error: OnceLock<Object>,
+    pub(crate) class_library_integration: ClassLibraryIntegration,
 }
 
 impl Jvm {
@@ -63,13 +64,27 @@ impl Jvm {
     ///
     /// NOTE: The Jvm will preallocate `max_heap` bytes, relying on memory overcommit.
     /// On 64bit systems, `max_heap` is limited to 2³⁵ bytes (32Gb).
-    pub fn new(base_class_loader: Box<dyn ClassLoader>, max_heap: usize) -> Self {
+    pub fn new(
+        base_class_loader: Box<dyn ClassLoader>,
+        mut class_library_integration: ClassLibraryIntegration,
+        max_heap: usize,
+    ) -> Self {
         static NEXT_ID: AtomicU32 = AtomicU32::new(0);
         let id = JvmId(NEXT_ID.fetch_add(1, SeqCst));
         if id.0 == u32::MAX {
             panic!(
                 "You've created 4294967296 jvm instances. You've had your fun but that's enough for today."
             )
+        }
+        let mut native_methods = HashMap::<String, UnboundNativeMethods>::new();
+        for method in class_library_integration.native_methods.drain(..) {
+            let UnboundNativeMethods::Available(methods) = native_methods
+                .entry(method.class.clone())
+                .or_insert(UnboundNativeMethods::Available(Vec::new()))
+            else {
+                unreachable!()
+            };
+            methods.push(method);
         }
         Self {
             id,
@@ -79,8 +94,9 @@ impl Jvm {
             classes: default(),
             identity_hashes: default(),
             parking_lot: default(),
-            unbound_native_methods: default(),
+            unbound_native_methods: Mutex::new(native_methods),
             stackoverflow_error: OnceLock::new(),
+            class_library_integration,
         }
     }
 
@@ -89,9 +105,6 @@ impl Jvm {
     /// Does not initialize this class, nor load any other class referenced.
     /// `name` must be fully qualified and may describe an array.
     pub fn resolve_class(&self, name: &str) -> crate::JvmResult<crate::Class> {
-        self.stackoverflow_error
-            .get_or_init(|| new_throwable(self, "StackOverflowError", None));
-
         self.resolve_class_internal(name)
             .map(|value| crate::Class::new(self.id, value))
             .map_err(|value| crate::Object::new(self.id, value))
@@ -136,6 +149,28 @@ impl Jvm {
         reload_method_bytecodes_for_class(self, class)
     }
 
+    /// Defines extra metadata to be stored on objects of the specified class.
+    /// Must be set before the class has been loaded.
+    ///
+    /// # Panics
+    /// Panics if metadata has already been defined for this class,
+    /// or the class has already been loaded.
+    pub fn define_object_metadata_layout(&mut self, class: &str, layout: Layout) {
+        if self.classes.read().unwrap().contains_key(class) {
+            panic!("Tried to set metadata for already loaded class {class}");
+        }
+        if self
+            .class_library_integration
+            .metatada_layout
+            .contains_key(class)
+        {
+            panic!("Tried to set metadata twice for class {class}");
+        }
+        self.class_library_integration
+            .metatada_layout
+            .insert(class.into(), layout);
+    }
+
     /// Returns the class representing arrays of the given component.
     /// If the component is a class, this also loads it, its superclass (recursively) and any interfaces it implements.
     /// Does not initialize this class nor load any other class referenced.
@@ -177,8 +212,10 @@ impl Jvm {
             static_storage: FieldStorage::EMPTY,
             static_monitor: maybe_loom::AtomicU32::new(0),
             object_size: 0,
+            metadata_offset: 0,
             init: ClassState::Unverified.into(),
             init_waiter: default(),
+            class_object: default(),
         };
         let array = self.heap.alloc_class(array);
         let mut guard = self.classes.write().unwrap();
@@ -299,11 +336,18 @@ impl Jvm {
             return Err(throw(self, "IncompatibleClassChangeError", name));
         }
 
-        let (fields, static_size, object_size) = Class::set_layouts(super_class, class_desc.fields);
-        let static_storage = if static_size == 0 {
+        let metadata_layout = self
+            .class_library_integration
+            .metatada_layout
+            .get(name)
+            .copied()
+            .unwrap_or(Layout::new::<()>());
+
+        let class_layout = Class::set_layouts(super_class, class_desc.fields, metadata_layout);
+        let static_storage = if class_layout.static_size == 0 {
             FieldStorage::EMPTY
         } else {
-            FieldStorage(self.heap.alloc_object(static_size).get())
+            FieldStorage(self.heap.alloc_object(class_layout.static_size).get())
         };
 
         let ref_type = self.heap.alloc_class(Class {
@@ -315,13 +359,15 @@ impl Jvm {
             access_flags: class_desc.access_flags,
             source_file_name: class_desc.source_file_name,
             interfaces,
-            fields,
+            fields: class_layout.fields,
             methods,
             static_storage,
             static_monitor: maybe_loom::AtomicU32::new(0),
-            object_size,
+            object_size: class_layout.object_size,
+            metadata_offset: class_layout.metadata_offset,
             init: ClassState::Unverified.into(),
             init_waiter: default(),
+            class_object: default(),
         });
 
         let mut guard = self.classes.write().unwrap();
@@ -350,11 +396,12 @@ impl Jvm {
     }
 
     /// Creates an instance of a non-array class on the heap.
+    /// Class must be initialized.
     ///
     /// # Panics
     /// Panics if class is an array class or interface.
     #[track_caller]
-    pub(crate) fn create_object_uninitialized(&self, class: ClassRef) -> Object {
+    pub(crate) fn create_object_skipping_constructor(&self, class: ClassRef) -> Object {
         if class.element_type.is_some() | class.is_interface() {
             panic!("{} is an array or interface type", class.name)
         }
@@ -375,7 +422,7 @@ impl Jvm {
         let class_ptr = self.resolve_class(class)?;
         let object = crate::Object::new(
             self.id,
-            self.create_object_uninitialized(class_ptr.as_ref()),
+            self.create_object_skipping_constructor(class_ptr.as_ref()),
         );
         args.insert(0, crate::Value::Ref(Some(object)));
         let constructor = class_ptr
@@ -436,6 +483,7 @@ impl Drop for Jvm {
 
 /// For exceptions and errors thrown by the JVM (instead of by athrow).
 /// `name` is unqualified.
+#[track_caller]
 pub(crate) fn throw<'a>(jvm: &Jvm, name: &str, msg: impl Into<Option<&'a str>>) -> Object {
     new_throwable(jvm, name, msg.into())
 }
@@ -451,7 +499,7 @@ pub(crate) fn new_throwable(jvm: &Jvm, name: &str, msg: Option<&str>) -> Object 
             if let Err(thrown) = class.ensure_init(jvm) {
                 thrown
             } else {
-                jvm.create_object_uninitialized(class)
+                jvm.create_object_skipping_constructor(class)
             }
         }
         Err(thrown) => thrown,
@@ -460,28 +508,9 @@ pub(crate) fn new_throwable(jvm: &Jvm, name: &str, msg: Option<&str>) -> Object 
         .class(jvm.heap.ptrs())
         .field("message", Type::Ref("java.lang.String".into()))
         .expect("java.lang.Throwable missing field java.lang.String message");
-    field.instance_set(
-        jvm.heap.ptrs(),
-        object,
-        Value::Ref(Some(str_to_java(jvm, &message))),
-    );
-    object
-}
-
-pub(crate) fn str_to_java(jvm: &Jvm, utf8: &str) -> Object {
-    let chars: Vec<u16> = utf8.encode_utf16().collect();
-    let chars_object = jvm.create_array_of(&Type::Char, chars.len() as i32);
-    for (i, char) in chars.iter().enumerate() {
-        chars_object.array_write_value(jvm.heap.ptrs(), i as i32, Value::Int(*char as i32));
-    }
-    let string_class = jvm
-        .resolve_class_internal("java.lang.String")
-        .expect("java.lang.String missing");
-    let object = jvm.create_object_uninitialized(string_class);
-    let field = string_class
-        .field("value", Type::Ref("char[]".into()))
-        .expect("java.lang.String missing field char[] value");
-    field.instance_set(jvm.heap.ptrs(), object, Value::Ref(Some(chars_object)));
+    let string =
+        (jvm.class_library_integration.string_constructor)(jvm, &message).into_inner(jvm.id);
+    field.instance_set(jvm.heap.ptrs(), object, Value::Ref(Some(string)));
     object
 }
 
@@ -492,6 +521,7 @@ fn _assert_jvm_is_send_sync<T: Send + Sync>() {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum UnboundNativeMethods {
     Available(Vec<NativeMethod>),
     ClassAlreadyInitialized,

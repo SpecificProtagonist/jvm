@@ -6,7 +6,7 @@ use crate::{
     AccessFlags,
     class::{Class, ClassRef},
     const_pool::{ConstPool, ConstPoolItem},
-    jvm::{Jvm, JvmResult, str_to_java, throw},
+    jvm::{Jvm, JvmResult, throw},
     method::{Bytecode, Code, Method},
     opcodes::*,
     parse,
@@ -306,7 +306,10 @@ pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) 
                         panic!()
                     };
                     let message = format!("{method}: {message:?}");
-                    field.instance_set(ptrs, *err, Value::Ref(Some(str_to_java(jvm, &message))));
+
+                    let string = (jvm.class_library_integration.string_constructor)(jvm, &message)
+                        .into_inner(jvm.id);
+                    field.instance_set(ptrs, *err, Value::Ref(Some(string)));
                 }
             })?
         }
@@ -412,7 +415,7 @@ fn verify_bytecode(
                 match const_pool.items.get(index as usize) {
                     Some(ConstPoolItem::Integer(_)) => type_state.push(VerificationType::Integer),
                     Some(ConstPoolItem::Float(_)) => type_state.push(VerificationType::Float),
-                    Some(ConstPoolItem::String(_)) => {
+                    Some(ConstPoolItem::RawString(_)) => {
                         type_state.push(VerificationType::ObjectVariable(
                             jvm.resolve_class_internal("java.lang.String")?,
                         ))
@@ -435,8 +438,10 @@ fn verify_bytecode(
                             jvm.resolve_class_internal("java.lang.String")?,
                         ))
                     }
-                    Some(ConstPoolItem::Class(class)) => {
-                        type_state.push(VerificationType::ObjectVariable(class))
+                    Some(ConstPoolItem::Class(_)) => {
+                        type_state.push(VerificationType::ObjectVariable(
+                            jvm.resolve_class_internal("java.lang.Class")?,
+                        ))
                     }
                     _ => verify_failed!(jvm),
                 }
@@ -1178,6 +1183,7 @@ fn verify_bytecode(
             INVOKESTATIC => {
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let invoke_method = const_pool.get_static_method(jvm, index)?;
+                // TODO: interface method
                 verify!(
                     jvm,
                     !matches!(invoke_method.nat.name.as_ref(), "<init>" | "<clinit>")
@@ -1209,6 +1215,21 @@ fn verify_bytecode(
                     verify_failed!(jvm)
                 }
                 verify!(jvm, type_state.stack.len() + count as usize == stack_in);
+                if let Some(return_type) = &invoke_nat.typ.returns {
+                    push_type(jvm, &mut type_state.stack, return_type)?
+                }
+            }
+            INVOKEDYNAMIC => {
+                let index = read_code_u16(jvm, bytes, pc)?;
+                verify!(jvm, read_code_u16(jvm, bytes, pc)? == 0);
+                let (_, invoke_nat) = const_pool.get_invoke_dynamic(jvm, index)?;
+                verify!(
+                    jvm,
+                    !matches!(invoke_nat.name.as_ref(), "<init>" | "<clinit>")
+                );
+                for arg in invoke_nat.typ.args.iter().rev() {
+                    verify!(jvm, type_state.pop(jvm)?.matches(arg));
+                }
                 if let Some(return_type) = &invoke_nat.typ.returns {
                     push_type(jvm, &mut type_state.stack, return_type)?
                 }

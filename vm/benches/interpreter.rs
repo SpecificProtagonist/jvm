@@ -11,8 +11,16 @@ pub fn benches(c: &mut Criterion) {
     c.bench_function("interpreter-nbody", nbody);
 }
 
+fn make_jvm() -> Jvm {
+    Jvm::new(
+        file_loaders(["classes", "benches/classes"]),
+        ClassLibraryIntegration::default(),
+        200_000,
+    )
+}
+
 fn fibonacci(b: &mut Bencher) {
-    let jvm = Jvm::new(file_loaders(["classes", "benches/classes"]), 20_000);
+    let jvm = make_jvm();
     let class = jvm.resolve_class("Interpreter").unwrap();
     let method = class.method(&jvm, "fibonacci", [Type::Int], None).unwrap();
     b.iter(|| {
@@ -21,7 +29,7 @@ fn fibonacci(b: &mut Bencher) {
 }
 
 fn nbody(b: &mut Bencher) {
-    let jvm = Jvm::new(file_loaders(["classes", "benches/classes"]), 200_000);
+    let jvm = make_jvm();
     let class = jvm.resolve_class("nbody").unwrap();
     class
         .method(&jvm, "sqrt", [Type::Double], Some(Type::Double))
