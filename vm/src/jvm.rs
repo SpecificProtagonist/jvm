@@ -460,6 +460,20 @@ impl Jvm {
             .expect("Failed to resolve class");
         Object::new_array(&self.heap, class, length)
     }
+
+    pub fn create_string(&self, str: &str) -> crate::Object {
+        (self.class_library_integration.string_constructor)(self, str)
+    }
+
+    /// # Panics
+    /// Panics if `class` is not an instance of `java.lang.Class`.
+    pub fn get_class_from_class_object(&self, class: crate::Object) -> crate::Class {
+        assert_eq!(
+            &*class.into_inner(self.id).class(self.heap.ptrs()).name,
+            "java.lang.Class"
+        );
+        (self.class_library_integration.get_class_from_class_object)(self, class)
+    }
 }
 
 impl Eq for Jvm {

@@ -51,9 +51,10 @@ fn default<T: Default>() -> T {
 }
 
 /// Guard types ensure values can't be used without the vm they belong to / be used with the wrong vm.
-// TODO: Either split guard object into id and lifetimed object, or use Arc/Weak everywhere.
-// If using lifetimes, also add a module that reexports everything with a static lifetime.
-// When unsafe binder types are available, try using them instead.
+// TODO: Change this to an implementation similar to `Arc`
+// in preparation for garbage collectionn (and a more pleasant api).
+//
+// When unsafe binder types are available, try them out.
 macro_rules! define_guard {
     ($(#[$doc:meta])* $guard_typ:ident, $impl_typ:ty) => {
         $(#[$doc])*
@@ -941,11 +942,14 @@ pub struct ClassLibraryIntegration {
     ///
     /// See [NativeMethod::make_available].
     pub native_methods: Vec<NativeMethod>,
-    /// Constructs a java.lang.Class instance representing the given class.
-    /// May be called multiple times for the same class when multithreading.
-    pub class_object_constructor: Box<dyn Fn(&Jvm, Class) -> Object + Send + Sync>,
-    /// Constructs a java.lang.String instance representing the given string.
+    /// Constructs a `java.lang.String` instance representing the given string.
     pub string_constructor: Box<dyn Fn(&Jvm, &str) -> Object + Send + Sync>,
+    /// Constructs a `java.lang.Class` instance representing the given class.
+    /// May be called multiple times for the same class when multithreading.
+    // TODO: Remove this by hardcoding `java.lang.Class` metadata
+    pub class_object_constructor: Box<dyn Fn(&Jvm, Class) -> Object + Send + Sync>,
+    /// Given a `java.lang.Class` instance, obtain the `Class` it represents.
+    pub get_class_from_class_object: Box<dyn Fn(&Jvm, Object) -> Class + Send + Sync>,
 }
 
 impl Default for ClassLibraryIntegration {
@@ -954,6 +958,7 @@ impl Default for ClassLibraryIntegration {
             metatada_layout: default(),
             native_methods: default(),
             class_object_constructor: Box::new(|_, _| unimplemented!()),
+            get_class_from_class_object: Box::new(|_, _| unimplemented!()),
             string_constructor: Box::new(|_, _| unimplemented!()),
         }
     }

@@ -292,95 +292,30 @@ impl ReturnSuccess for () {
     }
 }
 
-impl ReturnSuccess for bool {
-    fn typ() -> Option<ArgTyp> {
-        Some(ArgTyp::Boolean)
-    }
+macro_rules! return_type {
+    ($typ:ty, $argtype:ident) => {
+        impl ReturnSuccess for $typ {
+            fn typ() -> Option<ArgTyp> {
+                Some(ArgTyp::$argtype)
+            }
 
-    fn value(self) -> Option<Value> {
-        Some(self.into())
-    }
+            fn value(self) -> Option<Value> {
+                Some(self.into())
+            }
+        }
+    };
 }
 
-impl ReturnSuccess for i8 {
-    fn typ() -> Option<ArgTyp> {
-        Some(ArgTyp::Byte)
-    }
-
-    fn value(self) -> Option<Value> {
-        Some(self.into())
-    }
-}
-
-impl ReturnSuccess for i16 {
-    fn typ() -> Option<ArgTyp> {
-        Some(ArgTyp::Short)
-    }
-
-    fn value(self) -> Option<Value> {
-        Some(self.into())
-    }
-}
-
-impl ReturnSuccess for u16 {
-    fn typ() -> Option<ArgTyp> {
-        Some(ArgTyp::Char)
-    }
-
-    fn value(self) -> Option<Value> {
-        Some(self.into())
-    }
-}
-
-impl ReturnSuccess for i32 {
-    fn typ() -> Option<ArgTyp> {
-        Some(ArgTyp::Int)
-    }
-
-    fn value(self) -> Option<Value> {
-        Some(self.into())
-    }
-}
-
-impl ReturnSuccess for i64 {
-    fn typ() -> Option<ArgTyp> {
-        Some(ArgTyp::Long)
-    }
-
-    fn value(self) -> Option<Value> {
-        Some(self.into())
-    }
-}
-
-impl ReturnSuccess for f32 {
-    fn typ() -> Option<ArgTyp> {
-        Some(ArgTyp::Float)
-    }
-
-    fn value(self) -> Option<Value> {
-        Some(self.into())
-    }
-}
-
-impl ReturnSuccess for f64 {
-    fn typ() -> Option<ArgTyp> {
-        Some(ArgTyp::Double)
-    }
-
-    fn value(self) -> Option<Value> {
-        Some(self.into())
-    }
-}
-
-impl ReturnSuccess for Option<Object> {
-    fn typ() -> Option<ArgTyp> {
-        Some(ArgTyp::Object)
-    }
-
-    fn value(self) -> Option<Value> {
-        Some(self.into())
-    }
-}
+return_type!(bool, Boolean);
+return_type!(i8, Byte);
+return_type!(i16, Short);
+return_type!(u16, Char);
+return_type!(i32, Int);
+return_type!(i64, Long);
+return_type!(f32, Float);
+return_type!(f64, Double);
+return_type!(Option<Object>, Object);
+return_type!(Object, Object);
 
 trait Return {
     fn typ() -> Option<ArgTyp>;
