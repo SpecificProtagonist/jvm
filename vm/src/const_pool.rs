@@ -262,6 +262,15 @@ impl ConstPool {
     pub fn get_static_method(&self, jvm: &Jvm, index: u16) -> JvmResult<MethodRef> {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::StaticMethod(method)) => Ok(method),
+            Some(ConstPoolItem::InterfaceMethod(class, method)) => {
+                if let Some(method) = class.methods.get(method)
+                    && method.access_flags.contains(AccessFlags::STATIC)
+                {
+                    Ok(method)
+                } else {
+                    Err(throw(jvm, "VerifyError", "method not static"))
+                }
+            }
             _ => Err(cfe(jvm)),
         }
     }
@@ -338,6 +347,10 @@ impl ConstPool {
     pub fn get_static_method_verified(&self, index: u16) -> MethodRef {
         match self.items.get(index as usize) {
             Some(ConstPoolItem::StaticMethod(method)) => method,
+            Some(ConstPoolItem::InterfaceMethod(class, method)) => {
+                // TODO: Cache this
+                class.methods.get(method).unwrap()
+            }
             _ => unreachable_verified(),
         }
     }

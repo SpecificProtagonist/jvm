@@ -1183,7 +1183,6 @@ fn verify_bytecode(
             INVOKESTATIC => {
                 let index = read_code_u16(jvm, bytes, pc)?;
                 let invoke_method = const_pool.get_static_method(jvm, index)?;
-                // TODO: interface method
                 verify!(
                     jvm,
                     !matches!(invoke_method.nat.name.as_ref(), "<init>" | "<clinit>")

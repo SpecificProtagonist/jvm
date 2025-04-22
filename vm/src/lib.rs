@@ -2,6 +2,7 @@
 // and can be exchanged for already stable code if necessary.
 #![feature(ptr_as_ref_unchecked)]
 #![feature(sync_unsafe_cell)]
+#![feature(let_chains)]
 #![allow(clippy::type_complexity)]
 #![doc = include_str!("../../README.md")]
 

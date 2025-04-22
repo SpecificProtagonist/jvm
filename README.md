@@ -4,7 +4,7 @@ Goals:
 - embeddable (e.g. customizable class library integration; multiple JVMs in the same process)
 - non-terrible performance
 - multithreading-support
-- most importantly: Having fun developing this
+- most importantly: Having fun developing this :3
 
 Non-goals:
 - providing a standard library
@@ -44,10 +44,8 @@ Some missing features:
 - `invokedynamic`
 - stack traces
 - string interning
-- jar class loader
 - reliable protection from stackoverflow, memory exhaustion and deadlocking
-- wasm support
-- make multithreading support optional
+- wasm/nostd support
 - debug adapter protocol support
 
 ## Class Library
