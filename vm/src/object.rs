@@ -6,9 +6,10 @@ use core::{
 };
 
 use crate::{
-    AccessFlags, Jvm,
+    AccessFlags,
     class::{Class, ClassRef},
     heap::{AtomicCompressedPtr, CompressedPtr, Heap, Ptrs},
+    jvm::Jvm,
     jvm::{JvmResult, throw},
     monitor::maybe_loom,
     typ::Type,

@@ -3,10 +3,10 @@ use std::sync::RwLock;
 use alloc::sync::Arc;
 
 use crate::{
-    AccessFlags, Jvm,
+    AccessFlags,
     class::ClassRef,
     field::{Field, FieldNaT},
-    jvm::{JvmResult, throw},
+    jvm::{Jvm, JvmResult, throw},
     method::{MethodNaT, MethodNaTBorrow, MethodRef},
     object::Object,
     parse, unreachable_verified,
@@ -176,8 +176,10 @@ impl ConstPool {
                 // TODO: Interning
                 let string = guard.get_utf8(jvm, index)?;
                 drop(guard);
-                let object = (jvm.class_library_integration.string_constructor)(jvm, &string)
-                    .into_inner(jvm.id);
+                let jvm_handle = crate::Jvm::from(jvm);
+                let object =
+                    (jvm.class_library_integration.string_constructor)(&jvm_handle, &string)
+                        .as_inner(&jvm_handle);
                 guard = pool.write().unwrap();
                 guard.items[i] = ConstPoolItem::String(object);
             }

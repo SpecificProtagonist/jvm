@@ -22,9 +22,9 @@ fn make_jvm() -> Jvm {
 fn fibonacci(b: &mut Bencher) {
     let jvm = make_jvm();
     let class = jvm.resolve_class("Interpreter").unwrap();
-    let method = class.method(&jvm, "fibonacci", [Type::Int], None).unwrap();
+    let method = class.method("fibonacci", [Type::Int], None).unwrap();
     b.iter(|| {
-        method.invoke(&jvm, &[Value::Int(10_000)]).unwrap();
+        method.invoke([Value::Int(10_000)]).unwrap();
     });
 }
 
@@ -32,14 +32,14 @@ fn nbody(b: &mut Bencher) {
     let jvm = make_jvm();
     let class = jvm.resolve_class("nbody").unwrap();
     class
-        .method(&jvm, "sqrt", [Type::Double], Some(Type::Double))
+        .method("sqrt", [Type::Double], Some(Type::Double))
         .unwrap()
-        .bind_native_code(&jvm, f64::sqrt)
+        .bind_native_code(f64::sqrt)
         .unwrap();
     let method = class
-        .method(&jvm, "nbody", [Type::Int], Some(Type::Double))
+        .method("nbody", [Type::Int], Some(Type::Double))
         .unwrap();
     b.iter(|| {
-        method.invoke(&jvm, &[Value::Int(10_000)]).unwrap();
+        method.invoke([Value::Int(10_000)]).unwrap();
     });
 }

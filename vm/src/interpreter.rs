@@ -28,9 +28,6 @@ pub(crate) fn invoke(
 ) -> JvmResult<Option<Value>> {
     method.class().ensure_init(jvm)?;
 
-    // jvm.stackoverflow_error
-    //     .get_or_init(|| new_throwable(jvm, "StackOverflowError", None));
-
     let ptrs = jvm.heap.ptrs();
     let mut args = args.into_iter();
     let mut arg_values = Vec::new();
@@ -184,9 +181,7 @@ fn native(
     let mut i = 0;
     if !method.access_flags.contains(AccessFlags::STATIC) {
         values.push(crate::Value::Ref(
-            args[0]
-                .as_obj()
-                .map(|value| crate::Object::new(jvm.id, value)),
+            args[0].as_obj().map(|value| crate::Object::new(jvm, value)),
         ));
         i += 1;
     }
@@ -236,17 +231,15 @@ fn native(
             }
             Type::Ref(_) => {
                 values.push(crate::Value::Ref(
-                    args[i]
-                        .as_obj()
-                        .map(|value| crate::Object::new(jvm.id, value)),
+                    args[i].as_obj().map(|value| crate::Object::new(jvm, value)),
                 ));
                 i += 1;
             }
         }
     }
-    match code(jvm, &values) {
+    match code(&jvm.into(), &values) {
         Ok(ret) => {
-            let returned = ret.map(|v| v.into_inner(jvm.id));
+            let returned = ret.map(|v| v.into_inner(&jvm.into()));
             if match (returned, &method.nat.typ.returns) {
                 (Some(returned), Some(typ)) => !returned.assignable_to(jvm.heap.ptrs(), typ),
                 (None, None) => false,
@@ -256,7 +249,7 @@ fn native(
             }
             Ok(returned)
         }
-        Err(err) => Err(err.into_inner(jvm.id)),
+        Err(err) => Err(err.as_inner(&jvm.into())),
     }
 }
 

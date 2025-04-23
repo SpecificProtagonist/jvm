@@ -5,7 +5,8 @@
 // TODO: Directly use &[IVal]
 
 use crate::{
-    AccessFlags, Jvm, JvmResult, Object, Type, Value,
+    AccessFlags, JvmResult, Object, Type, Value,
+    jvm::Jvm,
     method::{Code, Method},
 };
 
@@ -24,8 +25,8 @@ where
         return Err(NativeBindError::SignatureMismatch);
     }
     fn specify_lifetimes(
-        f: impl for<'a, 'b> Fn(&'a Jvm, &'b [Value]) -> JvmResult<Option<Value>>,
-    ) -> Box<impl for<'a, 'b> Fn(&'a Jvm, &'b [Value]) -> JvmResult<Option<Value>>> {
+        f: impl for<'a, 'b> Fn(&'a crate::Jvm, &'b [Value]) -> JvmResult<Option<Value>>,
+    ) -> Box<impl for<'a, 'b> Fn(&'a crate::Jvm, &'b [Value]) -> JvmResult<Option<Value>>> {
         Box::new(f)
     }
     let boxed = specify_lifetimes(move |jvm, args| F::invoke(&code, jvm, args));
@@ -93,23 +94,30 @@ enum ArgTyp {
 /// - the return type must be a translatable type, optionally wrapped in a `JvmResult`
 ///
 /// Translatable types:  
-/// `bool`, `i8`, `i16`, `u16`, `i32`, `i64`, `f32`, `f64`, `()` (only for return type), `Option<Object>`, `Object` (only for `this`)
+/// `bool`, `i8`, `i16`, `u16`, `i32`, `i64`, `f32`, `f64`, `Option<Object>`, `Object` (only for `this`),
+/// `()` (only for return type), `&str`/`String` (only for return type)
 ///
 /// # Examples
-/// `static native int add(short a, short b);` can be bound to:
+/// ```java
+/// static native int add(short a, short b);
+/// ```
+/// can be bound to:
 /// - `fn(i16, i16) -> i32`
 /// - `fn(&Jvm, i16, i16) -> i32`
 /// - `fn(i16, i16) -> JvmResult<i32>`
 /// - `fn(&[Value]) -> i32`
 /// - etc
 ///
-/// `native void run(Runner runner);` can be bound to:
+/// ```java
+/// native void run(Runner runner);
+/// ```
+/// can be bound to:
 /// - `fn(Object, Option<Object>)`
 /// - `fn(&Jvm, Object, Option<Object>) -> JvmResult<()>`
 /// - etc
 pub trait NativeFn<T>: Send + Sync + 'static {
     fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)>;
-    fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Option<Value>>;
+    fn invoke(&self, jvm: &crate::Jvm, args: &[Value]) -> JvmResult<Option<Value>>;
 }
 
 trait Arg {
@@ -251,10 +259,10 @@ impl Arg for Option<Object> {
     }
 
     fn get(values: &[Value], index: &mut usize) -> Self {
-        match values[*index] {
+        match &values[*index] {
             Value::Ref(value) => {
                 *index += 1;
-                value
+                value.clone()
             }
             _ => unreachable!(),
         }
@@ -267,10 +275,10 @@ impl Arg for Object {
     }
 
     fn get(values: &[Value], index: &mut usize) -> Self {
-        match values[*index] {
+        match &values[*index] {
             Value::Ref(value) => {
                 *index += 1;
-                value.unwrap()
+                value.clone().unwrap()
             }
             _ => unreachable!(),
         }
@@ -279,7 +287,7 @@ impl Arg for Object {
 
 trait ReturnSuccess {
     fn typ() -> Option<ArgTyp>;
-    fn value(self) -> Option<Value>;
+    fn value(self, jvm: &Jvm) -> Option<Value>;
 }
 
 impl ReturnSuccess for () {
@@ -287,8 +295,28 @@ impl ReturnSuccess for () {
         None
     }
 
-    fn value(self) -> Option<Value> {
+    fn value(self, _: &Jvm) -> Option<Value> {
         None
+    }
+}
+
+impl ReturnSuccess for &str {
+    fn typ() -> Option<ArgTyp> {
+        Some(ArgTyp::Object)
+    }
+
+    fn value(self, jvm: &Jvm) -> Option<Value> {
+        Some(jvm.create_string(self).into())
+    }
+}
+
+impl ReturnSuccess for String {
+    fn typ() -> Option<ArgTyp> {
+        Some(ArgTyp::Object)
+    }
+
+    fn value(self, jvm: &Jvm) -> Option<Value> {
+        Some(jvm.create_string(self.as_ref()).into())
     }
 }
 
@@ -299,7 +327,7 @@ macro_rules! return_type {
                 Some(ArgTyp::$argtype)
             }
 
-            fn value(self) -> Option<Value> {
+            fn value(self, _: &Jvm) -> Option<Value> {
                 Some(self.into())
             }
         }
@@ -319,7 +347,7 @@ return_type!(Object, Object);
 
 trait Return {
     fn typ() -> Option<ArgTyp>;
-    fn value(self) -> JvmResult<Option<Value>>;
+    fn value(self, _: &Jvm) -> JvmResult<Option<Value>>;
 }
 
 impl<T: ReturnSuccess> Return for T {
@@ -327,8 +355,8 @@ impl<T: ReturnSuccess> Return for T {
         <T as ReturnSuccess>::typ()
     }
 
-    fn value(self) -> JvmResult<Option<Value>> {
-        Ok(ReturnSuccess::value(self))
+    fn value(self, jvm: &Jvm) -> JvmResult<Option<Value>> {
+        Ok(ReturnSuccess::value(self, jvm))
     }
 }
 
@@ -337,8 +365,8 @@ impl<T: ReturnSuccess> Return for JvmResult<T> {
         <T as ReturnSuccess>::typ()
     }
 
-    fn value(self) -> JvmResult<Option<Value>> {
-        self.map(|inner| ReturnSuccess::value(inner))
+    fn value(self, jvm: &Jvm) -> JvmResult<Option<Value>> {
+        self.map(|inner| inner.value(jvm))
     }
 }
 
@@ -351,22 +379,22 @@ where
         None
     }
 
-    fn invoke(&self, _: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
-        self(args).value()
+    fn invoke(&self, jvm: &crate::Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
+        self(args).value(jvm.deref())
     }
 }
 
 impl<F, R> NativeFn<(Jvm, R, &'static ())> for F
 where
-    F: for<'a> Fn(&'a Jvm, &[Value]) -> R + Send + Sync + 'static,
+    F: for<'a> Fn(&'a crate::Jvm, &[Value]) -> R + Send + Sync + 'static,
     R: Return,
 {
     fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)> {
         None
     }
 
-    fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
-        self(jvm, args).value()
+    fn invoke(&self, jvm: &crate::Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
+        self(jvm, args).value(jvm.deref())
     }
 }
 
@@ -386,15 +414,15 @@ macro_rules! impl_args {
             }
 
             #[allow(unused_variables, unused_mut)]
-            fn invoke(&self, _: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
+            fn invoke(&self, jvm: &crate::Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
                 let mut i = 0;
-                self($($param::get(args, &mut i)),*).value()
+                self($($param::get(args, &mut i)),*).value(jvm.deref())
             }
         }
 
-        impl<F, $($param,)* R> NativeFn<(Jvm, R,$($param,)*)> for F
+        impl<F, $($param,)* R> NativeFn<(&crate::Jvm, R,$($param,)*)> for F
         where
-            F: Fn(&Jvm, $($param),*) -> R
+            F: Fn(&crate::Jvm, $($param),*) -> R
                 + Send
                 + Sync
                 + 'static,
@@ -406,9 +434,9 @@ macro_rules! impl_args {
             }
 
             #[allow(unused_variables, unused_mut)]
-            fn invoke(&self, jvm: &Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
+            fn invoke(&self, jvm: &crate::Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
                 let mut i = 0;
-                self(jvm, $($param::get(args, &mut i)),*).value()
+                self(jvm, $($param::get(args, &mut i)),*).value(jvm.deref())
             }
         }
     }

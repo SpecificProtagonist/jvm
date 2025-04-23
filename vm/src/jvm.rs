@@ -1,15 +1,15 @@
 use alloc::alloc::Layout;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, Ordering::*};
+use core::sync::atomic::Ordering::*;
+use core::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use crate::heap::Heap;
-use crate::hot_reloading::{ReloadErr, reload_method_bytecodes_for_class};
 use crate::identity_hash::IdentityHashes;
 use crate::monitor::{ParkingLot, maybe_loom};
-use crate::{AccessFlags, ClassLibraryIntegration, NativeMethod};
+use crate::{AccessFlags, ClassLibraryIntegration, ClassLoader, NativeMethod};
 use fixed_typed_arena::ManuallyDropArena;
-// TODO: posibly exchange for different hasher (benchmark)
+// TODO: possibly exchange for different hasher (benchmark)
 use hashbrown::HashMap;
 
 use crate::method::*;
@@ -23,16 +23,6 @@ use crate::{class::*, default};
 /// Err is an object that extends Throwable
 pub(crate) type JvmResult<T> = Result<T, Object>;
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct JvmId(u32);
-
-/// Provides class files.
-pub trait ClassLoader: Send + Sync {
-    /// Get the bytes of the classfile representing the class.
-    // TODO: Return result for better error message
-    fn load(&self, name: &str) -> Option<Vec<u8>>;
-}
-
 /// Creates & manages classes and objects, which borrow from the Jvm.
 /// Multiple independent `Jvm`s may exist.
 /// Mutable shared access follows Java's rules.
@@ -42,11 +32,9 @@ pub trait ClassLoader: Send + Sync {
 /// folder of this repository. These aren't loaded automatically, your
 /// class library needs to be provided by the class loader. Those classes missing
 /// or being invalid classes may cause the thread to hang or crash.
-pub struct Jvm {
-    /// Uniquely identifies the Jvm to prevent mixing of objects between Jvms.
-    pub(crate) id: JvmId,
+pub(crate) struct Jvm {
     /// Currently there's a single class loader per Jvm.
-    pub bootstrap_class_loader: Box<dyn ClassLoader>,
+    pub(crate) bootstrap_class_loader: Box<dyn ClassLoader>,
     pub(crate) heap: Heap,
     // Classes (including arrays), methods, method descriptors and interned strings live as long as the JVM.
     // TODO: alloc on heap
@@ -57,6 +45,9 @@ pub struct Jvm {
     pub(crate) unbound_native_methods: Mutex<HashMap<String, UnboundNativeMethods>>,
     pub(crate) stackoverflow_error: OnceLock<Object>,
     pub(crate) class_library_integration: ClassLibraryIntegration,
+    /// Keeps the Jvm alive when > 0
+    pub(crate) refcount: AtomicUsize,
+    pub(crate) force_alive: AtomicBool,
 }
 
 impl Jvm {
@@ -64,18 +55,12 @@ impl Jvm {
     ///
     /// NOTE: The Jvm will preallocate `max_heap` bytes, relying on memory overcommit.
     /// On 64bit systems, `max_heap` is limited to 2³⁵ bytes (32Gb).
-    pub fn new(
+    pub(crate) fn new(
         base_class_loader: Box<dyn ClassLoader>,
         mut class_library_integration: ClassLibraryIntegration,
         max_heap: usize,
     ) -> Self {
-        static NEXT_ID: AtomicU32 = AtomicU32::new(0);
-        let id = JvmId(NEXT_ID.fetch_add(1, SeqCst));
-        if id.0 == u32::MAX {
-            panic!(
-                "You've created 4294967296 jvm instances. You've had your fun but that's enough for today."
-            )
-        }
+        println!("new");
         let mut native_methods = HashMap::<String, UnboundNativeMethods>::new();
         for method in class_library_integration.native_methods.drain(..) {
             let UnboundNativeMethods::Available(methods) = native_methods
@@ -87,7 +72,6 @@ impl Jvm {
             methods.push(method);
         }
         Self {
-            id,
             bootstrap_class_loader: base_class_loader,
             heap: Heap::new(max_heap),
             method_storage: default(),
@@ -97,78 +81,9 @@ impl Jvm {
             unbound_native_methods: Mutex::new(native_methods),
             stackoverflow_error: OnceLock::new(),
             class_library_integration,
+            refcount: AtomicUsize::new(1),
+            force_alive: AtomicBool::new(false),
         }
-    }
-
-    /// Returns the class, loading it if it wasn't already loaded.
-    /// This also loads its superclass and any interfaces it implements.
-    /// Does not initialize this class, nor load any other class referenced.
-    /// `name` must be fully qualified and may describe an array.
-    pub fn resolve_class(&self, name: &str) -> crate::JvmResult<crate::Class> {
-        self.resolve_class_internal(name)
-            .map(|value| crate::Class::new(self.id, value))
-            .map_err(|value| crate::Object::new(self.id, value))
-    }
-
-    /// Convenience method.
-    /// Includes inherited dynamic methods.
-    pub fn resolve_method(
-        &self,
-        class: &str,
-        method: &str,
-        args: impl IntoIterator<Item = Type>,
-        returns: Option<Type>,
-    ) -> crate::JvmResult<crate::Method> {
-        let nat = MethodNaT {
-            name: method.into(),
-            typ: MethodDescriptor {
-                args: args.into_iter().collect(),
-                returns,
-            },
-        };
-        self.resolve_class_internal(class)
-            .map_err(|value| crate::Object::new(self.id, value))?
-            .methods
-            .get(&nat)
-            .ok_or_else(|| {
-                throw(
-                    self,
-                    "NoSuchMethodError",
-                    &*format!("{class}.{method}:{nat:?}"),
-                )
-            })
-            .map(|value| crate::Method::new(self.id, value))
-            .map_err(|value| crate::Object::new(self.id, value))
-    }
-
-    /// Reload the bytecodes of all methods in the class by querying the class loader.
-    /// Fails if there are structural changes to the class (e.g. a field is added of a method signature has changed).
-    ///
-    /// Reloading a class while it is getting verified or getting initialized (or vice-versa) may deadlock.
-    pub fn reload_method_bytecodes_for_class(&self, class: &str) -> Result<(), ReloadErr> {
-        reload_method_bytecodes_for_class(self, class)
-    }
-
-    /// Defines extra metadata to be stored on objects of the specified class.
-    /// Must be set before the class has been loaded.
-    ///
-    /// # Panics
-    /// Panics if metadata has already been defined for this class,
-    /// or the class has already been loaded.
-    pub fn define_object_metadata_layout(&mut self, class: &str, layout: Layout) {
-        if self.classes.read().unwrap().contains_key(class) {
-            panic!("Tried to set metadata for already loaded class {class}");
-        }
-        if self
-            .class_library_integration
-            .metatada_layout
-            .contains_key(class)
-        {
-            panic!("Tried to set metadata twice for class {class}");
-        }
-        self.class_library_integration
-            .metatada_layout
-            .insert(class.into(), layout);
     }
 
     /// Returns the class representing arrays of the given component.
@@ -408,44 +323,6 @@ impl Jvm {
         Object::new_uninitialized(&self.heap, class)
     }
 
-    /// Creates an object via constructor.
-    ///
-    /// # Panics
-    /// Panics if class is an array class or interface.
-    #[track_caller]
-    pub fn create_object(
-        &self,
-        class: &str,
-        arg_types: impl IntoIterator<Item = Type>,
-        mut args: Vec<crate::Value>,
-    ) -> crate::JvmResult<crate::Object> {
-        let class_ptr = self.resolve_class(class)?;
-        let object = crate::Object::new(
-            self.id,
-            self.create_object_skipping_constructor(class_ptr.as_ref()),
-        );
-        args.insert(0, crate::Value::Ref(Some(object)));
-        let constructor = class_ptr
-            .method(self, "<init>", arg_types, None)
-            .ok_or_else(|| {
-                crate::Object::new(
-                    self.id,
-                    throw(self, "NoSuchMethodError", &*format!("{class} <init> …")),
-                )
-            })?;
-        constructor.invoke(self, &args)?;
-        Ok(object)
-    }
-
-    /// Creates an array.
-    ///
-    /// # Panics
-    /// Panics if length < 0
-    #[track_caller]
-    pub fn create_array(&self, component: &Type, length: i32) -> crate::Object {
-        crate::Object::new(self.id, self.create_array_of(component, length))
-    }
-
     /// Creates an array.
     ///
     /// # Panics
@@ -461,28 +338,8 @@ impl Jvm {
         Object::new_array(&self.heap, class, length)
     }
 
-    pub fn create_string(&self, str: &str) -> crate::Object {
-        (self.class_library_integration.string_constructor)(self, str)
-    }
-
-    /// # Panics
-    /// Panics if `class` is not an instance of `java.lang.Class`.
-    pub fn get_class_from_class_object(&self, class: crate::Object) -> crate::Class {
-        assert_eq!(
-            &*class.into_inner(self.id).class(self.heap.ptrs()).name,
-            "java.lang.Class"
-        );
-        (self.class_library_integration.get_class_from_class_object)(self, class)
-    }
-}
-
-impl Eq for Jvm {
-    fn assert_receiver_is_total_eq(&self) {}
-}
-
-impl PartialEq for Jvm {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+    pub(crate) fn create_string(&self, str: &str) -> crate::Object {
+        (self.class_library_integration.string_constructor)(&self.into(), str)
     }
 }
 
@@ -522,18 +379,16 @@ pub(crate) fn new_throwable(jvm: &Jvm, name: &str, msg: Option<&str>) -> Object 
         .class(jvm.heap.ptrs())
         .field("message", Type::Ref("java.lang.String".into()))
         .expect("java.lang.Throwable missing field java.lang.String message");
+    let handle = crate::Jvm::from(jvm);
     let string =
-        (jvm.class_library_integration.string_constructor)(jvm, &message).into_inner(jvm.id);
+        (jvm.class_library_integration.string_constructor)(&handle, &message).as_inner(&handle);
     field.instance_set(jvm.heap.ptrs(), object, Value::Ref(Some(string)));
     object
 }
 
 #[allow(clippy::extra_unused_type_parameters)]
-fn _assert_jvm_is_send_sync<T: Send + Sync>() {
-    if false {
-        _assert_jvm_is_send_sync::<Jvm>()
-    }
-}
+const fn _assert_send_sync<T: Send + Sync>() {}
+const _: () = _assert_send_sync::<Jvm>();
 
 #[derive(Debug)]
 pub(crate) enum UnboundNativeMethods {

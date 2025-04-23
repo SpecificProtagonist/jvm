@@ -18,16 +18,16 @@ let jvm = Jvm::new(FolderClassLoader::new_boxed(["classes"]));
 // Load class `Foo`
 let class = jvm.resolve_class("Foo")?;
 // Resolve its method `void bar(int, String)`
-let method = class.method(&jvm, "bar", [Typ::Int, "java.lang.String".into()], None)?;
+let method = class.method("bar", [Typ::Int, "java.lang.String".into()], None)?;
 // And call it: `Foo.bar(0, null)`
-method.invoke(&jvm, &[Value::Int(0), Value::Ref(None)])?;
+method.invoke(&[Value::Int(0), Value::Ref(None)])?;
 // Resolve field `Foo.baz` of type bool
-let field = class.field(&jvm, "baz", Typ::Boolean)?;
+let field = class.field("baz", Typ::Boolean)?;
 // And read its value (panicking if it's not a static field)
-let value = field.static_get(&jvm);
+let value = field.static_get();
 // Bind a native method
-class.method(&jvm, "add", [Typ::Float, Typ::Float], Some(Typ::Float))?
-  .bind_native_code(&jvm, f32::add).unwrap();
+class.method("power", [Typ::Float, Typ::Float], Some(Typ::Float))?
+  .bind_native_code(f32::powf)?;
 ```
 
 Some current features:
@@ -90,7 +90,7 @@ java
 Optional implementations for some native methods are provided. You can get a list via `provided_native_methods::get_provided_methods` or bind all of them via `Jvm::bind_provided_native_methods`.
 
 ## Architecture
-The core type is the `Jvm` struct, which contains all data relevant to the VM, such as the heap and the list of loaded classes. Internally handles to this data are not lifetimed, however these handles are not obtainable by users of this crate directly but are wrapped in guard types that require a reference to the JVM in order to access data. The design of these handles will change when garbage collection is implemented.
+The core type is the `Jvm` struct, which contains all data relevant to the VM, such as the heap and the list of loaded classes. Internally handles to this data are not lifetimed, however these handles are not obtainable by users of this crate directly but are wrapped in guard types that keep the JVM alive in order to access data.
 
 To invoke a method on a fresh JVM, the following process takes place:
 - the user-provided classloader loads the bytes representing the method's class

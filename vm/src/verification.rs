@@ -307,8 +307,7 @@ pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) 
                     };
                     let message = format!("{method}: {message:?}");
 
-                    let string = (jvm.class_library_integration.string_constructor)(jvm, &message)
-                        .into_inner(jvm.id);
+                    let string = jvm.create_string(&message).as_inner(&jvm.into());
                     field.instance_set(ptrs, *err, Value::Ref(Some(string)));
                 }
             })?

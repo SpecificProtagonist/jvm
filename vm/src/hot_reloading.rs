@@ -1,9 +1,8 @@
 use core::sync::atomic::Ordering;
 
 use crate::{
-    Jvm,
     class::{Class, ClassState},
-    jvm::{JvmResult, throw},
+    jvm::{self, JvmResult, throw},
     method::Code,
     parse::read_class_file,
     verification::verify_method,
@@ -15,14 +14,18 @@ pub enum ReloadErr {
     ClassStructureChanged,
 }
 
-pub(crate) fn reload_method_bytecodes_for_class(jvm: &Jvm, name: &str) -> Result<(), ReloadErr> {
-    let class = jvm
+pub(crate) fn reload_method_bytecodes_for_class(
+    jvm: &jvm::Jvm,
+    name: &str,
+) -> Result<(), ReloadErr> {
+    let class = crate::Jvm::from(jvm)
         .resolve_class(name)
-        .map_err(ReloadErr::Exception)?
-        .as_ref();
+        .map_err(ReloadErr::Exception)?;
+    let handle = class.jvm;
+    let class = class.value;
 
     // Load new class
-    let map_exception = |e| ReloadErr::Exception(crate::Object::new(jvm.id, e));
+    let map_exception = |e| ReloadErr::Exception(crate::Object::new(handle.clone(), e));
     let name = name.replace('/', ".");
     let bytes = jvm
         .bootstrap_class_loader

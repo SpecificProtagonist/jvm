@@ -8,9 +8,10 @@ use crate::jvm::{UnboundNativeMethods, throw};
 use crate::monitor::maybe_loom;
 use crate::object::ObjectHolder;
 use crate::{
-    AccessFlags, Jvm,
+    AccessFlags,
     const_pool::ConstPool,
     field::{Field, FieldNaT, FieldNaTBorrow},
+    jvm::Jvm,
     jvm::JvmResult,
     method::{MethodDescriptor, MethodNaT, MethodNaTBorrow, MethodRef},
     object::{self, FieldStorage, Object},
@@ -154,9 +155,11 @@ impl Class {
 
     pub(crate) fn class_object(&'static self, jvm: &Jvm) -> Object {
         self.class_object.get(|| {
-            let class = crate::Class::new(jvm.id, self);
-            let object = (jvm.class_library_integration.class_object_constructor)(jvm, class)
-                .into_inner(jvm.id);
+            let jvm_handle = crate::Jvm::from(jvm);
+            let class = crate::Class::new(jvm_handle.clone(), self);
+            let object =
+                (jvm.class_library_integration.class_object_constructor)(&jvm_handle, class)
+                    .as_inner(&jvm_handle);
             debug_assert_eq!(&*object.class(jvm.heap.ptrs()).name, "java.lang.Class");
             object
         })

@@ -2,6 +2,7 @@
 /// synchronization in miri's memory model and therefor is suitable for
 /// debugging data races.
 #[macro_export]
+#[doc(hidden)]
 macro_rules! miri_println {
     ($fmt:literal $(, $exprs:expr)*) => {
         #[cfg(miri_debug_print)]

@@ -10,27 +10,27 @@ use vm::{Class, ClassLibraryIntegration, Jvm, NativeFn, NativeMethod, Object, Ty
 pub unsafe fn get_integration() -> ClassLibraryIntegration {
     fn make_class_object(jvm: &Jvm, class: Class) -> Object {
         let class_class = jvm.resolve_class("java.lang.Class").unwrap();
-        let object = class_class.create_object_no_constructor(jvm).unwrap();
-        unsafe { core::ptr::write(class.get_metadata(jvm, object) as *mut Class, class) };
+        let object = class_class.create_object_no_constructor().unwrap();
+        unsafe { core::ptr::write(class.get_metadata(&object) as *mut Class, class) };
         object
     }
     fn get_class_from_class_object(jvm: &Jvm, class: Object) -> Class {
         let class_class = jvm.resolve_class("java.lang.Class").unwrap();
-        unsafe { core::ptr::read(class_class.get_metadata(jvm, class) as *mut Class) }
+        unsafe { core::ptr::read(class_class.get_metadata(&class) as *mut Class) }
     }
     fn make_string(jvm: &Jvm, string: &str) -> Object {
         let length = string.encode_utf16().count();
         let backing_array = jvm.create_array(&Type::Char, length as i32);
         // TODO: Efficient array creation method on Jvm
         for (index, char) in string.encode_utf16().enumerate() {
-            backing_array.array_write(jvm, index as i32, Value::Short(char as i16));
+            backing_array.array_write(index as i32, Value::Short(char as i16));
         }
         let string_class = jvm.resolve_class("java.lang.String").unwrap();
         // TODO: Switch to constructor
-        let obj = string_class.create_object_no_constructor(jvm).unwrap();
+        let obj = string_class.create_object_no_constructor().unwrap();
         let field =
-            string_class.field(jvm, "value", Type::Ref("char[]".into())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
-        field.instance_set(jvm, obj, Value::Ref(Some(backing_array)));
+            string_class.field( "value", Type::Ref("char[]".into())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
+        field.instance_set(&obj, Value::Ref(Some(backing_array)));
         obj
     }
     ClassLibraryIntegration {
@@ -81,19 +81,15 @@ unsafe fn native_methods() -> Vec<NativeMethod> {
         "java.lang.Object",
         vec![
             def("registerNatives", [], None, || ()),
-            def("hashCode", [], Type::Int, |jvm: &Jvm, this: Object| {
-                Ok(this.identity_hash(jvm))
+            def("hashCode", [], Type::Int, |this: Object| {
+                this.identity_hash()
             }),
-            def("hashCode", [], Type::Int, |jvm: &Jvm, this: Object| {
-                Ok(this.identity_hash(jvm))
+            def("hashCode", [], Type::Int, |this: Object| {
+                this.identity_hash()
             }),
-            def("wait", [], None, |jvm: &Jvm, this: Object| this.wait(jvm)),
-            def("notify", [], None, |jvm: &Jvm, this: Object| {
-                this.notify(jvm)
-            }),
-            def("notifyAll", [], None, |jvm: &Jvm, this: Object| {
-                this.notify_all(jvm)
-            }),
+            def("wait", [], None, |this: Object| this.wait()),
+            def("notify", [], None, |this: Object| this.notify()),
+            def("notifyAll", [], None, |this: Object| this.notify_all()),
         ],
     );
 
@@ -103,7 +99,7 @@ unsafe fn native_methods() -> Vec<NativeMethod> {
             "identityHashCode",
             [object.clone()],
             Type::Int,
-            |jvm: &Jvm, x: Option<Object>| Ok(x.map(|x| x.identity_hash(jvm)).unwrap_or(0)),
+            |x: Option<Object>| x.map(|x| x.identity_hash()).unwrap_or(0),
         )],
     );
 
@@ -115,7 +111,7 @@ unsafe fn native_methods() -> Vec<NativeMethod> {
                 "getName0",
                 [],
                 Some(string.clone()),
-                |jvm: &Jvm, this: Object| jvm.create_string(this.class(jvm).name(jvm)),
+                |jvm: &Jvm, this: Object| jvm.create_string(this.class().name()),
             ),
             def(
                 "getSuperclass",
@@ -123,15 +119,15 @@ unsafe fn native_methods() -> Vec<NativeMethod> {
                 Some(class.clone()),
                 |jvm: &Jvm, this: Object| {
                     jvm.get_class_from_class_object(this)
-                        .super_class(jvm)
-                        .map(|class| class.class_object(jvm))
+                        .super_class()
+                        .map(|class| class.class_object())
                 },
             ),
             def(
                 "isInterface",
                 [],
                 Some(Type::Boolean),
-                |jvm: &Jvm, this: Object| jvm.get_class_from_class_object(this).is_interface(jvm),
+                |jvm: &Jvm, this: Object| jvm.get_class_from_class_object(this).is_interface(),
             ),
             def(
                 "isArray",
@@ -139,7 +135,7 @@ unsafe fn native_methods() -> Vec<NativeMethod> {
                 Some(Type::Boolean),
                 |jvm: &Jvm, this: Object| {
                     jvm.get_class_from_class_object(this)
-                        .element_type(jvm)
+                        .element_type()
                         .is_some()
                 },
             ),

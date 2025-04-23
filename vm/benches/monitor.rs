@@ -27,15 +27,15 @@ fn bench(b: &mut Bencher, threads: i32) {
     let jvm = make_jvm();
     let class = jvm.resolve_class("Monitor").unwrap();
     let method = class
-        .method(&jvm, "stress", [Type::Int, Type::Int], None)
+        .method("stress", [Type::Int, Type::Int], None)
         .unwrap();
-    let instance = class.create_object_no_constructor(&jvm).unwrap();
+    let instance = class.create_object_no_constructor().unwrap();
     b.iter(|| {
         thread::scope(|scope| {
             for _ in 0..threads {
                 scope.spawn(|| {
                     method
-                        .invoke(&jvm, &[instance.into(), iterations.into(), Value::Int(10)])
+                        .invoke([instance.clone().into(), iterations.into(), Value::Int(10)])
                         .unwrap();
                 });
             }

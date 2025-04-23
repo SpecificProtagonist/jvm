@@ -8,7 +8,7 @@ use std::sync::RwLock;
 use hashbrown::Equivalent;
 
 use crate::{
-    AccessFlags, Jvm,
+    AccessFlags,
     class::{Class, ClassRef},
     interpreter::TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES,
     typ::Type,
@@ -80,8 +80,9 @@ pub(crate) enum Code {
     Native(NativeCode),
 }
 
-pub type NativeCode =
-    Box<dyn Fn(&Jvm, &[crate::Value]) -> crate::JvmResult<Option<crate::Value>> + Send + Sync>;
+pub type NativeCode = Box<
+    dyn Fn(&crate::Jvm, &[crate::Value]) -> crate::JvmResult<Option<crate::Value>> + Send + Sync,
+>;
 
 pub(crate) struct Bytecode {
     pub max_stack: u16,
