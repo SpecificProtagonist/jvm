@@ -8,6 +8,18 @@ use crate::hot_reloading::{ReloadErr, reload_method_bytecodes_for_class};
 use crate::method::MethodNaT;
 use crate::*;
 
+/// Reference counted (cheaply cloned) handle to a Java Virtual Machine.
+/// Kept alive while handles to its Classes/Objects/etc exist.
+///
+/// Multiple independent `Jvm`s may exist.
+///
+/// Mutable shared access follows Java's rules.
+///
+/// To operate correctly, the JVM requires a class library. The minimal
+/// version necessary to implement this is available under the `classes`
+/// folder of this repository. These aren't loaded automatically, your
+/// class library needs to be provided by the class loader. Those classes missing
+/// or being invalid classes may cause the thread to hang or crash.
 #[derive(Eq, PartialEq)]
 pub struct Jvm {
     inner: NonNull<jvm::Jvm>,
@@ -201,10 +213,15 @@ impl Jvm {
             &*class.value.class(self.deref().heap.ptrs()).name,
             "java.lang.Class"
         );
-        (self
-            .deref()
-            .class_library_integration
-            .get_class_from_class_object)(self, class)
+        let offset = self.deref().class_class_ptr_offset.load(Acquire);
+        let ptr: usize =
+            class
+                .as_inner(self)
+                .fields()
+                .read(self.deref().heap.ptrs(), offset, false);
+        Class::new(self.deref(), unsafe {
+            (ptr as *const class::Class).as_ref_unchecked()
+        })
     }
 }
 

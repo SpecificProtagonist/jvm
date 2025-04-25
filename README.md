@@ -20,7 +20,7 @@ let class = jvm.resolve_class("Foo")?;
 // Resolve its method `void bar(int, String)`
 let method = class.method("bar", [Typ::Int, "java.lang.String".into()], None)?;
 // And call it: `Foo.bar(0, null)`
-method.invoke(&[Value::Int(0), Value::Ref(None)])?;
+method.invoke([Value::Int(0), Value::Ref(None)])?;
 // Resolve field `Foo.baz` of type bool
 let field = class.field("baz", Typ::Boolean)?;
 // And read its value (panicking if it's not a static field)

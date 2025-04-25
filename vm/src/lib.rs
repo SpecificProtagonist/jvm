@@ -205,12 +205,6 @@ pub struct ClassLibraryIntegration {
     pub native_methods: Vec<NativeMethod>,
     /// Constructs a `java.lang.String` instance representing the given string.
     pub string_constructor: Box<dyn Fn(&Jvm, &str) -> Object + Send + Sync>,
-    /// Constructs a `java.lang.Class` instance representing the given class.
-    /// May be called multiple times for the same class when multithreading.
-    // TODO: Remove this by hardcoding `java.lang.Class` metadata
-    pub class_object_constructor: Box<dyn Fn(&Jvm, Class) -> Object + Send + Sync>,
-    /// Given a `java.lang.Class` instance, obtain the `Class` it represents.
-    pub get_class_from_class_object: Box<dyn Fn(&Jvm, Object) -> Class + Send + Sync>,
 }
 
 impl Default for ClassLibraryIntegration {
@@ -218,8 +212,6 @@ impl Default for ClassLibraryIntegration {
         Self {
             metatada_layout: default(),
             native_methods: default(),
-            class_object_constructor: Box::new(|_, _| unimplemented!()),
-            get_class_from_class_object: Box::new(|_, _| unimplemented!()),
             string_constructor: Box::new(|_, _| unimplemented!()),
         }
     }

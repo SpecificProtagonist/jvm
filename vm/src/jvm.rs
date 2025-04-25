@@ -48,6 +48,10 @@ pub(crate) struct Jvm {
     /// Keeps the Jvm alive when > 0
     pub(crate) refcount: AtomicUsize,
     pub(crate) force_alive: AtomicBool,
+    /// Offset into the data of a `java.lang.Class` object at which a pointer to
+    /// the class it represents is stored.
+    /// Should only be read once `java.lang.Class` is resolved.
+    pub(crate) class_class_ptr_offset: AtomicUsize,
 }
 
 impl Jvm {
@@ -60,7 +64,6 @@ impl Jvm {
         mut class_library_integration: ClassLibraryIntegration,
         max_heap: usize,
     ) -> Self {
-        println!("new");
         let mut native_methods = HashMap::<String, UnboundNativeMethods>::new();
         for method in class_library_integration.native_methods.drain(..) {
             let UnboundNativeMethods::Available(methods) = native_methods
@@ -83,6 +86,7 @@ impl Jvm {
             class_library_integration,
             refcount: AtomicUsize::new(1),
             force_alive: AtomicBool::new(false),
+            class_class_ptr_offset: AtomicUsize::default(),
         }
     }
 
@@ -258,7 +262,13 @@ impl Jvm {
             .copied()
             .unwrap_or(Layout::new::<()>());
 
-        let class_layout = Class::set_layouts(super_class, class_desc.fields, metadata_layout);
+        let class_layout = Class::set_layouts(
+            self,
+            &class_desc.name,
+            super_class,
+            class_desc.fields,
+            metadata_layout,
+        );
         let static_storage = if class_layout.static_size == 0 {
             FieldStorage::EMPTY
         } else {

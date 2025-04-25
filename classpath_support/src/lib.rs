@@ -8,16 +8,6 @@ use vm::{Class, ClassLibraryIntegration, Jvm, NativeFn, NativeMethod, Object, Ty
 /// # Safety
 /// Must not call any of the native functions without the metadata layout set.
 pub unsafe fn get_integration() -> ClassLibraryIntegration {
-    fn make_class_object(jvm: &Jvm, class: Class) -> Object {
-        let class_class = jvm.resolve_class("java.lang.Class").unwrap();
-        let object = class_class.create_object_no_constructor().unwrap();
-        unsafe { core::ptr::write(class.get_metadata(&object) as *mut Class, class) };
-        object
-    }
-    fn get_class_from_class_object(jvm: &Jvm, class: Object) -> Class {
-        let class_class = jvm.resolve_class("java.lang.Class").unwrap();
-        unsafe { core::ptr::read(class_class.get_metadata(&class) as *mut Class) }
-    }
     fn make_string(jvm: &Jvm, string: &str) -> Object {
         let length = string.encode_utf16().count();
         let backing_array = jvm.create_array(&Type::Char, length as i32);
@@ -34,8 +24,6 @@ pub unsafe fn get_integration() -> ClassLibraryIntegration {
         obj
     }
     ClassLibraryIntegration {
-        class_object_constructor: Box::new(make_class_object),
-        get_class_from_class_object: Box::new(get_class_from_class_object),
         string_constructor: Box::new(make_string),
         metatada_layout: metadata_layout(),
         // SAFETY:

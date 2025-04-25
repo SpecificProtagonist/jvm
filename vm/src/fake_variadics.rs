@@ -24,14 +24,16 @@ where
     if !valid_signature::<F, T>(method) {
         return Err(NativeBindError::SignatureMismatch);
     }
-    fn specify_lifetimes(
-        f: impl for<'a, 'b> Fn(&'a crate::Jvm, &'b [Value]) -> JvmResult<Option<Value>>,
-    ) -> Box<impl for<'a, 'b> Fn(&'a crate::Jvm, &'b [Value]) -> JvmResult<Option<Value>>> {
-        Box::new(f)
+    // Closure lifetime binders when? 👉👈
+    fn specify_lifetimes<F>(f: F) -> F
+    where
+        F: for<'a, 'b> Fn(&'a crate::Jvm, &'b [Value]) -> JvmResult<Option<Value>>,
+    {
+        f
     }
-    let boxed = specify_lifetimes(move |jvm, args| F::invoke(&code, jvm, args));
+    let closure = specify_lifetimes(move |jvm, args| F::invoke(&code, jvm, args));
     if method.access_flags.contains(AccessFlags::NATIVE) {
-        *method.code.write().unwrap() = Code::Native(boxed);
+        *method.code.write().unwrap() = Code::Native(Box::new(closure));
         Ok(())
     } else {
         Err(NativeBindError::MethodNotNative)

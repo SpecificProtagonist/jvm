@@ -1,5 +1,6 @@
 use alloc::alloc::Layout;
 use alloc::sync::Arc;
+use core::sync::atomic::Ordering::*;
 use hashbrown::HashMap;
 use std::sync::{Condvar, Mutex, RwLock};
 use std::thread::ThreadId;
@@ -89,6 +90,8 @@ pub(crate) struct ClassLayout {
 
 impl Class {
     pub(crate) fn set_layouts(
+        jvm: &Jvm,
+        name: &str,
         super_class: Option<&Class>,
         fields: Vec<Field>,
         metadata: Layout,
@@ -139,10 +142,20 @@ impl Class {
             None => object::OFFSET_FIELDS,
         };
         set_layouts(&mut object_size, object_fields);
-        let (object_layout, metadata_offset) = Layout::from_size_align(object_size, 8)
+        let (mut object_layout, metadata_offset) = Layout::from_size_align(object_size, 8)
             .unwrap()
             .extend(metadata)
             .unwrap();
+
+        if name == "java.lang.Class" {
+            let (new_object_layout, class_ptr_offset) = Layout::from_size_align(object_size, 8)
+                .unwrap()
+                .extend(metadata)
+                .unwrap();
+            object_layout = new_object_layout;
+            jvm.class_class_ptr_offset.store(class_ptr_offset, Release);
+        }
+
         let object_size = object_layout.size();
 
         ClassLayout {
@@ -155,13 +168,14 @@ impl Class {
 
     pub(crate) fn class_object(&'static self, jvm: &Jvm) -> Object {
         self.class_object.get(|| {
-            let jvm_handle = crate::Jvm::from(jvm);
-            let class = crate::Class::new(jvm_handle.clone(), self);
-            let object =
-                (jvm.class_library_integration.class_object_constructor)(&jvm_handle, class)
-                    .as_inner(&jvm_handle);
-            debug_assert_eq!(&*object.class(jvm.heap.ptrs()).name, "java.lang.Class");
-            object
+            let class_class = jvm
+                .resolve_class_internal("java.lang.Class")
+                .expect("Failed to resolve java.lang.Class");
+            let obj = jvm.create_object_skipping_constructor(class_class);
+            let offset = jvm.class_class_ptr_offset.load(Acquire);
+            let ptr = self as *const Class as usize;
+            obj.fields().write(jvm.heap.ptrs(), offset, ptr, false);
+            obj
         })
     }
 
