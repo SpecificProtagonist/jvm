@@ -9,12 +9,8 @@ use vm::{Class, ClassLibraryIntegration, Jvm, NativeFn, NativeMethod, Object, Ty
 /// Must not call any of the native functions without the metadata layout set.
 pub unsafe fn get_integration() -> ClassLibraryIntegration {
     fn make_string(jvm: &Jvm, string: &str) -> Object {
-        let length = string.encode_utf16().count();
-        let backing_array = jvm.create_array(&Type::Char, length as i32);
-        // TODO: Efficient array creation method on Jvm
-        for (index, char) in string.encode_utf16().enumerate() {
-            backing_array.array_write(index as i32, Value::Short(char as i16));
-        }
+        let as_chars = string.encode_utf16().collect::<Vec<_>>();
+        let backing_array = jvm.create_array_from_primitive_slice(&as_chars);
         let string_class = jvm.resolve_class("java.lang.String").unwrap();
         // TODO: Switch to constructor
         let obj = string_class.create_object_no_constructor().unwrap();

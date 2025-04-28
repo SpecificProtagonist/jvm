@@ -311,9 +311,25 @@ impl core::fmt::Pointer for Object {
 
 const _: () = assert!(core::mem::size_of::<Object>() == core::mem::size_of::<Option<Object>>());
 
-pub trait Data {
+pub(crate) trait Data {
     fn read(ptrs: Ptrs, ptr: *const Self, ordering: Ordering) -> Self;
     fn write(ptrs: Ptrs, ptr: *const Self, value: Self, ordering: Ordering);
+}
+
+impl Data for bool {
+    #[inline]
+    fn read(_: Ptrs, ptr: *const Self, ordering: Ordering) -> Self {
+        unsafe { (ptr as *const AtomicBool).as_ref_unchecked().load(ordering) }
+    }
+
+    #[inline]
+    fn write(_: Ptrs, ptr: *const Self, value: Self, ordering: Ordering) {
+        unsafe {
+            (ptr as *const AtomicBool)
+                .as_ref_unchecked()
+                .store(value, ordering)
+        }
+    }
 }
 
 impl Data for i8 {
@@ -342,6 +358,22 @@ impl Data for i16 {
     fn write(_: Ptrs, ptr: *const Self, value: Self, ordering: Ordering) {
         unsafe {
             (ptr as *const AtomicI16)
+                .as_ref_unchecked()
+                .store(value, ordering)
+        }
+    }
+}
+
+impl Data for u16 {
+    #[inline]
+    fn read(_: Ptrs, ptr: *const Self, ordering: Ordering) -> Self {
+        unsafe { (ptr as *const AtomicU16).as_ref_unchecked().load(ordering) }
+    }
+
+    #[inline]
+    fn write(_: Ptrs, ptr: *const Self, value: Self, ordering: Ordering) {
+        unsafe {
+            (ptr as *const AtomicU16)
                 .as_ref_unchecked()
                 .store(value, ordering)
         }

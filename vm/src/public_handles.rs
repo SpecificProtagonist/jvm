@@ -223,6 +223,68 @@ impl Jvm {
             (ptr as *const class::Class).as_ref_unchecked()
         })
     }
+
+    /// # Panics
+    /// Panics if the slice is longer than the maximum length of a Java array (`i32::MAX`).
+    pub fn create_array_from_primitive_slice<T: Primitive>(&self, data: &[T]) -> Object {
+        assert!(data.len() <= i32::MAX as usize);
+        let array = self.create_array(&T::TYPE, data.len() as i32);
+        for (index, &value) in data.iter().enumerate() {
+            array
+                .value
+                .array_write(self.deref(), index as i32, value)
+                .unwrap();
+        }
+        array
+    }
+}
+
+/// Java primitives:
+///
+/// `bool` ↔ `boolean`
+/// `i8` ↔ `byte`
+/// `i16` ↔ `short`
+/// `u16` ↔ `char`
+/// `i32` ↔ `int`
+/// `i64` ↔ `long`
+/// `f32` ↔ `float`
+/// `f64` ↔ `double`
+// This is a sealed trait for safety
+#[allow(private_bounds)]
+pub trait Primitive: object::Data + Copy {
+    const TYPE: Type;
+}
+
+impl Primitive for bool {
+    const TYPE: Type = Type::Boolean;
+}
+
+impl Primitive for i8 {
+    const TYPE: Type = Type::Byte;
+}
+
+impl Primitive for u16 {
+    const TYPE: Type = Type::Char;
+}
+
+impl Primitive for i16 {
+    const TYPE: Type = Type::Short;
+}
+
+impl Primitive for i32 {
+    const TYPE: Type = Type::Int;
+}
+
+impl Primitive for i64 {
+    const TYPE: Type = Type::Long;
+}
+
+impl Primitive for f32 {
+    const TYPE: Type = Type::Float;
+}
+
+impl Primitive for f64 {
+    const TYPE: Type = Type::Double;
 }
 
 /// Guard types ensure values can't be used without the vm they belong to / be used with the wrong vm.
@@ -507,6 +569,15 @@ impl Object {
             .deref()
             .identity_hashes
             .get_identity_hash(self.value)
+    }
+
+    /// # Panics
+    /// Panics if this object isn't an array of this primitive type.
+    // TODO: Array read/write/move/set, with ranges, also objects
+    pub fn iter_primitive_array<T: Primitive>(&self) -> impl Iterator<Item = T> {
+        assert!(self.class().element_type() == Some(T::TYPE));
+        (0..self.array_length())
+            .map(|index| self.value.array_read(self.jvm.deref(), index).unwrap())
     }
 }
 
