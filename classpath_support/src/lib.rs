@@ -1,16 +1,13 @@
 extern crate alloc;
 
-use alloc::alloc::Layout;
-use std::collections::HashMap;
-
-use vm::{Class, ClassLibraryIntegration, Jvm, NativeFn, NativeMethod, Object, Type, Value};
+use vm::{ClassLibraryIntegration, Jvm, NativeFn, NativeMethod, Object, Type, Value};
 
 /// # Safety
 /// Must not call any of the native functions without the metadata layout set.
 pub unsafe fn get_integration() -> ClassLibraryIntegration {
     fn make_string(jvm: &Jvm, string: &str) -> Object {
         let as_chars = string.encode_utf16().collect::<Vec<_>>();
-        let backing_array = jvm.create_array_from_primitive_slice(&as_chars);
+        let backing_array = jvm.create_array_from_slice(&as_chars);
         let string_class = jvm.resolve_class("java.lang.String").unwrap();
         // TODO: Switch to constructor
         let obj = string_class.create_object_no_constructor().unwrap();
@@ -21,7 +18,7 @@ pub unsafe fn get_integration() -> ClassLibraryIntegration {
     }
     ClassLibraryIntegration {
         string_constructor: Box::new(make_string),
-        metatada_layout: metadata_layout(),
+        metatada_layout: Default::default(),
         // SAFETY:
         // Same function preconditions
         native_methods: unsafe { native_methods() },
@@ -33,10 +30,6 @@ macro_rules! throw {
     ($jvm:expr, $class:expr) => {
         return Err(Object::new($jvm.id, throwable($jvm, $class)));
     };
-}
-
-fn metadata_layout() -> HashMap<String, Layout> {
-    HashMap::from([("java.lang.Class".to_owned(), Layout::new::<Class>())])
 }
 
 unsafe fn native_methods() -> Vec<NativeMethod> {

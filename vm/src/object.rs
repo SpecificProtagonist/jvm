@@ -68,6 +68,10 @@ impl Object {
         NonZeroUsize::new(addr).map(Self)
     }
 
+    pub fn into_addr(self) -> NonZeroUsize {
+        self.0
+    }
+
     #[inline]
     pub(crate) fn class(self, ptrs: Ptrs) -> ClassRef {
         let compressed = unsafe {

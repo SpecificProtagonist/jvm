@@ -69,7 +69,7 @@ use crate::Type;
 /// Currently no call stack is provided.
 pub type JvmResult<T> = Result<T, Object>;
 
-/// Java primitives:
+/// Array element:
 ///
 /// `bool` ↔ `boolean`
 /// `i8` ↔ `byte`
@@ -79,40 +79,83 @@ pub type JvmResult<T> = Result<T, Object>;
 /// `i64` ↔ `long`
 /// `f32` ↔ `float`
 /// `f64` ↔ `double`
+/// `Option<Object>` / `Object` ↔ `java.lang.Object`
+#[allow(private_bounds)]
+pub trait Datum: DatumSealed {}
+
+impl<T: DatumSealed> Datum for T {}
+
 // This is a sealed trait for safety
 #[allow(private_bounds)]
-pub trait Primitive: crate::object::Data + Copy {
-    const TYPE: Type;
+pub trait DatumSealed {
+    const STATIC_TYPE: Option<Type>;
+    type AsData: crate::object::Data;
+    #[inline]
+    fn write_valid(&self, _elem_type: &Type) -> bool {
+        true
+    }
+    fn read(jvm: &Jvm, value: Self::AsData) -> Self;
+    fn write(jvm: &Jvm, value: &Self) -> Self::AsData;
 }
 
-impl Primitive for bool {
-    const TYPE: Type = Type::Boolean;
+macro_rules! define_datumsealed {
+    ($rust:ty, $jvm:ident) => {
+        impl DatumSealed for $rust {
+            const STATIC_TYPE: Option<Type> = Some(Type::$jvm);
+
+            type AsData = Self;
+
+            #[inline]
+            fn read(_jvm: &Jvm, value: Self::AsData) -> Self {
+                value
+            }
+
+            #[inline]
+            fn write(_jvm: &Jvm, value: &Self) -> Self::AsData {
+                *value
+            }
+        }
+    };
 }
 
-impl Primitive for i8 {
-    const TYPE: Type = Type::Byte;
-}
+define_datumsealed!(bool, Boolean);
+define_datumsealed!(i8, Byte);
+define_datumsealed!(u16, Char);
+define_datumsealed!(i16, Short);
+define_datumsealed!(i32, Int);
+define_datumsealed!(i64, Long);
+define_datumsealed!(f32, Float);
+define_datumsealed!(f64, Double);
 
-impl Primitive for u16 {
-    const TYPE: Type = Type::Char;
-}
+impl DatumSealed for Option<Object> {
+    const STATIC_TYPE: Option<Type> = None;
 
-impl Primitive for i16 {
-    const TYPE: Type = Type::Short;
-}
+    type AsData = usize;
 
-impl Primitive for i32 {
-    const TYPE: Type = Type::Int;
-}
+    #[inline]
+    fn read(jvm: &Jvm, value: Self::AsData) -> Self {
+        crate::object::Object::from_addr(value).map(|obj| Object::new(jvm.clone(), obj))
+    }
 
-impl Primitive for i64 {
-    const TYPE: Type = Type::Long;
-}
+    fn write_valid(&self, elem_type: &Type) -> bool {
+        if let Type::Ref(elem_type) = elem_type {
+            self.as_ref()
+                .map(|obj| {
+                    obj.value
+                        .class(obj.jvm.deref().heap.ptrs())
+                        .true_subclass_of(elem_type)
+                })
+                .unwrap_or(true)
+        } else {
+            false
+        }
+    }
 
-impl Primitive for f32 {
-    const TYPE: Type = Type::Float;
-}
-
-impl Primitive for f64 {
-    const TYPE: Type = Type::Double;
+    #[inline]
+    fn write(jvm: &Jvm, value: &Self) -> Self::AsData {
+        value
+            .as_ref()
+            .map(|o| o.as_inner(jvm).into_addr().get())
+            .unwrap_or(0)
+    }
 }

@@ -1,3 +1,6 @@
+use core::ops::Bound;
+use core::ops::RangeBounds;
+
 use crate::*;
 
 /// A Java object, guaranteed to be non-null.
@@ -233,12 +236,123 @@ impl Object {
             .get_identity_hash(self.value)
     }
 
+    /// Tries to read part of this array.
+    ///
+    /// Returns a `ClassCastException` if this object isn't
+    /// an array of the appropriate type.
+    /// Returns an `ArrayIndexOutOfBoundsException` is the range
+    /// is out of bounds.
+    pub fn array_read_range<T: Datum>(
+        &self,
+        range: impl RangeBounds<i32>,
+    ) -> JvmResult<impl Iterator<Item = T>> {
+        Ok({
+            // Type safety
+            let class_cast = || {
+                Err(Object::new(
+                    self.jvm.deref(),
+                    throw(self.jvm.deref(), "ClassCastException", None),
+                ))
+            };
+            let Some(elem_type) = self.class().element_type() else {
+                return class_cast();
+            };
+            if let Some(typ) = T::STATIC_TYPE
+                && typ != elem_type
+            {
+                return class_cast();
+            }
+
+            // Bounds
+            let start = match range.start_bound() {
+                Bound::Included(&start) => start,
+                Bound::Excluded(&start) => start + 1,
+                Bound::Unbounded => 0,
+            };
+            let end = match range.end_bound() {
+                Bound::Included(&end) => end,
+                Bound::Excluded(&end) => end - 1,
+                Bound::Unbounded => self.array_length(),
+            };
+
+            if (start < 0) | (end >= self.array_length()) {
+                return Err(Object::new(
+                    self.jvm.deref(),
+                    throw(self.jvm.deref(), "ArrayIndexOutOfBoundsException", None),
+                ));
+            }
+
+            // Actually do the op
+            (0..self.value.array_length()).map(|index| {
+                T::read(
+                    &self.jvm,
+                    self.value.array_read(self.jvm.deref(), index).unwrap(),
+                )
+            })
+        })
+    }
+
+    /// Tries to override part of this array.
+    ///
+    /// Returns a `ClassCastException` if this object isn't
+    /// an array of the appropriate type.
+    /// Returns an `ArrayIndexOutOfBoundsException` is the range
+    /// is out of bounds.
+    ///
     /// # Panics
-    /// Panics if this object isn't an array of this primitive type.
-    // TODO: Array read/write/move/set, with ranges, also objects
-    pub fn iter_primitive_array<T: Primitive>(&self) -> impl Iterator<Item = T> {
-        assert!(self.class().element_type() == Some(T::TYPE));
-        (0..self.array_length())
-            .map(|index| self.value.array_read(self.jvm.deref(), index).unwrap())
+    /// Panics if the iterator returns fewer values than needed
+    /// for the specified range.
+    pub fn array_write_range<'a, T: 'a + Datum>(
+        &self,
+        range: impl RangeBounds<i32>,
+        iter: impl IntoIterator<Item = &'a T>,
+    ) -> JvmResult<()> {
+        // Type safety, part 1
+        let class_cast = || {
+            Err(Object::new(
+                self.jvm.deref(),
+                throw(self.jvm.deref(), "ClassCastException", None),
+            ))
+        };
+        let Some(elem_type) = self.class().element_type() else {
+            return class_cast();
+        };
+        if let Some(typ) = T::STATIC_TYPE
+            && typ != elem_type
+        {
+            return class_cast();
+        }
+
+        // Bounds
+        let start = match range.start_bound() {
+            Bound::Included(&start) => start,
+            Bound::Excluded(&start) => start + 1,
+            Bound::Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            Bound::Included(&end) => end,
+            Bound::Excluded(&end) => end - 1,
+            Bound::Unbounded => self.array_length(),
+        };
+
+        if (start < 0) | (end > self.array_length()) {
+            return Err(Object::new(
+                self.jvm.deref(),
+                throw(self.jvm.deref(), "ArrayIndexOutOfBoundsException", None),
+            ));
+        }
+
+        // Write
+        let mut iter = iter.into_iter();
+        for index in start..end {
+            let value = iter.next().expect("Iterator returned None");
+            if !T::write_valid(value, &elem_type) {
+                return class_cast();
+            }
+            self.value
+                .array_write(self.jvm.deref(), index, T::write(&self.jvm, value))
+                .unwrap();
+        }
+        Ok(())
     }
 }

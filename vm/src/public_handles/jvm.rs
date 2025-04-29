@@ -170,8 +170,10 @@ impl Jvm {
     ///
     /// # Panics
     /// Panics if metadata has already been defined for this class,
-    /// or the class has already been loaded.
+    /// the class has already been loaded,
+    /// or alignment is greater than 8.
     pub fn define_object_metadata_layout(&mut self, class: &str, layout: Layout) {
+        assert!(layout.align() <= 8);
         if self.deref().classes.read().unwrap().contains_key(class) {
             panic!("Tried to set metadata for already loaded class {class}");
         }
@@ -200,6 +202,23 @@ impl Jvm {
         )
     }
 
+    /// Creates an array from the slice. If the slice elements are objects,
+    /// the type of the array will be `Object[]`.
+    ///
+    /// # Panics
+    /// Panics if slice longer than `i32::MAX`.
+    pub fn create_array_from_slice<T: Datum>(&self, data: &[T]) -> crate::Object {
+        assert!(data.len() <= i32::MAX as usize);
+
+        let elem_type = T::STATIC_TYPE.unwrap_or_else(|| "java.lang.Object".into());
+
+        let array = self.deref().create_array_of(&elem_type, data.len() as i32);
+        let array = crate::Object::new(self.deref(), array);
+        array.array_write_range(.., data).unwrap();
+
+        array
+    }
+
     pub fn create_string(&self, str: &str) -> crate::Object {
         (self.deref().class_library_integration.string_constructor)(self, str)
     }
@@ -220,19 +239,5 @@ impl Jvm {
         Class::new(self.deref(), unsafe {
             (ptr as *const class::Class).as_ref_unchecked()
         })
-    }
-
-    /// # Panics
-    /// Panics if the slice is longer than the maximum length of a Java array (`i32::MAX`).
-    pub fn create_array_from_primitive_slice<T: Primitive>(&self, data: &[T]) -> Object {
-        assert!(data.len() <= i32::MAX as usize);
-        let array = self.create_array(&T::TYPE, data.len() as i32);
-        for (index, &value) in data.iter().enumerate() {
-            array
-                .value
-                .array_write(self.deref(), index as i32, value)
-                .unwrap();
-        }
-        array
     }
 }
