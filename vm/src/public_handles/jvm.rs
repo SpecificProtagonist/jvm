@@ -240,4 +240,17 @@ impl Jvm {
             (ptr as *const class::Class).as_ref_unchecked()
         })
     }
+
+    /// # Panics
+    /// Panics if object is not a string.
+    pub fn intern_string(&self, string: Object) -> Object {
+        Object::new(
+            self.deref(),
+            self.deref().intern_string(string.as_inner(self)),
+        )
+    }
+
+    pub fn create_interned_string(&self, string: &str) -> Object {
+        Object::new(self.deref(), self.deref().create_interned_string(string))
+    }
 }

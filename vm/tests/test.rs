@@ -229,21 +229,6 @@ fn exceptions() {
 }
 
 #[test]
-fn strings() {
-    let jvm = make_jvm();
-    let class = jvm.resolve_class("Strings").unwrap();
-    class.ensure_init().unwrap();
-    let Value::Ref(Some(string)) = class
-        .field("string", Type::Ref("java.lang.String".into()))
-        .unwrap()
-        .static_get()
-    else {
-        panic!()
-    };
-    assert_eq!(format!("{:?}", string), "\"ABC\"");
-}
-
-#[test]
 #[should_panic = "Wrong JVM accessed"]
 fn cross_jvms_field() {
     let jvm_1 = make_jvm();
@@ -408,4 +393,27 @@ fn monitor_tmp() {
     let obj = class.create_object_no_constructor().unwrap();
     obj.enter_monitor();
     obj.exit_monitor().unwrap();
+}
+
+#[test]
+fn string_interning() {
+    let jvm = make_jvm();
+
+    let class = jvm.resolve_class("Strings").unwrap();
+    class.ensure_init().unwrap();
+    let interned_1 = class
+        .field("string", Type::Ref("java.lang.String".into()))
+        .unwrap()
+        .static_get()
+        .to_ref()
+        .unwrap()
+        .unwrap();
+
+    let interned_2 = jvm.intern_string(jvm.create_string("ABC"));
+    let interned_3 = jvm.create_interned_string("ABC");
+    let not_interned = jvm.create_string("ABC");
+
+    assert_eq!(interned_1, interned_2);
+    assert_eq!(interned_1, interned_3);
+    assert_ne!(interned_1, not_interned);
 }

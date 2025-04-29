@@ -46,6 +46,78 @@ impl Value {
             Self::Double(value) => value::Value::Double(value),
         }
     }
+
+    pub fn to_ref(self) -> Option<Option<Object>> {
+        if let Self::Ref(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn to_boolean(self) -> Option<bool> {
+        if let Self::Boolean(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn to_byte(self) -> Option<i8> {
+        if let Self::Byte(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn to_char(self) -> Option<u16> {
+        if let Self::Char(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn to_short(self) -> Option<i16> {
+        if let Self::Short(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn to_int(self) -> Option<i32> {
+        if let Self::Int(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn to_long(self) -> Option<i64> {
+        if let Self::Long(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn to_float(self) -> Option<f32> {
+        if let Self::Float(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn to_double(self) -> Option<f64> {
+        if let Self::Double(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
 }
 
 impl core::fmt::Display for Value {

@@ -38,12 +38,11 @@ Some current features:
 - method body hot reloading (`Jvm::reload_method_bytecodes_for_class`)
 - compressed pointers & object headers
 
-Some missing features:
+Some major missing features:
 - garbage collection
 - jit-compilation
 - `invokedynamic`
 - stack traces
-- string interning
 - reliable protection from stackoverflow, memory exhaustion and deadlocking
 - wasm/nostd support
 - debug adapter protocol support

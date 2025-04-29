@@ -7,6 +7,7 @@ use std::sync::{Mutex, OnceLock, RwLock};
 use crate::heap::Heap;
 use crate::identity_hash::IdentityHashes;
 use crate::monitor::{ParkingLot, maybe_loom};
+use crate::string_interning::StringInterner;
 use crate::{AccessFlags, ClassLibraryIntegration, ClassLoader, NativeMethod};
 use fixed_typed_arena::ManuallyDropArena;
 // TODO: possibly exchange for different hasher (benchmark)
@@ -41,6 +42,8 @@ pub(crate) struct Jvm {
     pub(crate) method_storage: Mutex<ManuallyDropArena<Method, 128>>,
     pub(crate) classes: RwLock<HashMap<Arc<str>, ClassRef>>,
     pub(crate) identity_hashes: IdentityHashes,
+    // TODO: Change to HashSet to avoid two copies of the string
+    pub(crate) interned_strings: RwLock<StringInterner>,
     pub(crate) parking_lot: ParkingLot,
     pub(crate) unbound_native_methods: Mutex<HashMap<String, UnboundNativeMethods>>,
     pub(crate) stackoverflow_error: OnceLock<Object>,
@@ -80,6 +83,7 @@ impl Jvm {
             method_storage: default(),
             classes: default(),
             identity_hashes: default(),
+            interned_strings: default(),
             parking_lot: default(),
             unbound_native_methods: Mutex::new(native_methods),
             stackoverflow_error: OnceLock::new(),
@@ -350,6 +354,22 @@ impl Jvm {
 
     pub(crate) fn create_string(&self, str: &str) -> crate::Object {
         (self.class_library_integration.string_constructor)(&self.into(), str)
+    }
+
+    /// # Panics
+    /// Panics if object is not a string.
+    pub(crate) fn intern_string(&self, string: Object) -> Object {
+        self.interned_strings
+            .write()
+            .unwrap()
+            .intern_string(self, string)
+    }
+
+    pub(crate) fn create_interned_string(&self, string: &str) -> Object {
+        self.interned_strings
+            .write()
+            .unwrap()
+            .create_interned_string(self, string)
     }
 }
 

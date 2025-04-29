@@ -173,13 +173,9 @@ impl ConstPool {
         for i in 0..guard.items.len() {
             if let ConstPoolItem::RawString(index) = guard.items[i] {
                 // The spec doesn't describe when these strings should get instantiated, so let's just do it here
-                // TODO: Interning
                 let string = guard.get_utf8(jvm, index)?;
                 drop(guard);
-                let jvm_handle = crate::Jvm::from(jvm);
-                let object =
-                    (jvm.class_library_integration.string_constructor)(&jvm_handle, &string)
-                        .as_inner(&jvm_handle);
+                let object = jvm.create_interned_string(string.as_ref());
                 guard = pool.write().unwrap();
                 guard.items[i] = ConstPoolItem::String(object);
             }

@@ -81,6 +81,16 @@ unsafe fn native_methods() -> Vec<NativeMethod> {
     );
 
     with_class(
+        "java.lang.String",
+        vec![def(
+            "intern",
+            [string.clone()],
+            string.clone(),
+            Jvm::intern_string,
+        )],
+    );
+
+    with_class(
         "java.lang.Class",
         vec![
             def("registerNatives", [], None, || ()),

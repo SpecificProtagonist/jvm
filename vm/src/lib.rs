@@ -25,6 +25,7 @@ mod object;
 mod opcodes;
 mod parse;
 mod raw_mutex;
+mod string_interning;
 mod typ;
 mod util;
 mod value;

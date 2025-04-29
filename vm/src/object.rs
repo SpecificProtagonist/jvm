@@ -108,6 +108,11 @@ impl Object {
         }
     }
 
+    pub fn array_read_char(self, index: i32) -> u16 {
+        let ptr = self.array_item::<u16>(index).unwrap();
+        unsafe { (ptr as *const AtomicU16).as_ref_unchecked().load(Relaxed) }
+    }
+
     pub fn array_read<T: Data>(self, jvm: &Jvm, index: i32) -> JvmResult<T> {
         if let Some(item) = self.array_item::<T>(index) {
             Ok(T::read(jvm.heap.ptrs(), item, Relaxed))
