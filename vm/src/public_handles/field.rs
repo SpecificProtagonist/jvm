@@ -59,8 +59,11 @@ impl Field {
     /// Set the value of a static field.
     ///
     /// # Panics
-    /// Panics if the field is not static or the value is not assignable to the field's type
-    /// or is an object created by a different JVM
+    /// Panics if
+    /// - the field is not static
+    /// - the field is final
+    /// - the value is not assignable to the field's type
+    /// - or is an object created by a different JVM
     #[track_caller]
     pub fn static_set(&self, value: impl Into<Value>) {
         self.value.static_set(
@@ -72,10 +75,12 @@ impl Field {
     /// Set the value of an object's field.
     ///
     /// # Panics
-    /// Panics if the field is static,
-    /// the object is not an instance of the class corresponding to this field,
-    /// the value is not assignable to the field's type
-    /// or the value is an object created by a different JVM
+    /// Panics if
+    /// - the field is static
+    /// - the field is final
+    /// - the object is not an instance of the class corresponding to this field
+    /// - the value is not assignable to the field's type
+    /// - or the value is an object created by a different JVM
     #[track_caller]
     pub fn instance_set(&self, object: &Object, value: impl Into<Value>) {
         self.value.instance_set(

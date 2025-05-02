@@ -106,11 +106,13 @@ impl Field {
     /// Set the value of a static field.
     ///
     /// # Panics
-    /// Panics if the field is not static or the value is not assignable to the field's type
+    /// Panics if the field is not static, the field is final, or the value is not assignable to the field's type
     #[track_caller]
     pub(crate) fn static_set(&self, ptrs: Ptrs, value: Value) {
-        if !self.access_flags.contains(AccessFlags::STATIC) {
-            panic!("field {} is not static", self.nat.name)
+        if !self.access_flags.contains(AccessFlags::STATIC)
+            | self.access_flags.contains(AccessFlags::FINAL)
+        {
+            panic!("field {} is final or not static", self.nat.name)
         }
         self.write(ptrs, self.class().static_storage, value)
     }
@@ -118,13 +120,15 @@ impl Field {
     /// Get the value of an object's field.
     ///
     /// # Panics
-    /// Panics if the field is static,
+    /// Panics if the field is static, the field is final,
     /// the object is not an instance of the class corresponding to this field
     /// or the value is not assignable to the field's type
     #[track_caller]
     pub(crate) fn instance_set(&self, ptrs: Ptrs, object: Object, value: Value) {
-        if self.access_flags.contains(AccessFlags::STATIC) {
-            panic!("field {} is static", self.nat.name)
+        if self.access_flags.contains(AccessFlags::STATIC)
+            | self.access_flags.contains(AccessFlags::FINAL)
+        {
+            panic!("field {} is final or static", self.nat.name)
         }
         if !object.class(ptrs).assignable_to(&self.class().name) {
             panic!(
