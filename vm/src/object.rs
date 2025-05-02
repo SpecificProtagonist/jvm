@@ -191,7 +191,7 @@ impl Object {
                 (Type::Long, Value::Long(value)) => write::<i64>(ptrs, self, index, value),
                 (Type::Float, Value::Float(value)) => write::<f32>(ptrs, self, index, value),
                 (Type::Float, Value::Double(value)) => write::<f64>(ptrs, self, index, value),
-                (Type::Ref(typ), Value::Ref(value)) => {
+                (Type::Ref(typ), Value::Object(value)) => {
                     if let Some(obj) = value {
                         if !obj.class(ptrs).assignable_to(typ) {
                             panic!("element type mismatch")
@@ -233,7 +233,7 @@ pub(crate) fn fmt_object(
 
     // Prettier printing for strings
     if class.name.deref() == "java.lang.String" {
-        let Value::Ref(chars) = class
+        let Value::Object(chars) = class
             .field("value", Type::Ref("char[]".into()))
             .expect("java.lang.String missing field char[] value")
             .instance_get(ptrs, object)

@@ -1,10 +1,10 @@
 use core::fmt::Display;
 
-use crate::{heap::Ptrs, object::Object, Type};
+use crate::{Type, heap::Ptrs, object::Object};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Value {
-    Ref(Option<Object>),
+    Object(Option<Object>),
     Int(i32),
     Long(i64),
     Float(f32),
@@ -14,7 +14,7 @@ pub(crate) enum Value {
 impl Value {
     pub fn assignable_to(self, ptrs: Ptrs, typ: &Type) -> bool {
         match (typ, self) {
-            (Type::Ref(declared), Value::Ref(object))
+            (Type::Ref(declared), Value::Object(object))
                 if object
                     .map(|o| o.class(ptrs).assignable_to(declared))
                     .unwrap_or(true) =>
@@ -35,8 +35,8 @@ impl Value {
 impl Display for Value {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Ref(None) => write!(f, "null"),
-            Self::Ref(Some(obj)) => write!(f, "@{obj:?}"),
+            Self::Object(None) => write!(f, "null"),
+            Self::Object(Some(obj)) => write!(f, "@{obj:?}"),
             Self::Int(v) => write!(f, "{}", v),
             Self::Long(v) => write!(f, "{}", v),
             Self::Float(v) => write!(f, "{}", v),
@@ -47,13 +47,13 @@ impl Display for Value {
 
 impl From<Option<Object>> for Value {
     fn from(val: Option<Object>) -> Self {
-        Self::Ref(val)
+        Self::Object(val)
     }
 }
 
 impl From<Object> for Value {
     fn from(val: Object) -> Self {
-        Self::Ref(Some(val))
+        Self::Object(Some(val))
     }
 }
 

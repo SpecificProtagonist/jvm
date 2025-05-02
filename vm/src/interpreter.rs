@@ -33,7 +33,7 @@ pub(crate) fn invoke(
     let mut arg_values = Vec::new();
     if !method.access_flags.contains(AccessFlags::STATIC) {
         match args.next() {
-            Some(Value::Ref(Some(this)))
+            Some(Value::Object(Some(this)))
                 if this.class(ptrs).assignable_to(&method.class().name) =>
             {
                 arg_values.push(this.into())
@@ -43,7 +43,7 @@ pub(crate) fn invoke(
     }
     for (declared, value) in method.nat.typ.args.iter().zip(args) {
         match (declared, value) {
-            (Type::Ref(declared), Value::Ref(object))
+            (Type::Ref(declared), Value::Object(object))
                 if object
                     .map(|o| o.class(ptrs).assignable_to(declared))
                     .unwrap_or(true) =>
@@ -180,7 +180,7 @@ fn native(
     let mut values = Vec::new();
     let mut i = 0;
     if !method.access_flags.contains(AccessFlags::STATIC) {
-        values.push(crate::Value::Ref(
+        values.push(crate::Value::Object(
             args[0].as_obj().map(|value| crate::Object::new(jvm, value)),
         ));
         i += 1;
@@ -230,7 +230,7 @@ fn native(
                 }
             }
             Type::Ref(_) => {
-                values.push(crate::Value::Ref(
+                values.push(crate::Value::Object(
                     args[i].as_obj().map(|value| crate::Object::new(jvm, value)),
                 ));
                 i += 1;
@@ -1345,7 +1345,7 @@ fn execute_invoke_instr(jvm: &Jvm, frame: &mut Frame, method: &Method) -> JvmRes
     frame.truncate_stack_by(arg_slots);
     if let Some(value) = result {
         match value {
-            Value::Ref(object) => frame.push(object.into()),
+            Value::Object(object) => frame.push(object.into()),
             Value::Int(value) => frame.push(value.into()),
             Value::Float(value) => frame.push(value.into()),
             Value::Long(value) => frame.push_long(value),

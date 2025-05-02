@@ -302,13 +302,13 @@ pub(crate) fn verify_method(jvm: &Jvm, const_pool: &ConstPool, method: &Method) 
                         .class(ptrs)
                         .field("message", Type::Ref("java.lang.String".into()))
                         .unwrap();
-                    let Value::Ref(Some(message)) = field.instance_get(ptrs, *err) else {
+                    let Value::Object(Some(message)) = field.instance_get(ptrs, *err) else {
                         panic!()
                     };
                     let message = format!("{method}: {message:?}");
 
                     let string = jvm.create_string(&message).as_inner(&jvm.into());
-                    field.instance_set(ptrs, *err, Value::Ref(Some(string)));
+                    field.instance_set(ptrs, *err, Value::Object(Some(string)));
                 }
             })?
         }

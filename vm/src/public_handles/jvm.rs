@@ -110,7 +110,7 @@ impl Jvm {
             self.deref()
                 .create_object_skipping_constructor(class_ptr.value),
         );
-        args.insert(0, crate::Value::Ref(Some(object.clone())));
+        args.insert(0, crate::Value::Object(Some(object.clone())));
         let constructor = class_ptr.method("<init>", arg_types, None).ok_or_else(|| {
             crate::Object::new(
                 self.clone(),

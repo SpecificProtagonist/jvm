@@ -4,12 +4,12 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 use hashbrown::Equivalent;
 
 use crate::{
+    AccessFlags,
     class::{Class, ClassRef},
     heap::Ptrs,
     object::{FieldStorage, Object},
     typ::Type,
     value::Value,
-    AccessFlags,
 };
 
 pub(crate) struct Field {
@@ -163,7 +163,7 @@ impl Field {
             (Type::Double, Value::Double(value)) => {
                 storage.write::<f64>(ptrs, self.byte_offset, value, volatile)
             }
-            (Type::Ref(name), Value::Ref(obj))
+            (Type::Ref(name), Value::Object(obj))
                 if obj.map(|o| assignable(o.class(ptrs), name)).unwrap_or(true) =>
             {
                 storage.write::<usize>(

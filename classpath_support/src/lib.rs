@@ -13,7 +13,7 @@ pub unsafe fn get_integration() -> ClassLibraryIntegration {
         let obj = string_class.create_object_no_constructor().unwrap();
         let field =
             string_class.field( "value", Type::Ref("char[]".into())).expect("API requirement: java.lang.String must contain an instance field `chars` of type `char[]`");
-        field.instance_set(&obj, Value::Ref(Some(backing_array)));
+        field.instance_set(&obj, Value::Object(Some(backing_array)));
         obj
     }
     ClassLibraryIntegration {

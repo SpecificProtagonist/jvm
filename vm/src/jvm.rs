@@ -412,7 +412,7 @@ pub(crate) fn new_throwable(jvm: &Jvm, name: &str, msg: Option<&str>) -> Object 
     let handle = crate::Jvm::from(jvm);
     let string =
         (jvm.class_library_integration.string_constructor)(&handle, &message).as_inner(&handle);
-    field.instance_set(jvm.heap.ptrs(), object, Value::Ref(Some(string)));
+    field.instance_set(jvm.heap.ptrs(), object, Value::Object(Some(string)));
     object
 }
 

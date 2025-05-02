@@ -145,7 +145,9 @@ fn invoke_native() {
     let instance_method = jvm
         .resolve_method("Native", "call_instance", [], None)
         .unwrap();
-    instance_method.invoke([Value::Ref(Some(object))]).unwrap();
+    instance_method
+        .invoke([Value::Object(Some(object))])
+        .unwrap();
 }
 
 #[test]

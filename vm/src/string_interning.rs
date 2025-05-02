@@ -13,7 +13,7 @@ impl StringInterner {
     pub(crate) fn intern_string(&mut self, jvm: &Jvm, string: Object) -> Object {
         let class = string.class(jvm.heap.ptrs());
         assert_eq!(class.name.as_ref(), "java.lang.String");
-        let Value::Ref(chars) = class
+        let Value::Object(chars) = class
             .field("value", Type::Ref("char[]".into()))
             .expect("java.lang.String missing field char[] value")
             .instance_get(jvm.heap.ptrs(), string)
@@ -33,7 +33,7 @@ impl StringInterner {
             let object =
                 (jvm.class_library_integration.string_constructor)(&crate::Jvm::from(jvm), str)
                     .as_inner(&crate::Jvm::from(jvm));
-            let Value::Ref(chars) = jvm
+            let Value::Object(chars) = jvm
                 .resolve_class_internal("java.lang.String")
                 .expect("Failed to resolve java.lang.String")
                 .field("value", Type::Ref("char[]".into()))

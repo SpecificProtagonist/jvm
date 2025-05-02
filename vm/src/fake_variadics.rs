@@ -262,7 +262,7 @@ impl Arg for Option<Object> {
 
     fn get(values: &[Value], index: &mut usize) -> Self {
         match &values[*index] {
-            Value::Ref(value) => {
+            Value::Object(value) => {
                 *index += 1;
                 value.clone()
             }
@@ -278,7 +278,7 @@ impl Arg for Object {
 
     fn get(values: &[Value], index: &mut usize) -> Self {
         match &values[*index] {
-            Value::Ref(value) => {
+            Value::Object(value) => {
                 *index += 1;
                 value.clone().unwrap()
             }

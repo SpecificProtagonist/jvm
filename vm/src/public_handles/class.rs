@@ -138,7 +138,7 @@ impl Class {
                 .deref()
                 .create_object_skipping_constructor(self.value),
         );
-        args.insert(0, Value::Ref(Some(object.clone())));
+        args.insert(0, Value::Object(Some(object.clone())));
         let constructor = self.method("<init>", arg_types, None).ok_or_else(|| {
             crate::Object::new(
                 self.jvm.clone(),

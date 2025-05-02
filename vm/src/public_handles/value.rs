@@ -2,7 +2,7 @@ use crate::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
-    Ref(Option<Object>),
+    Object(Option<Object>),
     Boolean(bool),
     Byte(i8),
     Char(u16),
@@ -16,8 +16,8 @@ pub enum Value {
 impl Value {
     pub(crate) fn new(jvm: &Jvm, value: value::Value, typ: &Type) -> Self {
         match value {
-            value::Value::Ref(value) => {
-                Self::Ref(value.map(|value| Object::new(jvm.clone(), value)))
+            value::Value::Object(value) => {
+                Self::Object(value.map(|value| Object::new(jvm.clone(), value)))
             }
             value::Value::Int(value) => match typ {
                 Type::Boolean => Self::Boolean(value != 0),
@@ -35,7 +35,7 @@ impl Value {
 
     pub(crate) fn into_inner(self, jvm: &Jvm) -> value::Value {
         match self {
-            Self::Ref(value) => value::Value::Ref(value.map(|value| value.as_inner(jvm))),
+            Self::Object(value) => value::Value::Object(value.map(|value| value.as_inner(jvm))),
             Self::Boolean(value) => value::Value::Int(value as i32),
             Self::Byte(value) => value::Value::Int(value as i32),
             Self::Char(value) => value::Value::Int(value as i32),
@@ -48,7 +48,7 @@ impl Value {
     }
 
     pub fn to_ref(self) -> Option<Option<Object>> {
-        if let Self::Ref(value) = self {
+        if let Self::Object(value) = self {
             Some(value)
         } else {
             None
@@ -123,8 +123,8 @@ impl Value {
 impl core::fmt::Display for Value {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
-            Self::Ref(None) => write!(f, "null"),
-            Self::Ref(Some(obj)) => write!(f, "@{:?}", obj.value),
+            Self::Object(None) => write!(f, "null"),
+            Self::Object(Some(obj)) => write!(f, "@{:?}", obj.value),
             Self::Boolean(v) => write!(f, "{}", v),
             Self::Byte(v) => write!(f, "{}", v),
             Self::Char(v) => write!(f, "{}", v),
@@ -174,7 +174,7 @@ macro_rules! partialeq_into_and_try_from_value {
     };
 }
 
-partialeq_into_and_try_from_value!(Ref, Option<Object>, "Not a reference");
+partialeq_into_and_try_from_value!(Object, Option<Object>, "Not a reference");
 partialeq_into_and_try_from_value!(Boolean, bool, "Not a boolean");
 partialeq_into_and_try_from_value!(Byte, i8, "Not a byte");
 partialeq_into_and_try_from_value!(Char, u16, "Not a char");
@@ -186,7 +186,7 @@ partialeq_into_and_try_from_value!(Double, f64, "Not a double");
 
 impl From<Object> for Value {
     fn from(value: Object) -> Self {
-        Self::Ref(Some(value))
+        Self::Object(Some(value))
     }
 }
 
@@ -194,7 +194,7 @@ impl TryFrom<Value> for Object {
     type Error = &'static str;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
-        if let Value::Ref(Some(value)) = value {
+        if let Value::Object(Some(value)) = value {
             Ok(value)
         } else {
             Err("Not an object")
@@ -204,7 +204,7 @@ impl TryFrom<Value> for Object {
 
 impl PartialEq<Object> for Value {
     fn eq(&self, other: &Object) -> bool {
-        if let Value::Ref(Some(obj)) = self {
+        if let Value::Object(Some(obj)) = self {
             obj == other
         } else {
             false
