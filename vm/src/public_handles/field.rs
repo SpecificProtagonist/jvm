@@ -1,3 +1,5 @@
+use alloc::sync::Arc;
+
 use crate::*;
 
 define_guard!(
@@ -12,11 +14,6 @@ impl Field {
         Class::new(self.jvm.clone(), self.value.class())
     }
 
-    /// Access flags, such as whether this field is static.
-    pub fn access_flags(&self) -> AccessFlags {
-        self.value.access_flags
-    }
-
     /// Name of this field. There may be multiple fields of the same name
     /// but differing types on the same class.
     pub fn name(&self) -> &str {
@@ -26,6 +23,26 @@ impl Field {
     /// Type of this field.
     pub fn typ(&self) -> &Type {
         &self.value.nat.typ
+    }
+
+    /// Access flags, such as whether this field is static.
+    pub fn access_flags(&self) -> AccessFlags {
+        self.value.access_flags
+    }
+
+    /// Java field signature. See JVMS §4.7.9.1 for details.
+    pub fn signature(&self) -> Option<Arc<str>> {
+        self.value.signature.clone()
+    }
+
+    /// Whether this field is marked as deprecated (does not affect semantics).
+    pub fn deprecated(&self) -> bool {
+        self.value.deprecated
+    }
+
+    /// Attributes not recognized by this Jvm.
+    pub fn extra_attributes(&self) -> &HashMap<String, Box<[u8]>> {
+        &self.value.extra_attributes
     }
 
     /// Get the value of a static field.

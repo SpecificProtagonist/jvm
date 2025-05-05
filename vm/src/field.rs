@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicPtr, Ordering};
+use std::collections::HashMap;
 
 use hashbrown::Equivalent;
 
@@ -24,6 +25,9 @@ pub(crate) struct Field {
     /// Index into the const pool.
     /// Only set for static fields.
     pub(crate) const_value_index: Option<u16>,
+    pub(crate) signature: Option<Arc<str>>,
+    pub(crate) deprecated: bool,
+    pub(crate) extra_attributes: HashMap<String, Box<[u8]>>,
 }
 
 /// Contains a field's name and type.

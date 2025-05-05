@@ -229,7 +229,7 @@ pub(crate) fn parse_typ_descriptor(
     }
 }
 
-fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmResult<Field> {
+fn read_field(input: &mut &[u8], const_pool: &ConstPool, jvm: &Jvm) -> JvmResult<Field> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
     enforce!(
         jvm,
@@ -244,19 +244,35 @@ fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRes
         !access_flags.contains(AccessFlags::FINAL | AccessFlags::VOLATILE)
     );
 
-    let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
+    let name = const_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
 
-    let descriptor = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
+    let descriptor = const_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
     let (typ, end) = parse_typ_descriptor(jvm, &descriptor, 0)?;
     enforce!(jvm, end >= descriptor.len());
 
     let mut const_value_index = None;
+    let mut signature = None;
+    let mut deprecated = false;
+    let mut extra_attributes = std::collections::HashMap::new();
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
-        let (name, data) = read_attribute(jvm, input, constant_pool)?;
-        if access_flags.contains(AccessFlags::STATIC) && (name.as_ref() == "ConstantValue") {
-            enforce!(jvm, const_value_index.is_none() & (data.len() == 2));
-            const_value_index = Some(((data[0] as u16) << 8) + data[1] as u16)
+        let (name, mut attr_data) = read_attribute(jvm, input, const_pool)?;
+        match name.as_ref() {
+            "ConstantValue" => {
+                // Silently ignord if not static
+                if access_flags.contains(AccessFlags::STATIC) {
+                    enforce!(jvm, const_value_index.is_none() & (attr_data.len() == 2));
+                    const_value_index = Some(((attr_data[0] as u16) << 8) + attr_data[1] as u16)
+                }
+            }
+            "Signature" => {
+                let index = read_u16(jvm, &mut attr_data)?;
+                signature = Some(const_pool.get_utf8(jvm, index)?);
+            }
+            "Deprecated" => deprecated = true,
+            extra => {
+                extra_attributes.insert(extra.to_owned(), Box::from(attr_data));
+            }
         }
     }
 
@@ -267,6 +283,9 @@ fn read_field(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRes
         byte_offset: 0,
         const_value_index,
         class: default(),
+        signature,
+        deprecated,
+        extra_attributes,
     })
 }
 
@@ -536,7 +555,7 @@ pub(crate) fn parse_method_descriptor(jvm: &Jvm, descriptor: &str) -> JvmResult<
     }
 }
 
-fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmResult<Method> {
+fn read_method(input: &mut &[u8], const_pool: &ConstPool, jvm: &Jvm) -> JvmResult<Method> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
     //* each method of a class may have at most one of its ACC_PUBLIC, ACC_PRIVATE,
     //* and ACC_PROTECTED flags set
@@ -565,7 +584,7 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
         );
     }
 
-    let name = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
+    let name = const_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
     //* Each instance initialization method (§2.9) may have at most one of its
     //* ACC_PUBLIC, ACC_PRIVATE, and ACC_PROTECTED flags set, and may also have
     //* its ACC_VARARGS, ACC_STRICT, and ACC_SYNTHETIC flags set, but must not have
@@ -584,18 +603,21 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
         );
     }
 
-    let descriptor = constant_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
+    let descriptor = const_pool.get_utf8(jvm, read_u16(jvm, input)?)?;
     let descriptor = parse_method_descriptor(jvm, &descriptor)?;
 
     let mut code = Code::None;
     let mut exceptions = None;
+    let mut signature = None;
+    let mut deprecated = false;
+    let mut extra_attributes = std::collections::HashMap::new();
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
-        let (attr_name, bytes) = read_attribute(jvm, input, constant_pool)?;
+        let (attr_name, mut attr_data) = read_attribute(jvm, input, const_pool)?;
         match attr_name.as_ref() {
             "Code" => {
                 if let Code::None = code {
-                    code = Code::Bytecode(read_code(jvm, bytes, constant_pool)?);
+                    code = Code::Bytecode(read_code(jvm, attr_data, const_pool)?);
                 } else {
                     return Err(error!(jvm));
                 }
@@ -603,15 +625,14 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
             "Exceptions" => {
                 enforce!(jvm, exceptions.is_none());
 
-                let mut cursor = bytes;
-                let exception_count = read_u16(jvm, &mut cursor)?;
+                let exception_count = read_u16(jvm, &mut attr_data)?;
                 let mut exceptions_list = Vec::with_capacity(exception_count as usize);
                 for _ in 0..exception_count {
-                    let index = read_u16(jvm, &mut cursor)?;
+                    let index = read_u16(jvm, &mut attr_data)?;
                     enforce!(
                         jvm,
                         matches!(
-                            constant_pool.items.get(index as usize),
+                            const_pool.items.get(index as usize),
                             Some(ConstPoolItem::RawClass(_))
                         )
                     );
@@ -619,7 +640,14 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
                 }
                 exceptions = Some(exceptions_list);
             }
-            _ => {}
+            "Signature" => {
+                let index = read_u16(jvm, &mut attr_data)?;
+                signature = Some(const_pool.get_utf8(jvm, index)?);
+            }
+            "Deprecated" => deprecated = true,
+            extra => {
+                extra_attributes.insert(extra.to_owned(), Box::from(attr_data));
+            }
         }
     }
 
@@ -643,6 +671,9 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
         class: default(),
         code: code.into(),
         exceptions: exceptions.unwrap_or_default(),
+        signature,
+        deprecated,
+        extra_attributes,
     })
 }
 
@@ -746,14 +777,27 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
     }
 
     let mut source_file_name = None;
+    let mut signature = None;
+    let mut deprecated = false;
+    let mut extra_attributes = std::collections::HashMap::new();
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
-        let (attr_name, attr_data) = read_attribute(jvm, input, &const_pool)?;
-        if &*attr_name == "SourceFile" {
-            enforce!(jvm, source_file_name.is_none());
-            enforce!(jvm, attr_data.len() == 2);
-            let index = u16::from_be_bytes([attr_data[0], attr_data[1]]);
-            source_file_name = Some(const_pool.get_utf8(jvm, index)?);
+        let (attr_name, mut attr_data) = read_attribute(jvm, input, &const_pool)?;
+        match attr_name.as_ref() {
+            "SourceFile" => {
+                enforce!(jvm, source_file_name.is_none());
+                enforce!(jvm, attr_data.len() == 2);
+                let index = u16::from_be_bytes([attr_data[0], attr_data[1]]);
+                source_file_name = Some(const_pool.get_utf8(jvm, index)?);
+            }
+            "Signature" => {
+                let index = read_u16(jvm, &mut attr_data)?;
+                signature = Some(const_pool.get_utf8(jvm, index)?);
+            }
+            "Deprecated" => deprecated = true,
+            extra => {
+                extra_attributes.insert(extra.to_owned(), Box::from(attr_data));
+            }
         }
     }
 
@@ -765,6 +809,9 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
         name: this_class,
         super_class,
         source_file_name,
+        signature,
+        deprecated,
+        extra_attributes,
         interfaces,
         fields,
         methods,
@@ -778,6 +825,9 @@ pub(crate) struct ClassDescriptor {
     pub(crate) name: Arc<str>,
     pub(crate) super_class: Option<Arc<str>>,
     pub(crate) source_file_name: Option<Arc<str>>,
+    pub(crate) signature: Option<Arc<str>>,
+    pub(crate) deprecated: bool,
+    pub(crate) extra_attributes: std::collections::HashMap<String, Box<[u8]>>,
     pub(crate) interfaces: Vec<String>,
     pub(crate) fields: Vec<Field>,
     pub(crate) methods: HashMap<MethodNaT, Method>,

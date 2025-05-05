@@ -35,6 +35,9 @@ pub(crate) struct Class {
     pub(crate) access_flags: AccessFlags,
     /// Name of the source file this class was compiled from
     pub(crate) source_file_name: Option<Arc<str>>,
+    pub(crate) signature: Option<Arc<str>>,
+    pub(crate) deprecated: bool,
+    pub(crate) extra_attributes: std::collections::HashMap<String, Box<[u8]>>,
     pub(crate) interfaces: Vec<ClassRef>,
     /// Does not contain inherited fields.
     /// Note: JVM supports field overloading.

@@ -1,3 +1,5 @@
+use alloc::sync::Arc;
+
 use crate::*;
 
 define_guard!(
@@ -52,6 +54,21 @@ impl Method {
                 )
             })
             .collect())
+    }
+
+    /// Java method signature. See JVMS §4.7.9.1 for details.
+    pub fn signature(&self) -> Option<Arc<str>> {
+        self.value.signature.clone()
+    }
+
+    /// Whether this method is marked as deprecated (does not affect semantics).
+    pub fn deprecated(&self) -> bool {
+        self.value.deprecated
+    }
+
+    /// Attributes not recognized by this Jvm.
+    pub fn extra_attributes(&self) -> &HashMap<String, Box<[u8]>> {
+        &self.value.extra_attributes
     }
 
     /// Calls the method, initializing its class if necessary.

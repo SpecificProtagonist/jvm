@@ -126,6 +126,9 @@ impl Jvm {
             const_pool: default(),
             access_flags: AccessFlags::PUBLIC | AccessFlags::FINAL | AccessFlags::SYNTHETIC,
             source_file_name: None,
+            signature: None,
+            deprecated: false,
+            extra_attributes: default(),
             interfaces: vec![
                 self.resolve_class_internal("java.lang.Cloneable")?,
                 self.resolve_class_internal("java.io.Serializable")?,
@@ -287,6 +290,9 @@ impl Jvm {
             const_pool: RwLock::new(class_desc.const_pool),
             access_flags: class_desc.access_flags,
             source_file_name: class_desc.source_file_name,
+            signature: class_desc.signature,
+            deprecated: class_desc.deprecated,
+            extra_attributes: class_desc.extra_attributes,
             interfaces,
             fields: class_layout.fields,
             methods,
@@ -375,6 +381,7 @@ impl Jvm {
 
 impl Drop for Jvm {
     fn drop(&mut self) {
+        // TODO: Drop all classes
         // SAFETY: All references have lifetime 'a and no member of JVM has a drop impl that dereferences them
         unsafe {
             ManuallyDropArena::drop(&mut self.method_storage.lock().unwrap());

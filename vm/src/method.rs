@@ -3,7 +3,7 @@ use core::{
     cell::SyncUnsafeCell,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use std::sync::RwLock;
+use std::{collections::HashMap, sync::RwLock};
 
 use hashbrown::Equivalent;
 
@@ -22,6 +22,9 @@ pub(crate) struct Method {
     pub(crate) code: RwLock<Code>,
     /// Declared exceptions represented as an index into the constant pool
     pub(crate) exceptions: Vec<u16>,
+    pub(crate) signature: Option<Arc<str>>,
+    pub(crate) deprecated: bool,
+    pub(crate) extra_attributes: HashMap<String, Box<[u8]>>,
 }
 
 impl Method {
