@@ -20,7 +20,8 @@ pub(crate) struct Method {
     /// Class is behind a AtomicCell to enable circular references
     pub(crate) class: AtomicPtr<Class>,
     pub(crate) code: RwLock<Code>,
-    // TODO: declared exceptions
+    /// Declared exceptions represented as an index into the constant pool
+    pub(crate) exceptions: Vec<u16>,
 }
 
 impl Method {

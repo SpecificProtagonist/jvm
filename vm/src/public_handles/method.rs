@@ -28,6 +28,32 @@ impl Method {
         self.value.access_flags
     }
 
+    /// Get all declared exceptions.
+    ///
+    /// This also initializes this method's class;
+    /// returns `Err` if this fails.
+    ///
+    /// Note that the method may throw arbitrary throwables:
+    /// Java's restriction around declared exceptions are enforced by the compiler.
+    pub fn declared_exceptions(&self) -> JvmResult<Vec<Class>> {
+        self.value
+            .class()
+            .ensure_init(self.jvm.deref())
+            .map_err(|err| Object::new(self.jvm.deref(), err))?;
+        let const_pool = self.value.class().const_pool.read().unwrap();
+        Ok(self
+            .value
+            .exceptions
+            .iter()
+            .map(|&index| {
+                Class::new(
+                    self.jvm.deref(),
+                    const_pool.get_class(self.jvm.deref(), index).unwrap(),
+                )
+            })
+            .collect())
+    }
+
     /// Calls the method, initializing its class if necessary.
     /// Returns either the function's return value or the exception that was thrown.
     ///

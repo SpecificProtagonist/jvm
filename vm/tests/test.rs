@@ -419,3 +419,15 @@ fn string_interning() {
     assert_eq!(interned_1, interned_3);
     assert_ne!(interned_1, not_interned);
 }
+
+#[test]
+fn declared_exceptions() {
+    let jvm = make_jvm();
+
+    let class = jvm
+        .resolve_method("DeclaredExceptions", "method", [], None)
+        .unwrap();
+    let exceptions = class.declared_exceptions().unwrap();
+    assert_eq!(exceptions.len(), 1);
+    assert_eq!(exceptions[0].name(), "java.lang.Throwable");
+}

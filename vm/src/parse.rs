@@ -588,15 +588,38 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
     let descriptor = parse_method_descriptor(jvm, &descriptor)?;
 
     let mut code = Code::None;
+    let mut exceptions = None;
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
         let (attr_name, bytes) = read_attribute(jvm, input, constant_pool)?;
-        if attr_name.as_ref() == "Code" {
-            if let Code::None = code {
-                code = Code::Bytecode(read_code(jvm, bytes, constant_pool)?);
-            } else {
-                return Err(error!(jvm));
+        match attr_name.as_ref() {
+            "Code" => {
+                if let Code::None = code {
+                    code = Code::Bytecode(read_code(jvm, bytes, constant_pool)?);
+                } else {
+                    return Err(error!(jvm));
+                }
             }
+            "Exceptions" => {
+                enforce!(jvm, exceptions.is_none());
+
+                let mut cursor = bytes;
+                let exception_count = read_u16(jvm, &mut cursor)?;
+                let mut exceptions_list = Vec::with_capacity(exception_count as usize);
+                for _ in 0..exception_count {
+                    let index = read_u16(jvm, &mut cursor)?;
+                    enforce!(
+                        jvm,
+                        matches!(
+                            constant_pool.items.get(index as usize),
+                            Some(ConstPoolItem::RawClass(_))
+                        )
+                    );
+                    exceptions_list.push(index);
+                }
+                exceptions = Some(exceptions_list);
+            }
+            _ => {}
         }
     }
 
@@ -619,6 +642,7 @@ fn read_method(input: &mut &[u8], constant_pool: &ConstPool, jvm: &Jvm) -> JvmRe
         access_flags,
         class: default(),
         code: code.into(),
+        exceptions: exceptions.unwrap_or_default(),
     })
 }
 
