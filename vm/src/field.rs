@@ -6,6 +6,7 @@ use hashbrown::Equivalent;
 
 use crate::{
     AccessFlags,
+    annotations::Annotation,
     class::{Class, ClassRef},
     heap::Ptrs,
     object::{FieldStorage, Object},
@@ -27,6 +28,8 @@ pub(crate) struct Field {
     pub(crate) const_value_index: Option<u16>,
     pub(crate) signature: Option<Arc<str>>,
     pub(crate) deprecated: bool,
+    #[allow(dead_code)]
+    pub(crate) runtime_visible_annotations: Vec<Annotation>,
     pub(crate) extra_attributes: HashMap<String, Box<[u8]>>,
 }
 

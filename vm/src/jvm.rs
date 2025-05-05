@@ -128,6 +128,7 @@ impl Jvm {
             source_file_name: None,
             signature: None,
             deprecated: false,
+            runtime_visible_annotations: default(),
             extra_attributes: default(),
             interfaces: vec![
                 self.resolve_class_internal("java.lang.Cloneable")?,
@@ -292,6 +293,7 @@ impl Jvm {
             source_file_name: class_desc.source_file_name,
             signature: class_desc.signature,
             deprecated: class_desc.deprecated,
+            runtime_visible_annotations: class_desc.runtime_visible_annotations,
             extra_attributes: class_desc.extra_attributes,
             interfaces,
             fields: class_layout.fields,

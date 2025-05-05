@@ -5,6 +5,7 @@ use hashbrown::HashMap;
 use std::sync::{Condvar, Mutex, RwLock};
 use std::thread::ThreadId;
 
+use crate::annotations::Annotation;
 use crate::jvm::{UnboundNativeMethods, throw};
 use crate::monitor::maybe_loom;
 use crate::object::ObjectHolder;
@@ -37,6 +38,8 @@ pub(crate) struct Class {
     pub(crate) source_file_name: Option<Arc<str>>,
     pub(crate) signature: Option<Arc<str>>,
     pub(crate) deprecated: bool,
+    #[allow(dead_code)]
+    pub(crate) runtime_visible_annotations: Vec<Annotation>,
     pub(crate) extra_attributes: std::collections::HashMap<String, Box<[u8]>>,
     pub(crate) interfaces: Vec<ClassRef>,
     /// Does not contain inherited fields.

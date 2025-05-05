@@ -9,6 +9,7 @@ use hashbrown::Equivalent;
 
 use crate::{
     AccessFlags,
+    annotations::Annotation,
     class::{Class, ClassRef},
     interpreter::TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES,
     typ::Type,
@@ -24,6 +25,10 @@ pub(crate) struct Method {
     pub(crate) exceptions: Vec<u16>,
     pub(crate) signature: Option<Arc<str>>,
     pub(crate) deprecated: bool,
+    #[allow(dead_code)]
+    pub(crate) runtime_visible_annotations: Vec<Annotation>,
+    #[allow(dead_code)]
+    pub(crate) runtime_visible_parameter_annotations: Vec<Vec<Annotation>>,
     pub(crate) extra_attributes: HashMap<String, Box<[u8]>>,
 }
 

@@ -8,6 +8,7 @@
 
 extern crate alloc;
 
+mod annotations;
 mod class;
 mod const_pool;
 mod fake_variadics;

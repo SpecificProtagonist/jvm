@@ -5,6 +5,7 @@ use hashbrown::HashMap;
 
 use crate::{
     AccessFlags,
+    annotations::{Annotation, AnnotationElementValue},
     const_pool::{ConstPool, ConstPoolItem},
     default,
     field::{Field, FieldNaT},
@@ -229,6 +230,106 @@ pub(crate) fn parse_typ_descriptor(
     }
 }
 
+fn read_annotations_element_value(
+    jvm: &Jvm,
+    input: &mut &[u8],
+    const_pool: &ConstPool,
+) -> JvmResult<AnnotationElementValue> {
+    let tag = read_u8(jvm, input)?;
+    Ok(match tag {
+        b'Z' => {
+            let const_value_index = read_u16(jvm, input)?;
+            AnnotationElementValue::Boolean(const_pool.get_int(jvm, const_value_index)?)
+        }
+        b'B' => {
+            let const_value_index = read_u16(jvm, input)?;
+            AnnotationElementValue::Byte(const_pool.get_int(jvm, const_value_index)?)
+        }
+        b'C' => {
+            let const_value_index = read_u16(jvm, input)?;
+            AnnotationElementValue::Char(const_pool.get_int(jvm, const_value_index)?)
+        }
+        b'S' => {
+            let const_value_index = read_u16(jvm, input)?;
+            AnnotationElementValue::Short(const_pool.get_int(jvm, const_value_index)?)
+        }
+        b'I' => {
+            let const_value_index = read_u16(jvm, input)?;
+            AnnotationElementValue::Int(const_pool.get_int(jvm, const_value_index)?)
+        }
+        b'L' => {
+            let const_value_index = read_u16(jvm, input)?;
+            AnnotationElementValue::Long(const_pool.get_long(jvm, const_value_index)?)
+        }
+        b'F' => {
+            let const_value_index = read_u16(jvm, input)?;
+            AnnotationElementValue::Float(const_pool.get_float(jvm, const_value_index)?)
+        }
+        b'D' => {
+            let const_value_index = read_u16(jvm, input)?;
+            AnnotationElementValue::Double(const_pool.get_double(jvm, const_value_index)?)
+        }
+        b's' => {
+            let const_value_index = read_u16(jvm, input)?;
+            AnnotationElementValue::String(const_pool.get_utf8(jvm, const_value_index)?)
+        }
+        b'e' => {
+            let enum_typ = read_u16(jvm, input)?;
+            let name = read_u16(jvm, input)?;
+            AnnotationElementValue::Enum {
+                typ: const_pool.get_utf8(jvm, enum_typ)?,
+                variant: const_pool.get_utf8(jvm, name)?,
+            }
+        }
+        b'c' => {
+            let index = read_u16(jvm, input)?;
+            let class_info = const_pool.get_utf8(jvm, index)?;
+            AnnotationElementValue::Class(class_info)
+        }
+        b'@' => {
+            let annotation = read_annotation(jvm, input, const_pool)?;
+            AnnotationElementValue::Annotation(annotation)
+        }
+        b'[' => {
+            let num_values = read_u16(jvm, input)?;
+            let mut values = Vec::new();
+            for _ in 0..num_values {
+                values.push(read_annotations_element_value(jvm, input, const_pool)?);
+            }
+            AnnotationElementValue::Array(values)
+        }
+        _ => return Err(error!(jvm)),
+    })
+}
+
+fn read_annotation(jvm: &Jvm, input: &mut &[u8], const_pool: &ConstPool) -> JvmResult<Annotation> {
+    let typ = read_u16(jvm, input)?;
+    let typ = const_pool.get_utf8(jvm, typ)?;
+    let mut element_values = Vec::new();
+    for _ in 0..read_u16(jvm, input)? {
+        let element_name = read_u16(jvm, input)?;
+        let element_name = const_pool.get_utf8(jvm, element_name)?;
+        let value = read_annotations_element_value(jvm, input, const_pool)?;
+        element_values.push((element_name, value));
+    }
+    Ok(Annotation {
+        typ,
+        element_values,
+    })
+}
+
+fn read_annotations(
+    jvm: &Jvm,
+    input: &mut &[u8],
+    const_pool: &ConstPool,
+) -> JvmResult<Vec<Annotation>> {
+    let mut annotations = Vec::new();
+    for _ in 0..read_u16(jvm, input)? {
+        annotations.push(read_annotation(jvm, input, const_pool)?);
+    }
+    Ok(annotations)
+}
+
 fn read_field(input: &mut &[u8], const_pool: &ConstPool, jvm: &Jvm) -> JvmResult<Field> {
     let access_flags = AccessFlags::from_bits_truncate(read_u16(jvm, input)?);
     enforce!(
@@ -253,6 +354,7 @@ fn read_field(input: &mut &[u8], const_pool: &ConstPool, jvm: &Jvm) -> JvmResult
     let mut const_value_index = None;
     let mut signature = None;
     let mut deprecated = false;
+    let mut runtime_visible_annotations = None;
     let mut extra_attributes = std::collections::HashMap::new();
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
@@ -270,6 +372,11 @@ fn read_field(input: &mut &[u8], const_pool: &ConstPool, jvm: &Jvm) -> JvmResult
                 signature = Some(const_pool.get_utf8(jvm, index)?);
             }
             "Deprecated" => deprecated = true,
+            "RuntimeInvisibleAnnotations" => {}
+            "RuntimeVisibleAnnotations" => {
+                enforce!(jvm, runtime_visible_annotations.is_none());
+                runtime_visible_annotations = Some(read_annotations(jvm, input, const_pool)?);
+            }
             extra => {
                 extra_attributes.insert(extra.to_owned(), Box::from(attr_data));
             }
@@ -285,6 +392,7 @@ fn read_field(input: &mut &[u8], const_pool: &ConstPool, jvm: &Jvm) -> JvmResult
         class: default(),
         signature,
         deprecated,
+        runtime_visible_annotations: runtime_visible_annotations.unwrap_or_default(),
         extra_attributes,
     })
 }
@@ -610,6 +718,8 @@ fn read_method(input: &mut &[u8], const_pool: &ConstPool, jvm: &Jvm) -> JvmResul
     let mut exceptions = None;
     let mut signature = None;
     let mut deprecated = false;
+    let mut runtime_visible_annotations = None;
+    let mut runtime_visible_parameter_annotations = None;
     let mut extra_attributes = std::collections::HashMap::new();
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
@@ -645,6 +755,19 @@ fn read_method(input: &mut &[u8], const_pool: &ConstPool, jvm: &Jvm) -> JvmResul
                 signature = Some(const_pool.get_utf8(jvm, index)?);
             }
             "Deprecated" => deprecated = true,
+            "RuntimeInvisibleAnnotations" | "RuntimeInvisibleParameterAnnotations" => {}
+            "RuntimeVisibleAnnotations" => {
+                enforce!(jvm, runtime_visible_annotations.is_none());
+                runtime_visible_annotations = Some(read_annotations(jvm, input, const_pool)?);
+            }
+            "RuntimeVisibleParameterAnnotations" => {
+                let num_parameters = read_u8(jvm, input)?;
+                runtime_visible_parameter_annotations = Some(
+                    (0..num_parameters)
+                        .map(|_| read_annotations(jvm, input, const_pool))
+                        .collect::<JvmResult<_>>()?,
+                );
+            }
             extra => {
                 extra_attributes.insert(extra.to_owned(), Box::from(attr_data));
             }
@@ -673,6 +796,9 @@ fn read_method(input: &mut &[u8], const_pool: &ConstPool, jvm: &Jvm) -> JvmResul
         exceptions: exceptions.unwrap_or_default(),
         signature,
         deprecated,
+        runtime_visible_annotations: runtime_visible_annotations.unwrap_or_default(),
+        runtime_visible_parameter_annotations: runtime_visible_parameter_annotations
+            .unwrap_or_default(),
         extra_attributes,
     })
 }
@@ -779,6 +905,7 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
     let mut source_file_name = None;
     let mut signature = None;
     let mut deprecated = false;
+    let mut runtime_visible_annotations = None;
     let mut extra_attributes = std::collections::HashMap::new();
     let attributes_count = read_u16(jvm, input)?;
     for _ in 0..attributes_count {
@@ -795,6 +922,11 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
                 signature = Some(const_pool.get_utf8(jvm, index)?);
             }
             "Deprecated" => deprecated = true,
+            "RuntimeInvisibleAnnotations" => {}
+            "RuntimeVisibleAnnotations" => {
+                enforce!(jvm, runtime_visible_annotations.is_none());
+                runtime_visible_annotations = Some(read_annotations(jvm, input, &const_pool)?);
+            }
             extra => {
                 extra_attributes.insert(extra.to_owned(), Box::from(attr_data));
             }
@@ -811,6 +943,7 @@ pub(crate) fn read_class_file(mut input: &[u8], jvm: &Jvm) -> JvmResult<ClassDes
         source_file_name,
         signature,
         deprecated,
+        runtime_visible_annotations: runtime_visible_annotations.unwrap_or_default(),
         extra_attributes,
         interfaces,
         fields,
@@ -827,6 +960,7 @@ pub(crate) struct ClassDescriptor {
     pub(crate) source_file_name: Option<Arc<str>>,
     pub(crate) signature: Option<Arc<str>>,
     pub(crate) deprecated: bool,
+    pub(crate) runtime_visible_annotations: Vec<Annotation>,
     pub(crate) extra_attributes: std::collections::HashMap<String, Box<[u8]>>,
     pub(crate) interfaces: Vec<String>,
     pub(crate) fields: Vec<Field>,
