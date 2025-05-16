@@ -395,7 +395,7 @@ impl Drop for Jvm {
 /// `name` is unqualified.
 #[track_caller]
 pub(crate) fn throw<'a>(jvm: &Jvm, name: &str, msg: impl Into<Option<&'a str>>) -> Object {
-    new_throwable(jvm, name, msg.into())
+    new_throwable(jvm, &format!("java.lang.{name}"), msg.into())
 }
 
 pub(crate) fn new_throwable(jvm: &Jvm, name: &str, msg: Option<&str>) -> Object {
@@ -404,7 +404,7 @@ pub(crate) fn new_throwable(jvm: &Jvm, name: &str, msg: Option<&str>) -> Object 
     } else {
         name.to_owned()
     };
-    let object = match jvm.resolve_class_internal(&format!("java.lang.{name}")) {
+    let object = match jvm.resolve_class_internal(name) {
         Ok(class) => {
             if let Err(thrown) = class.ensure_init(jvm) {
                 thrown

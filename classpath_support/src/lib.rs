@@ -1,10 +1,8 @@
 extern crate alloc;
 
-use vm::{ClassLibraryIntegration, Jvm, NativeFn, NativeMethod, Object, Type, Value};
+use vm::{ClassLibraryIntegration, Jvm, JvmResult, NativeFn, NativeMethod, Object, Type, Value};
 
-/// # Safety
-/// Must not call any of the native functions without the metadata layout set.
-pub unsafe fn get_integration() -> ClassLibraryIntegration {
+pub fn get_integration() -> ClassLibraryIntegration {
     fn make_string(jvm: &Jvm, string: &str) -> Object {
         let as_chars = string.encode_utf16().collect::<Vec<_>>();
         let backing_array = jvm.create_array_from_slice(&as_chars);
@@ -19,9 +17,7 @@ pub unsafe fn get_integration() -> ClassLibraryIntegration {
     ClassLibraryIntegration {
         string_constructor: Box::new(make_string),
         metatada_layout: Default::default(),
-        // SAFETY:
-        // Same function preconditions
-        native_methods: unsafe { native_methods() },
+        native_methods: native_methods(),
     }
 }
 
@@ -32,7 +28,7 @@ macro_rules! throw {
     };
 }
 
-unsafe fn native_methods() -> Vec<NativeMethod> {
+fn native_methods() -> Vec<NativeMethod> {
     fn def<N>(
         method: impl Into<String>,
         args: impl Into<Vec<Type>>,
@@ -124,6 +120,29 @@ unsafe fn native_methods() -> Vec<NativeMethod> {
                     jvm.get_class_from_class_object(this)
                         .element_type()
                         .is_some()
+                },
+            ),
+        ],
+    );
+
+    with_class(
+        "java.lang.Throwable",
+        vec![
+            def(
+                "fillInStackTrace",
+                [Type::Int],
+                None,
+                |_jvm: &Jvm, _this: Object, _: i32| {
+                    // TODO
+                },
+            ),
+            def("getStackTraceDepth", [], Some(Type::Int), |_this: Object| 0),
+            def(
+                "getStackTraceElement",
+                [Type::Int],
+                Some(Type::Ref("java.lang.StackTraceElement".into())),
+                |jvm: &Jvm, _this: Object, _index: i32| -> JvmResult<()> {
+                    Err(jvm.create_throwable("java.lang.IndexOutOfBoundsException", None))
                 },
             ),
         ],

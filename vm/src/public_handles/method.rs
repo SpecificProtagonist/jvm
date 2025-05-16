@@ -77,10 +77,9 @@ impl Method {
     /// # Panics
     /// Panics if any of the [`Value`]s is an object created by another JVM.
     pub fn invoke(&self, args: impl IntoIterator<Item = Value>) -> JvmResult<Option<Value>> {
-        self.jvm
-            .deref()
-            .stackoverflow_error
-            .get_or_init(|| jvm::new_throwable(self.jvm.deref(), "StackOverflowError", None));
+        self.jvm.deref().stackoverflow_error.get_or_init(|| {
+            jvm::new_throwable(self.jvm.deref(), "java.lang.StackOverflowError", None)
+        });
 
         interpreter::invoke(
             self.jvm.deref(),

@@ -253,4 +253,18 @@ impl Jvm {
     pub fn create_interned_string(&self, string: &str) -> Object {
         Object::new(self.deref(), self.deref().create_interned_string(string))
     }
+
+    // TODO: Fill in stacktrace
+    /// # Panics
+    /// Panics if class not found.
+    pub fn create_throwable<'a>(
+        &self,
+        classname: &str,
+        message: impl Into<Option<&'a str>>,
+    ) -> Object {
+        Object::new(
+            self.deref(),
+            crate::jvm::new_throwable(self.deref(), classname, message.into()),
+        )
+    }
 }
