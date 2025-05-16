@@ -192,10 +192,10 @@ impl Object {
                 (Type::Float, Value::Float(value)) => write::<f32>(ptrs, self, index, value),
                 (Type::Float, Value::Double(value)) => write::<f64>(ptrs, self, index, value),
                 (Type::Ref(typ), Value::Object(value)) => {
-                    if let Some(obj) = value {
-                        if !obj.class(ptrs).assignable_to(typ) {
-                            panic!("element type mismatch")
-                        }
+                    if let Some(obj) = value
+                        && !obj.class(ptrs).assignable_to(typ)
+                    {
+                        panic!("element type mismatch")
                     }
                     write::<usize>(ptrs, self, index, value.map(|o| o.0.get()).unwrap_or(0))
                 }
@@ -257,7 +257,7 @@ pub(crate) fn fmt_object(
     // Arrays
     if let Some(base) = &class.element_type {
         let length = object.array_length();
-        write!(f, "{}[", base)?;
+        write!(f, "{base}[")?;
         for i in 0..length {
             write!(f, "{}, ", object.array_read_value(ptrs, i))?
         }

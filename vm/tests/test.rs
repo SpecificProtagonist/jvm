@@ -8,7 +8,7 @@ use vm::*;
 fn make_jvm() -> Jvm {
     Jvm::new(
         file_loaders(["classes", "tests/classes"]),
-        unsafe { classpath_support::get_integration() },
+        classpath_support::get_integration(),
         2_000_000,
     )
 }
@@ -287,7 +287,7 @@ fn hot_reloading() {
     }
     let jvm = Jvm::new(
         Box::new(TestClassloader),
-        unsafe { classpath_support::get_integration() },
+        classpath_support::get_integration(),
         1_000_000,
     );
 

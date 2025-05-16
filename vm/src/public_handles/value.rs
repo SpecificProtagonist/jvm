@@ -125,14 +125,14 @@ impl core::fmt::Display for Value {
         match self {
             Self::Object(None) => write!(f, "null"),
             Self::Object(Some(obj)) => write!(f, "@{:?}", obj.value),
-            Self::Boolean(v) => write!(f, "{}", v),
-            Self::Byte(v) => write!(f, "{}", v),
-            Self::Char(v) => write!(f, "{}", v),
-            Self::Short(v) => write!(f, "{}", v),
-            Self::Int(v) => write!(f, "{}", v),
-            Self::Long(v) => write!(f, "{}", v),
-            Self::Float(v) => write!(f, "{}", v),
-            Self::Double(v) => write!(f, "{}", v),
+            Self::Boolean(v) => write!(f, "{v}"),
+            Self::Byte(v) => write!(f, "{v}"),
+            Self::Char(v) => write!(f, "{v}"),
+            Self::Short(v) => write!(f, "{v}"),
+            Self::Int(v) => write!(f, "{v}"),
+            Self::Long(v) => write!(f, "{v}"),
+            Self::Float(v) => write!(f, "{v}"),
+            Self::Double(v) => write!(f, "{v}"),
         }
     }
 }

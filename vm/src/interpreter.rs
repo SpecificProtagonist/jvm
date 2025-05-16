@@ -161,10 +161,10 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
         Code::Native(code) => native(jvm, method, code, args),
     };
 
-    if let Some(m) = method_monitor {
-        if jvm.parking_lot.monitor_exit(m).is_err() {
-            return Err(throw(jvm, "IllegalMonitorStateException", None));
-        }
+    if let Some(m) = method_monitor
+        && jvm.parking_lot.monitor_exit(m).is_err()
+    {
+        return Err(throw(jvm, "IllegalMonitorStateException", None));
     }
 
     ret
@@ -1151,11 +1151,11 @@ fn run_until_exception_or_return(
             CHECKCAST => {
                 let index = frame.read_code_u16();
                 let check_class = const_pool.get_class_verified(index);
-                if let Some(object) = frame.peek().as_obj() {
-                    if !object.class(ptrs).assignable_to(&check_class.name) {
-                        frame.pop();
-                        return Err(throw(jvm, "ClassCastException", None));
-                    }
+                if let Some(object) = frame.peek().as_obj()
+                    && !object.class(ptrs).assignable_to(&check_class.name)
+                {
+                    frame.pop();
+                    return Err(throw(jvm, "ClassCastException", None));
                 }
             }
             INSTANCEOF => {

@@ -37,10 +37,10 @@ impl Display for Value {
         match self {
             Self::Object(None) => write!(f, "null"),
             Self::Object(Some(obj)) => write!(f, "@{obj:?}"),
-            Self::Int(v) => write!(f, "{}", v),
-            Self::Long(v) => write!(f, "{}", v),
-            Self::Float(v) => write!(f, "{}", v),
-            Self::Double(v) => write!(f, "{}", v),
+            Self::Int(v) => write!(f, "{v}"),
+            Self::Long(v) => write!(f, "{v}"),
+            Self::Float(v) => write!(f, "{v}"),
+            Self::Double(v) => write!(f, "{v}"),
         }
     }
 }

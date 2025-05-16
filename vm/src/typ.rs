@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicU8};
+use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64};
 
 use alloc::sync::Arc;
 
@@ -52,7 +52,7 @@ impl core::fmt::Display for Type {
             Type::Long => write!(f, "long"),
             Type::Float => write!(f, "float"),
             Type::Double => write!(f, "double"),
-            Type::Ref(name) => write!(f, "{}", name),
+            Type::Ref(name) => write!(f, "{name}"),
         }
     }
 }

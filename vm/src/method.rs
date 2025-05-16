@@ -160,7 +160,7 @@ impl core::hash::Hash for MethodRef {
 impl core::fmt::Display for Method {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some(ret) = &self.nat.typ.returns {
-            write!(f, "{}", ret)?;
+            write!(f, "{ret}")?;
         } else {
             write!(f, "void")?;
         }
@@ -171,7 +171,7 @@ impl core::fmt::Display for Method {
                 write!(f, ", ")?;
             }
             first = false;
-            write!(f, "{}", arg)?;
+            write!(f, "{arg}")?;
         }
         write!(f, ")")?;
         Ok(())
@@ -187,7 +187,7 @@ impl core::fmt::Debug for Method {
 impl core::fmt::Display for MethodNaT {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some(ret) = &self.typ.returns {
-            write!(f, "{}", ret)?;
+            write!(f, "{ret}")?;
         } else {
             write!(f, "void")?;
         }
@@ -198,7 +198,7 @@ impl core::fmt::Display for MethodNaT {
                 write!(f, ", ")?;
             }
             first = false;
-            write!(f, "{}", arg)?;
+            write!(f, "{arg}")?;
         }
         write!(f, ")")?;
         Ok(())
