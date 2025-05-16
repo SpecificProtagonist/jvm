@@ -90,7 +90,13 @@ pub(crate) enum Code {
 }
 
 pub type NativeCode = Box<
-    dyn Fn(&crate::Jvm, &[crate::Value]) -> crate::JvmResult<Option<crate::Value>> + Send + Sync,
+    dyn Fn(
+            &crate::Jvm,
+            Option<crate::StackFrame>,
+            &[crate::Value],
+        ) -> crate::JvmResult<Option<crate::Value>>
+        + Send
+        + Sync,
 >;
 
 pub(crate) struct Bytecode {
@@ -101,7 +107,6 @@ pub(crate) struct Bytecode {
     pub stack_map_table: Option<Vec<u8>>,
     pub exception_table: Vec<ExceptionHandler>,
     /// Map from pc to source code line number. May be empty.
-    #[allow(dead_code)]
     pub line_number_table: BTreeMap<u16, u16>,
     #[allow(dead_code)]
     pub local_variables: Vec<LocalVariable>,

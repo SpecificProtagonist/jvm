@@ -399,11 +399,6 @@ pub(crate) fn throw<'a>(jvm: &Jvm, name: &str, msg: impl Into<Option<&'a str>>) 
 }
 
 pub(crate) fn new_throwable(jvm: &Jvm, name: &str, msg: Option<&str>) -> Object {
-    let message = if let Some(msg) = msg {
-        format!("{name}: {msg}")
-    } else {
-        name.to_owned()
-    };
     let object = match jvm.resolve_class_internal(name) {
         Ok(class) => {
             if let Err(thrown) = class.ensure_init(jvm) {
@@ -414,14 +409,16 @@ pub(crate) fn new_throwable(jvm: &Jvm, name: &str, msg: Option<&str>) -> Object 
         }
         Err(thrown) => thrown,
     };
-    let field = object
-        .class(jvm.heap.ptrs())
-        .field("message", Type::Ref("java.lang.String".into()))
-        .expect("java.lang.Throwable missing field java.lang.String message");
-    let handle = crate::Jvm::from(jvm);
-    let string =
-        (jvm.class_library_integration.string_constructor)(&handle, &message).as_inner(&handle);
-    field.instance_set(jvm.heap.ptrs(), object, Value::Object(Some(string)));
+    if let Some(msg) = msg {
+        let field = object
+            .class(jvm.heap.ptrs())
+            .field("message", Type::Ref("java.lang.String".into()))
+            .expect("java.lang.Throwable missing field java.lang.String message");
+        let handle = crate::Jvm::from(jvm);
+        let string =
+            (jvm.class_library_integration.string_constructor)(&handle, msg).as_inner(&handle);
+        field.instance_set(jvm.heap.ptrs(), object, Value::Object(Some(string)));
+    }
     object
 }
 

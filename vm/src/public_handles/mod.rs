@@ -54,6 +54,7 @@ mod field;
 mod jvm;
 mod method;
 mod object;
+mod stack_frame;
 mod value;
 
 pub use class::*;
@@ -61,6 +62,7 @@ pub use field::*;
 pub use jvm::*;
 pub use method::*;
 pub use object::*;
+pub use stack_frame::*;
 pub use value::*;
 
 use crate::Type;

@@ -18,7 +18,7 @@ fn circular_loading() {
     let jvm = make_jvm();
     assert_eq!(
         format!("{:?}", jvm.resolve_class("CircularA").unwrap_err()),
-        "java.lang.ClassCircularityError{message: \"ClassCircularityError: CircularA\"}"
+        "java.lang.ClassCircularityError{message: \"CircularA\"}"
     )
 }
 
@@ -141,7 +141,7 @@ fn invoke_native() {
         3i64
     );
 
-    let object = jvm.create_object("Native", [], vec![]).unwrap();
+    let object = jvm.create_object(None, "Native", [], vec![]).unwrap();
     let instance_method = jvm
         .resolve_method("Native", "call_instance", [], None)
         .unwrap();

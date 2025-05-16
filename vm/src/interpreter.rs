@@ -6,6 +6,7 @@ use core::{
 };
 use std::thread;
 
+use crate::method::MethodRef;
 use crate::{
     AccessFlags,
     class::{ClassRef, ClassState},
@@ -23,7 +24,8 @@ use crate::{
 
 pub(crate) fn invoke(
     jvm: &Jvm,
-    method: &Method,
+    parent: Option<&Frame>,
+    method: MethodRef,
     args: impl IntoIterator<Item = Value>,
 ) -> JvmResult<Option<Value>> {
     method.class().ensure_init(jvm)?;
@@ -76,12 +78,12 @@ pub(crate) fn invoke(
             _ => panic!("Invoked {method} with values of wrong type"),
         }
     }
-    invoke_initialized(jvm, method, &arg_values)
+    invoke_initialized(jvm, parent, method, &arg_values)
 }
 
 /// Called on <clinit> during class initialization
-pub(crate) fn invoke_initializer(jvm: &Jvm, initializer: &Method) -> JvmResult<()> {
-    invoke_initialized(jvm, initializer, &[]).map(|_| ())
+pub(crate) fn invoke_initializer(jvm: &Jvm, initializer: MethodRef) -> JvmResult<()> {
+    invoke_initialized(jvm, None, initializer, &[]).map(|_| ())
 }
 
 /// Stack or local entry.
@@ -110,7 +112,12 @@ pub const TWO_STACK_SLOTS_PER_LONG_AND_DOUBLES: bool = cfg!(target_pointer_width
 /// - or the method is the class initializer
 ///
 /// and that the const pool is not write-locked.
-fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Option<Value>> {
+fn invoke_initialized(
+    jvm: &Jvm,
+    parent: Option<&Frame>,
+    method: MethodRef,
+    args: &[IVal],
+) -> JvmResult<Option<Value>> {
     #[cfg(not(miri))]
     {
         // Try to check for stack exhaustion. This is far from foolproof, e.g.
@@ -157,8 +164,8 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
                 unreachable!()
             }
         }
-        Code::Bytecode(code) => interpret(jvm, method, code, args),
-        Code::Native(code) => native(jvm, method, code, args),
+        Code::Bytecode(code) => interpret(jvm, parent, method, code, args),
+        Code::Native(code) => native(jvm, parent, method, code, args),
     };
 
     if let Some(m) = method_monitor
@@ -173,6 +180,7 @@ fn invoke_initialized(jvm: &Jvm, method: &Method, args: &[IVal]) -> JvmResult<Op
 /// Requires that the class is already initialized, or method is the initializer
 fn native(
     jvm: &Jvm,
+    parent: Option<&Frame>,
     method: &Method,
     code: &NativeCode,
     args: &[IVal],
@@ -237,7 +245,11 @@ fn native(
             }
         }
     }
-    match code(&jvm.into(), &values) {
+    match code(
+        &jvm.into(),
+        parent.map(|f| crate::StackFrame { jvm, inner: f }),
+        &values,
+    ) {
         Ok(ret) => {
             let returned = ret.map(|v| v.into_inner(&jvm.into()));
             if match (returned, &method.nat.typ.returns) {
@@ -255,7 +267,8 @@ fn native(
 
 fn interpret(
     jvm: &Jvm,
-    method: &Method,
+    parent: Option<&Frame>,
+    method: MethodRef,
     code: &Bytecode,
     args: &[IVal],
 ) -> JvmResult<Option<Value>> {
@@ -295,6 +308,8 @@ fn interpret(
     }
     let (locals, stack) = locals_and_stack.split_at_mut(code.max_locals as usize);
     let mut frame = Frame {
+        parent,
+        method,
         code_bytes: &code.bytes,
         locals,
         stack,
@@ -1333,7 +1348,7 @@ fn put_field(ptrs: Ptrs, frame: &mut Frame, field: &Field, storage: FieldStorage
     }
 }
 
-fn execute_invoke_instr(jvm: &Jvm, frame: &mut Frame, method: &Method) -> JvmResult<()> {
+fn execute_invoke_instr(jvm: &Jvm, frame: &mut Frame, method: MethodRef) -> JvmResult<()> {
     let mut arg_slots = method.nat.typ.arg_slots();
     if !method.access_flags.contains(AccessFlags::STATIC) {
         // `this` is treated as an argument, but not mentioned in method descriptor
@@ -1341,7 +1356,7 @@ fn execute_invoke_instr(jvm: &Jvm, frame: &mut Frame, method: &Method) -> JvmRes
     }
 
     let args = &frame.stack[frame.stack_depth - arg_slots..];
-    let result = invoke_initialized(jvm, method, args)?;
+    let result = invoke_initialized(jvm, Some(frame), method, args)?;
     frame.truncate_stack_by(arg_slots);
     if let Some(value) = result {
         match value {
@@ -1418,12 +1433,16 @@ impl IVal {
     }
 }
 
-struct Frame<'a> {
+pub(crate) struct Frame<'a> {
+    pub(crate) parent: Option<&'a Frame<'a>>,
+    pub(crate) method: MethodRef,
     code_bytes: &'a [SyncUnsafeCell<u8>],
+    /// Program counter
+    pub(crate) pc: u16,
     locals: &'a mut [IVal],
-    stack: &'a mut [IVal],
+    /// How many stack slots are currently used
     stack_depth: usize,
-    pc: u16,
+    stack: &'a mut [IVal],
 }
 
 impl Frame<'_> {

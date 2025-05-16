@@ -143,6 +143,7 @@ impl Class {
     #[track_caller]
     pub fn create_object(
         &self,
+        call_stack: Option<StackFrame>,
         arg_types: impl IntoIterator<Item = Type>,
         mut args: Vec<Value>,
     ) -> JvmResult<Object> {
@@ -166,7 +167,7 @@ impl Class {
                 ),
             )
         })?;
-        constructor.invoke(args.into_iter())?;
+        constructor.invoke_with_callstack(call_stack, args.into_iter())?;
         Ok(object)
     }
 

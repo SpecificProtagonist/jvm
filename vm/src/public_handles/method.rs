@@ -77,12 +77,22 @@ impl Method {
     /// # Panics
     /// Panics if any of the [`Value`]s is an object created by another JVM.
     pub fn invoke(&self, args: impl IntoIterator<Item = Value>) -> JvmResult<Option<Value>> {
+        self.invoke_with_callstack(None, args)
+    }
+
+    /// See [Method::invoke].
+    pub fn invoke_with_callstack(
+        &self,
+        call_stack: Option<StackFrame>,
+        args: impl IntoIterator<Item = Value>,
+    ) -> JvmResult<Option<Value>> {
         self.jvm.deref().stackoverflow_error.get_or_init(|| {
             jvm::new_throwable(self.jvm.deref(), "java.lang.StackOverflowError", None)
         });
 
         interpreter::invoke(
             self.jvm.deref(),
+            call_stack.map(|f| f.inner),
             self.value,
             args.into_iter().map(|arg| arg.into_inner(&self.jvm)),
         )

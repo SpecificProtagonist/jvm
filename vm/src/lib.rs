@@ -3,6 +3,7 @@
 #![feature(ptr_as_ref_unchecked)]
 #![feature(sync_unsafe_cell)]
 #![feature(let_chains)]
+#![feature(btree_cursors)]
 #![allow(clippy::type_complexity)]
 #![doc = include_str!("../../README.md")]
 

@@ -5,7 +5,7 @@
 // TODO: Directly use &[IVal]
 
 use crate::{
-    AccessFlags, JvmResult, Object, Type, Value,
+    AccessFlags, JvmResult, Object, StackFrame, Type, Value,
     jvm::Jvm,
     method::{Code, Method},
 };
@@ -27,11 +27,16 @@ where
     // Closure lifetime binders when? 👉👈
     fn specify_lifetimes<F>(f: F) -> F
     where
-        F: for<'a, 'b> Fn(&'a crate::Jvm, &'b [Value]) -> JvmResult<Option<Value>>,
+        F: for<'a, 'b, 'c> Fn(
+            &'a crate::Jvm,
+            Option<StackFrame<'b>>,
+            &'c [Value],
+        ) -> JvmResult<Option<Value>>,
     {
         f
     }
-    let closure = specify_lifetimes(move |jvm, args| F::invoke(&code, jvm, args));
+    let closure =
+        specify_lifetimes(move |jvm, call_stack, args| F::invoke(&code, jvm, call_stack, args));
     if method.access_flags.contains(AccessFlags::NATIVE) {
         *method.code.write().unwrap() = Code::Native(Box::new(closure));
         Ok(())
@@ -91,8 +96,11 @@ enum ArgTyp {
 }
 
 /// Implemented for functions of the following form:
-/// - optionally, a first argument of type `&Jvm`
-/// - the remaining arguments consist of either `&[Value]` or up to 16 arguments of a translateable type
+/// - optionally, an argument of type `&Jvm`
+/// - optionally, an argument of type `StackFrame`
+/// - the remaining arguments consist of either `&[Value]` or up to 16 arguments of a translateable type.
+///   If the method is not static, the first of these must be an `Object` or `Option<Object>`
+///   which represents `this`.
 /// - the return type must be a translatable type, optionally wrapped in a `JvmResult`
 ///
 /// Translatable types:  
@@ -108,6 +116,7 @@ enum ArgTyp {
 /// - `fn(&Jvm, i16, i16) -> i32`
 /// - `fn(i16, i16) -> JvmResult<i32>`
 /// - `fn(&[Value]) -> i32`
+/// - `fn(&Jvm, StackFrame, &[Value]) -> i32`
 /// - etc
 ///
 /// ```java
@@ -119,7 +128,12 @@ enum ArgTyp {
 /// - etc
 pub trait NativeFn<T>: Send + Sync + 'static {
     fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)>;
-    fn invoke(&self, jvm: &crate::Jvm, args: &[Value]) -> JvmResult<Option<Value>>;
+    fn invoke(
+        &self,
+        jvm: &crate::Jvm,
+        call_stack: Option<StackFrame>,
+        args: &[Value],
+    ) -> JvmResult<Option<Value>>;
 }
 
 trait Arg {
@@ -381,7 +395,12 @@ where
         None
     }
 
-    fn invoke(&self, jvm: &crate::Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
+    fn invoke(
+        &self,
+        jvm: &crate::Jvm,
+        _call_stack: Option<StackFrame>,
+        args: &[Value],
+    ) -> JvmResult<Option<Value>> {
         self(args).value(jvm.deref())
     }
 }
@@ -395,8 +414,51 @@ where
         None
     }
 
-    fn invoke(&self, jvm: &crate::Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
+    fn invoke(
+        &self,
+        jvm: &crate::Jvm,
+        _call_stack: Option<StackFrame>,
+        args: &[Value],
+    ) -> JvmResult<Option<Value>> {
         self(jvm, args).value(jvm.deref())
+    }
+}
+
+impl<F, R> NativeFn<(StackFrame<'_>, R, &'static ())> for F
+where
+    F: Fn(Option<StackFrame>, &[Value]) -> R + Send + Sync + 'static,
+    R: Return,
+{
+    fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)> {
+        None
+    }
+
+    fn invoke(
+        &self,
+        jvm: &crate::Jvm,
+        call_stack: Option<StackFrame>,
+        args: &[Value],
+    ) -> JvmResult<Option<Value>> {
+        self(call_stack, args).value(jvm.deref())
+    }
+}
+
+impl<F, R> NativeFn<(Jvm, StackFrame<'_>, R, &'static ())> for F
+where
+    F: for<'a> Fn(&'a crate::Jvm, Option<StackFrame>, &[Value]) -> R + Send + Sync + 'static,
+    R: Return,
+{
+    fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)> {
+        None
+    }
+
+    fn invoke(
+        &self,
+        jvm: &crate::Jvm,
+        call_stack: Option<StackFrame>,
+        args: &[Value],
+    ) -> JvmResult<Option<Value>> {
+        self(jvm, call_stack, args).value(jvm.deref())
     }
 }
 
@@ -416,7 +478,12 @@ macro_rules! impl_args {
             }
 
             #[allow(unused_variables, unused_mut)]
-            fn invoke(&self, jvm: &crate::Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
+            fn invoke(
+                &self,
+                jvm: &crate::Jvm,
+                _call_stack: Option<StackFrame>,
+                args: &[Value]
+            ) -> JvmResult<Option<Value>> {
                 let mut i = 0;
                 self($($param::get(args, &mut i)),*).value(jvm.deref())
             }
@@ -436,9 +503,64 @@ macro_rules! impl_args {
             }
 
             #[allow(unused_variables, unused_mut)]
-            fn invoke(&self, jvm: &crate::Jvm, args: &[Value]) -> JvmResult<Option<Value>> {
+            fn invoke(
+                &self,
+                jvm: &crate::Jvm,
+                call_stack: Option<StackFrame>,
+                args: &[Value]
+            ) -> JvmResult<Option<Value>> {
                 let mut i = 0;
                 self(jvm, $($param::get(args, &mut i)),*).value(jvm.deref())
+            }
+        }
+
+        impl<F, $($param,)* R> NativeFn<(StackFrame<'_>, R,$($param,)*)> for F
+        where
+            F: Fn(Option<StackFrame>, $($param),*) -> R
+                + Send
+                + Sync
+                + 'static,
+            $($param: Arg,)*
+            R: Return,
+        {
+            fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)> {
+                Some((vec![$($param::typ()),*], R::typ()))
+            }
+
+            #[allow(unused_variables, unused_mut)]
+            fn invoke(
+                &self,
+                jvm: &crate::Jvm,
+                call_stack: Option<StackFrame>,
+                args: &[Value]
+            ) -> JvmResult<Option<Value>> {
+                let mut i = 0;
+                self(call_stack, $($param::get(args, &mut i)),*).value(jvm.deref())
+            }
+        }
+
+        impl<F, $($param,)* R> NativeFn<(&crate::Jvm, StackFrame<'_>, R,$($param,)*)> for F
+        where
+            F: Fn(&crate::Jvm, Option<StackFrame>, $($param),*) -> R
+                + Send
+                + Sync
+                + 'static,
+            $($param: Arg,)*
+            R: Return,
+        {
+            fn descriptor() -> Option<(Vec<ArgTyp>, Option<ArgTyp>)> {
+                Some((vec![$($param::typ()),*], R::typ()))
+            }
+
+            #[allow(unused_variables, unused_mut)]
+            fn invoke(
+                &self,
+                jvm: &crate::Jvm,
+                call_stack: Option<StackFrame>,
+                args: &[Value]
+            ) -> JvmResult<Option<Value>> {
+                let mut i = 0;
+                self(jvm, call_stack, $($param::get(args, &mut i)),*).value(jvm.deref())
             }
         }
     }
